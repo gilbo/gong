@@ -1,0 +1,635 @@
+
+
+
+
+local shadow_query = GONG
+  :From('r', ray_segments)
+  :From('t', triangles)
+  :Where(rt_is_isct, 'r','t')   -- rt_is_isct is terra function...
+  :Do(shadow_the_ray, 'r')      -- shadow_the_ray is terra function...
+
+
+local et_isct_query = GONG
+  :From('e', edges)
+  :From('t', triangles)
+  :Where(et_is_isct, 'e','t')
+  :Return('e','t')
+
+local LandscapeConvex_query = GONG
+  :From('c', convex_objs)
+  :From('t', landscape_triangles)
+  :Where(c_goes_below_t, 'c','t')
+  :Let('time', isct_time, 'c','t')
+  :Do(first_tri_contact, 'c','t','time')
+  -- SHITTY version of the reduction...
+
+
+
+Ok, that's some.
+
+Let's focus on how we should execute the query now...?
+
+
+
+NAIVE:
+  just nested loops.  This provides a functionally correct query
+
+ACCELERATION STRUCTURE
+  This involves some kind of fused join operation.
+  How should that join happen?
+
+Join from one side:
+  Scan one of the two relational tables
+  Lookups into the other table
+  Interface for Lookup
+  :Where(P)  -- P is the predicate
+  tables are 'A' and 'B'
+
+  :Plan()
+    :Scan('a')
+    :Lookup('b', ACC_STRUCTURE)
+
+ACC_STRUCTURE must have
+  acc:lookup(a)  :type:  Set(b)
+
+Ahh, so the way to do this is to have lookup be a code generation
+That can have a "here's what to do" passed into it
+  acc:lookup(a, action(a,b))
+
+
+
+Ok, this seems roughly plausible...
+
+What about joint expansion...?
+
+tri <- unpack ( tri_node <- BVH(triangles) )
+    filter edge_box_isct(e, tri_node.box)
+    recurse tri_node
+  end
+
+
+
+
+local shadow_query = GONG
+  :From('r', ray_segments)
+  :From('t', triangles)
+  :Where(rt_is_isct, 'r','t')   -- rt_is_isct is terra function...
+  :Do(shadow_the_ray, 'r')      -- shadow_the_ray is terra function...
+
+tri_aabb_bvh = GONG.BVH( triangles, {
+  abstract  = tri_to_aabb,
+  -- what's the construction algorithm???
+})
+
+shadow_query:Plan()
+  :Scan('r')
+  :ExpandTree(tri_aabb_bvh, {
+    where = ray_bb_isct,  -- terra( r : ray, bb : aabb ) : bool
+  })
+
+
+
+
+local et_isct_query = GONG
+  :From('e', edges)
+  :From('t', triangles)
+  :Where(et_is_isct, 'e','t')
+  :Return('e','t')
+
+tri_aabb_bvh  = GONG.BVH( triangles, {
+  abstract  = tri_to_aabb,
+  -- what's the construction algorithm???
+})
+edge_aabb_bvh = GONG.BVH( edges, {
+  abstract  = edge_to_aabb,
+  -- what's the construction algorithm???
+})
+
+et_isct_query:Plan()
+  :ExpandTreesJointly(tri_aabb_bvh, edge_aabb_bvh, {
+    where   = aabb_isct,      -- terra( a : aabb, b : aabb ) : bool
+    choose  = which_subtree,  -- terra( a : aabb, b : aabb ) : ENUM{L,R}
+  })
+
+tri_grid = GONG.GRID( triangles, {
+  space_bounds  =               -- pick space bounds...
+  render        = tri_render,   -- terra( t : Tri, r : GridRenderer )
+        -- GridRenderer has methods
+        --    :Mark(i,j,k)
+        --    :SpaceBounds()
+        --    :Dims()
+})
+
+et_isct_query:Plan()
+  :Scan('e')
+  :ExpandGrid(tri_grid, {
+    render_lookup   = edge_render,  -- terra( e : Edge, r : GridRenderer )
+  })
+
+
+local t_grid = GONG.MULTI_BIN {
+  n_bins        = nx*ny*nz,
+  store_table   = triangles,
+  store_scan    = tri_render, -- terra( t : Triangle, bc : BinContinue )
+}
+Plan()
+  :Scan('e')
+  :BinLookup(t_grid, {
+    bin_scan = edge_render, -- terra( e : Edge, bc : BinContinue )
+  })
+
+-- hmm, do raw hash-binning
+
+local grid
+
+
+Ok, we need to support Bin structures of two kinds:
+  Multi-Bin (An object may go into more than one bin)
+  Disjoint-Bin (An object goes in exactly one bin)
+
+Bins need to be used twice to make any damn sense.  Specifically, we can ask
+with a bin to store objects A and then look-up by objects B.  Is that true?  How else can we consider bins?
+
+Besides Bins, we also have trees.  Though note that a k-wide tree relies on a kind of binning.  Only, the point of bins is usually that we can compute and assign the right bin.  The point of trees is frequently that a contract for the bin can be computed based on its contents.
+
+This is a distinction between CONTENT-OBLIVIOUS sub-division and CONTENT-AWARE sub-division.  The second distinction is between DISJOINT sub-division and OVERLAPPING sub-division
+
+We construct an indexing structure by splitting up a set of things in content-oblivious and aware ways, disjointly or not.
+
+A content-oblivious split happens like...
+A content-aware split happens with shapes:
+  abs   : obj --> shape
+  isct  : shape, shape --> bool
+  union : shape, shape --> shape
+
+
+AHHH, define a shape.
+
+A type S is a shape if
+  There exist 2 functions:
+    isct  : S, S --> Bool     (true meaning maybe intersects)
+    union : S, S --> S
+  Satisfying the Axioms:
+    union(x,y)  == union(y,x)                     (commutativity)
+    union(x,union(y,z)) == union(union(x,y),z)    (associativity)
+    union(x,x)  == x                              (idempotency)
+    isct(x,x)   == True                           (reflexivity)
+    isct(x,y)   == isct(y,x)                      (symmetry)
+    isct(x,y)   ==> isct(x,union(y,z))            (distributivity)
+
+S >abs> A iff.
+  abs: A --> S
+
+Isct(A,B) iff. Exists
+  isct : A,B --> Bool s.t. isct(a,b) == isct(b,a)
+
+S >abs> Isct(A,B) iff. S >abs> A and S >abs> B and Isct(A,B) and
+  isct(a,b) ==> isct(abs(a), abs(b))
+
+
+-- essentially a bounding volume hierarchy of some sort...
+Tree(S) is a tree of shapes S.  Every node has an associated shape.
+  A given node can have an arbitrary number of children.
+  A node can be disjoint or not.
+  (what about k-d trees?  OH NOES... whatever)
+
+
+Idea: use particular acceleration structure primitives:
+Tree(S, A) is a tree organized according to shape S but storing As
+  Trees may be disjoint or not
+Bin(A)
+
+
+Tree(A) has the following parameters:
+  S           - shape
+  width       - fan-out at a node
+  disjoint    - that every item exists on at most one path
+
+DisjointBins(A) has the following properties:
+  n               - number of bins
+  f : A -> int    - binning function
+
+OverlapBins(A)
+  n               - number of bins
+  f : A -> {int}  - rasterizing function
+
+DisjointTree(A)
+
+OverlapTree(A)
+  n : int         - tree-width
+  f : A -> {int}  - function to say which branch an item goes down
+
+
+
+Ok, so maybe we can do it that simply...
+
+A given partition node is either Disjoint or Overlapping, with a number of sub-bins
+
+And it has a way to assign a bin(s) to whatever kind of object it stores/handles
+
+
+
+The other key thing here is whether the node changes type or has a single layer.  That's the Tree vs Bin distinction.
+
+
+Ok, this seems reasonable, but then we also need to deal with shape abstraction and transformation.
+
+
+
+How do these things get constructed?
+
+
+
+
+Ahh, let's have a notion which is "how is primitive X being abstracted?"
+
+
+use Shape S for A.  Ok.
+
+
+Then, we might define a type 
+
+
+
+Ok, so consider a couple of join strategies:
+
+Use a joint data structure that can be "rendered" into from the two sides of the join.
+Build two data structures, one for each of the two sides.  Render those data structures together in some fashion.
+Build one data structure for one side and render the contents of that side into it.  Scan the other side
+
+Taxonomy of basic join algorithms:
+Is at least one of the tables scanned? (without any further acceleration)
+Yes: at least one table is scanned
+  Is the other table scanned?
+  Yes:      JOIN-ALGORITHM: Trivial-Nested-Loops
+  No:  Then we must do lookups in the other table.
+            JOIN-ALGORITHM: Index-Based-Join
+    There are a number of variants here based on what index is used.
+    Pure-Grid/Hash-Based Index
+      (items are placed into bins using pre-determined binning function)
+    Reflective-Grid/Hash-Based Index
+      (items are placed into bins using binning function parameterized by stats)
+    Search-Tree-Index
+      (some kind of search tree is used to accelerate lookups)
+No: neither table is scanned
+  Do both tables get indexed using the same data structure?
+  Yes:      JOIN-ALGORITHM: Generalized-Hash-Join
+        This option relies on there being some way to place the two different sides of the join into the same structure
+  No:       JOIN-ALGORITHM: Generalized-Merge-Join
+        This option relies on there being some way to merge the two different indexing structures (one built for each side of the join)
+
+
+
+
+===============================================================================
+
+What do we mean by a join?  We mean consider two tables, and a binary predicate of a pair of rows, one from each table.  We want to return precisely the set of all pairs where the predicate is true.  This may be tricky if the predicate is complicated, which it is in the case of geometric-join problems.
+
+-----
+
+A simple, dumb taxonomy of templates for two-table join algorithms:
+Definitions:
+  Mapping a table - loop over table elements independently, without structure
+  If a table is not mapped, then it must have some kind of indexing structure that's exploited.
+
+Is at least one of the tables mapped?
+Yes:
+  Is the other table mapped too?
+  Yes:
+    JOIN: Trivial-Nested-Loops
+  No:
+    JOIN: Index-Based-Join
+No:
+  Are the two tables indexed by a common structure?
+  Yes:
+    JOIN: Generalized-Hash-Join
+  No:
+    JOIN: Generalized-Merge-Join
+
+The intention of this taxonomy is to only partially characterize the computational structure of a join algorithm.  In particular, the assumption here is that different cache locality and/or parallelization strategies are not considered.
+
+-----
+
+Next, I'll provide examples / definitions of the different kinds of joins
+
+Trivial-Nested-Loops:
+  This is genuinely trivial.
+
+Index-Based-Join:
+  This is relatively straightforward.  However, we need to know what an indexing structure is.  Assume table A is mapped and table B indexed.  We assume there is some function Index(B).lookup(a : A) which will find all elements of B potentially satisfying the join.
+
+  Examples of Index-Based-Join:
+    - basic ray-tracing indexes the triangles (k-d tree, bvh, grid, etc.) and maps the rays.
+    - testing collision objects against the ground/static geometry, the static geometry will probably be indexed for efficiency
+    - rasterization can be viewed this way: the pixels are indexed by a grid, and the triangles are mapped over them
+
+Generalized-Hash-Join:
+  This approach defines a common indexing structure which is built over both sets of objects.  This requires that we have some way to make rows from the two tables commensurate.
+
+  Possible Examples:
+    - sweep algorithms could be viewed as a variant of this.
+    - BVH self-intersection could be seen as an example of this.
+    - Grid-based joins with a single grid are an example of this.
+
+  Crticism:
+    - hash-joins are normally executed as Index-Based-Joins in practice.  The distinction just becomes whether the index was pre-computed, where we call it a hash-join if the index was not pre-computed and the index was a hash table in specific.
+
+Generalized-Merge-Join:
+  This approach builds/maintains two indexing strcutures independently on the two tables.  Then those two structures are mangled together by some means.
+
+  Possible Examples:
+    - BVH-BVH intersection is an example of this
+    - BVH self-intersection could be seen as an example of this.
+
+  Criticism:
+    - merge-joins are normally specifically merging algorithms rather than intersecting two search trees.  In bulk collision processing this kind of algorithm is much more common, however.
+
+-----
+
+Reflections from this categorization:
+
+Note that the key idea here is that indices are always mediating joins, regardless of which algorithm.  This perspective may break down some for sweep algorithms, but it allows us to focus efforts on how indices structure the computation.
+
+We should also consider sequencing at this point, if only slightly.  In the case of index-based-join, the simplest perspective is that we work in two steps:
+  1. construct index on second table
+  2. map lookup computation over first table
+In the case of generalized-merge, we do:
+  1. construct index on first table
+  2. construct index on second table
+  3. intersect two indices together (somehow)
+In the case of generalized hash join, it seems we want a joint build
+  1. construct index on both tables
+
+Ok, so the generalized hash join seems to offer 0 transparency into whatever is going on.  The other two cases do seem to offer some kind of guide.
+
+We want to have a build algorithm that takes a set of objects and indexes them.
+
+We also need a lookup function that allows us to use the index.
+
+We also might need a way to intersect two indices.
+
+===============================================================================
+
+
+
+
+What are the kinds of indices we have?
+
+BinDisjoint
+BinOverlap
+TreeDisjoint(Shape)
+TreeOverlap(Shape)
+
+We must provide a shape to use a tree.  Once we do that, then the tree becomes relatively clear.  Shapes in this sense can also function as a generalized way of abstracting "stuff".
+
+BinDisjoint(A;params).Build : Set(A) --> BinDisjoint(A;params)
+  input: as
+  for a in as:
+    bin_num = Index(a,params)
+    store a at bin_num
+
+BinOverlap(A;params).Build : Set(A) --> BinOverlap(A;params)
+  input: as
+  for a in as:
+    Enum( a,params, emit=\id. store a at id )
+
+Tree builds are more complicated.  Let's try to classify them:
+  - there are bottom-up builds.  I claim that those are maybe not so great?
+  - there are top down builds.  These tend to have the form of computing some kind of statistic on the data (how do we compute statistics?) and then that statistic is used to set parameters to a splitting function
+
+
+TreeDisjoint(Shape)(A;params).Build : Set(A) --> TreeDisjoint(Shape)(A;params)
+  input: as
+  -- DO STATS
+  samp_stats  = sample(as)
+  params      = transform_stats(samp_stats)
+  NOTE THAT: the sample computation should be able to terminate recursion
+  -- DO SPLIT
+  for a in as:
+    bin_num = Index(a,params)
+    cache into bin_num
+  for bin in bin_ids:
+    sub_node[bin]   = TreeDisjoint.Build(cache[bin])
+    up_params[bin]  = sub_node[bin].params
+  params      = summarize(params, up_params)
+
+
+TreeOverlap should be similar...
+
+
+How does this generalized notion of tree build interplay with the idea of shapes?
+
+Well, we can automatically insert some summarization logic based on the SHAPE being a parameter.  If that's the only parameter of interest then maybe we can simplify a lot of this stuff...  Otherwise, we may need to keep around other parameters.  But maybe all these parameters need to be defined via some kind of assoc-comm-operation ?
+
+We might also be concerned with spatial transformations playing an important part in these algorithms.
+
+
+Now, let's assume that every node has an associated shape.  What information do we need to traverse the structure?
+
+
+AHHH, so maybe this is a difference...?  In the Overlap structures, all we really need to guarantee is that at least one of the bins an object goes in will get tested against positively for the intersection.
+
+In the disjoint case we can presumably just compute the shapes using unions, but in the overlap case that makes less sense...
+
+
+
+
+
+===============================================================================
+
+
+
+
+
+
+Suppose I have nested structures like
+  BinOverlap(TreeDisjoint(Shape; A; p2); p1)
+
+and that I want to intersect that with TreeDisjoint(Shape; B; p3).
+
+Then, I can do a join algorithm that seeks to do something... something... gah
+
+
+
+
+
+
+
+Builds should probably use sampling
+
+A disjoint split is one that splits up a set of raw objects
+An overlapping split is one that rasters objects into bins
+
+
+
+
+A Tree has an associated shape it uses
+The main decision to make in constructing a tree is how to split things.
+
+
+
+
+
+Ok, so that tells us what it means to have a shape.  Shapes are a better definition of key-predicates from GIST.
+
+
+
+
+So, we can scan, we can expand an existing structure, we can build a structure on the fly...
+
+
+
+
+
+
+
+ahh, suppose we were doing equijoins.
+
+Loop-Join:
+  Scan primitive
+Merge-Join:
+  Merge primitive?
+  Comparison function parameter
+Hash-Join:
+  hash function parameter
+
+non-equijoin
+Loop-Join:
+  Scan Primitive
+Hash-Join:
+  DisjointBin Primitive
+  Hash Parameter  (can we call this render or some-such?)
+
+
+
+
+
+GIST notes
+4 original methods:
+- consistent( k : key, q : query ) : False or Maybe
+- union( ks : Set(key) ) : key
+- penalty( T : subtree, k : key ) : Num  (cost of inserting into key subtree)
+- picksplit( ks : Set(key) ) : Set(key), Set(key)
+
+translation to geometry:
+- isct( s1 : Shape, s2 : Shape ) : False or Maybe
+- union( s1 : Shape, s2 : Shape ) : Shape
+(could do penalty and picksplit; seem specific to particular tree maintenance/construction algorithms)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+that seems basic
+
+
+
+
+gong
+  r <- ray_segments
+  t <- triangles
+  where rt_is_isct(r,t)
+  r.is_shadowed or= true
+end
+
+
+
+
+
+
+
+
+
+
+-- triangle edge intersection, simple
+local tri_edge_iscts = gong
+  tri <- triangles
+  e   <- edges
+  where triEdgeIsct(tri, e)
+  return { triangle=tri, edge=e }
+end
+
+-- primary ray-cast, simple
+gong
+  ray   <- rays
+  tri   <- triangles
+  test, z = rayTriIsct(ray, tri)
+  filter test
+   -- compute some other stuff?
+  return { ray=ray, tri=tri, z=z, ... }
+end
+
+
+
+-- Syntax
+ The idea is to use some kind of monadic form, where the monad
+ in question is a set monad.  We support the following bits of syntax:
+
+ <new_name> <- <set>
+    This statement extracts an item from the set <set>.
+ where <predicate_exp>
+    This statement filters out any current rows where the predicate is false
+ filter <predicate_exp>
+    Alternate syntax for where
+ <name1, name2, ...> = <exp>
+    computation through assignments can happen just fine, provided that there's no control flow.
+    This is slightly a lie, because it's fine if a function call internally
+    has branching.  We're just not dealing with it at the level of gong.
+ return { field1=exp1, field2=exp2, ... }
+
+
+-- This gives a basic set of operations...
+
+
+
+
+
+
+So, when we think about what algorithms need to do, it seems clear that a couple of primitives are especially important
+
+-- Sampling:
+  Sampling allows for estimating statistics, which seems valuable based on DB practice.  However, a more specific argument can be made based on Meggido's algorithms for parallel MAX and MEDIAN computations, both of which can be executed in constant-depth provided that the underlying computation model allows for randomly sampling a representative subset (usually of SQRT(n) elements).  Even if Meggido's algorithms aren't used directly, this suggests that the basic ingredient of sampling in the parallel/distributed setting can be tremendously powerful.
+
+-- Splitting:
+  Given some criterion, we need a way to be able to divide a set of elements according to that criterion.  This could be thought of simply as a Hash function in interface.  I suspect two additional subtleties could be valuable
+  - splitting based on physical criteria:
+      One example is a distributed setting where you would like to split the data based on where it is currently located--an essentially free operation.  Another example is splitting based on some arbitrary memory ordering in order to benefit from locality/coherency, or to ensure equal-sized divisions of some data
+  - construction of tree data structures based on the results of splitting:
+      In effect, splitting can be thought of as a kind of control flow structure relating to children of a data structure.  This certainly makes sense for top-down algorithms; maybe not for bottom-up?
+  UPDATE:
+    It's also critical to support a non-disjoint form of splitting if we want to support k-d tree construction.
+
+-- Reduction:
+  We need some way to collapse up data into a more compact form from distributed leaves.  In a sense, sampling is a way of reducing data, however a number of other patterns might need to be supported.
+  - Assoc/Comm Op:
+      The simplest case is an associative/commutative operator being used to reduce a set of items.  One valuable detail here is the ability to fuse in some kind of 'map' operation to reduce communication to a minimum
+  - arbitrary computation over a small set?
+      Do we need to be able to take a small sample and then run an arbitrary serial algorithm over that set?  Maybe.  It could certainly be helpful in some circumstance
+
+
+
+
+
+
+
+
+
+
+
+
+
+

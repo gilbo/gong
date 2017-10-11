@@ -1,0 +1,91 @@
+
+Note also CILK, predecessor to OpenMP  (also SISAL?)
+
+
+
+
+{ map_func : VAR in SEQ | filter_func }
+
+special function examples
+#SEQ                  -- size
+SEQ[VAR]              -- indexing
+SUM( SEQ )            -- sum of sequence
+PLUS_SCAN( SEQ )      -- parallel prefix sum
+PERMUTE( SEQ, SEQ )   -- permute SEQ1 based on indices in SEQ2
+GET( SEQ, SEQ )       -- index SEQ1 in parallel based on indices in SEQ2
+SEQ ++ SEQ            -- append sequences
+
+
+
+
+
+Parallation LISP
+
+* Extends LISP with hierarchical sequence data, called a field
+  syntax:  #F( 1 2 8 9 ... )
+  These fields can be nested
+
+* these have 3 essential operations that can be done
+  1.  elwise  (this is essentially an fmap)
+  2.  match   (this is a join based on a key; yields a "mapping")
+  3.  <-      (this is a scatter/gather/reduction using a mapping)
+
+* derived operations:
+  - vref:   ( vref #F(...) :with 'func )
+      this is basically a fold
+  - Collapse and Collect: (collect A :by (collapse B))
+      this is a group-A-by-B
+  - expand: ( expand #F(...) )
+      this is basically a flatten
+
+
+
+Scan-Vector Lisp
+
+* Extends LISP with non-hierarchical pvectors
+
+* pvector instructions
+  - element-wise  (e.g. +,-,*,or,not)
+  - permutation   ( re-arrange one pvector using indices in a second )
+  - scan          (e.g. prefix-sum)
+  - vector-scalar (e.g. read-and-write-indexing, reductions, generation)
+
+* segmented pvector instructions
+    all take a pvector as well as a segment-descriptor
+  - permutation   (the same, but with indices segment-local?)
+  - scan          (per segment)
+  - vector-scalar (per-segment indexing, reduction, and expansion)
+
+
+Compilation down from parallation LISP to scan-vector LISP:
+
+* pfield data structure {
+    segdes  : pvector
+    values  : (pfield | pvector)
+  }
+  - nested fields are represented by nesting pvectors
+
+* compiling two forms:
+  - top-level
+  - within an elwise
+
+* compiling elwise:
+  - step-down:
+    - any free variable needs to be distributed over the segdes of the elwise
+    - any bound field A is re-bound to A.values
+    - CURR_SEGDES is bound to the segdes of the elwise
+  - step-up:
+    - the resulting value of the expression (VAL) is packaged with the segdes:
+      { segdes = CURR_SEGDES, values = VAL }
+
+
+
+
+
+
+
+
+
+
+
+

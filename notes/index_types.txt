@@ -1,0 +1,67 @@
+
+
+
+T ::=   T1 . T2
+    |   l:Abstract(A)
+    |   l:Partition(P)
+    |   l:Split(n)
+    |   l:List  -- optionally set a max?
+    |   l:Rec(T)
+where l is a label
+
+
+
+
+index BVH {
+  node : Rec {
+    abs       : Abstract(AABB)
+    children  : Split(2)
+  } ->
+  leaf : {
+    abs       : Abstract(AABB)
+    children  : Split(8)
+  } ->
+  item_abs    : Abstract(AABB)
+}
+
+-- Here I'm trying to use -> as a composition operator
+-- and a struct-like system of naming.
+-- Can we formalize this?
+
+T   ::= T1 -> T2
+      | l : RT
+      | l : Partition(P)
+      | l : Split(n)
+      | l : Rec { T }
+      | l : Rec { l1 : RT, l2 : T }
+
+RT  ::= { l1 : RT, l2 : T }
+      | Abstract(A)
+
+
+-- That seems to work, although I think anyone in their right mind
+-- should probably agree that this syntax has become somewhat clunky.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

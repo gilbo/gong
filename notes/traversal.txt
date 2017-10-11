@@ -1,0 +1,133 @@
+
+
+index BVH {
+  node : Rec {
+    abs       : Abstract(AABB)
+    children  : Split(2)
+  } ->
+  leaf : {
+    abs       : Abstract(AABB)
+    children  : Split(8)
+  } ->
+  item_abs    : Abstract(AABB)
+}
+-- Using the above, we can express a travesal plan as
+
+plan( A : BVH(Edge), B : BVH(Tri) )
+  (A @ node, B @ node) {
+    where A.abs.intersects(B.abs)
+    flip = random(2)
+    if flip == 0 then expand A.children
+                 else expand B.children end
+  }
+  (A @ node, B @ leaf) {
+    where A.abs.intersects(B.abs)
+    expand A.children
+  }
+  (A @ leaf, B @ node) {
+    where A.abs.intersects(B.abs)
+    expand B.children
+  }
+  (A @ leaf, B @ leaf) {
+    where A.abs.intersects(B.abs)
+    expand A.children
+    expand B.children
+  }
+  (A @ item_abs, B @ item_abs) {
+    where A.intersects(B)
+    continue
+  }
+end
+
+That's all well and good, though we might want to be able to define simple ways to compress that, e.g.
+
+
+plan( A : BVH(Edge), B : BVH(Tri) )
+  (A @ node, B @ node) => {
+    check
+    flip = random(2)
+    if flip == 0 then expand A.children
+                 else expand B.children end
+  }
+  (A @ node, B @ leaf)         => check_and_expand(A)
+  (A @ leaf, B @ node)         => check_and_expand(B)
+  (A @ leaf, B @ leaf)         => check_and_expand_both
+  (A @ item_abs, B @ item_abs) => check_and_continue
+end
+
+
+
+We can further be interested in scheduling decisions, like whether or not a queue going into some stage is a FIFO or LIFO, what a queue threshold is to fire, whether we want to re-order things in a queue etc.  For these purposes, we have a canonical name for different queues based on the index type name labels.  This lets us refer to the stages coherently however we decide to design the scheduling language.
+
+
+
+
+
+Some other build algorithms and structures
+
+gong partition SpatialHash3d {
+  n : size
+  w : float  -- width of squares
+
+  gen( a : AABB3f )
+    let alo = floor( a.lo )
+    let ahi = ceil( a.hi )
+    for i0 = alo[0],ahi[0]+1 do
+      for i1 = alo[1],ahi[1]+1 do
+        for i2 = alo[2],ahi[2]+1 do
+          let k = hash(i0,i1,i2) % n
+          emit k
+        end
+      end
+    end
+  end
+}
+
+Then, we may want to traverse it against itself
+
+gong index HashScheme {
+  hash  : SpatialHash3d ->
+  items : List ->
+  box   : AABB3f
+}
+
+
+gong plan( A : HashScheme(Tri), B : HashScheme(Tri) )
+  (A == B @ hash) => expand(A,B)    -- because partition, linear
+  (A == B @ items) => expand(A,B)   -- because list, n^2 items generated
+  (A @ box, B @ box) => {
+    dedup(hash)
+    continue
+  }
+end
+
+
+Ok, we can deal with not necessarily fusing the hash table build into the traversal.
+
+
+Generally, we can avoid that?  Seems reasonable.
+
+We can't avoid the frame-to-frame correspondence.  We may not be able to avoid a re-fit hack.
+
+
+Well, I suppose another thing we could do is totally fuse in one of the two argument tables.  Let's not worry about that for now though?
+
+
+So, ok.  We need a way to describe all the intermediate lanaguages
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

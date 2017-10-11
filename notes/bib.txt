@@ -1,0 +1,16 @@
+
+
+Some major influencing papers:
+  Rendering Algorithms as Sorting
+      Ivan Sutherland
+  GIST
+      Joe Hellerstein
+  Thesis on Raytracing
+      Warren Hunt
+  (make sure to credit Kayvon's grant or other source)
+  NESL
+      Guy Blelloch
+  (something about using types to structure algorithms?)
+
+  Halide of course
+  GRAMPS is relevant

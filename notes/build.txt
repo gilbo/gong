@@ -1,0 +1,287 @@
+
+
+
+
+
+
+
+index BVH {
+  node : Rec {
+    abs       : Abstract(AABB)
+    children  : Split(2)
+  } ->
+  leaf : {
+    abs       : Abstract(AABB)
+    children  : Split(8)
+  } ->
+  item_abs    : Abstract(AABB)
+}
+
+
+-- We execute a top-down build on a set of objects in the following fashion
+
+build( xs : Set(X) ) : BVH(X)
+requires
+  AABB.abstract   : X -> AABB
+  X.mid           : X -> vec3
+do
+  while #xs > 8 do
+    AABB.abstract(xs) @ node.abs
+    let axis, val = PickMedian(xs)
+    xs <- Split(xs, 2,
+                (x) => {
+                  (x.mid[axis] < val)? 0 : 1
+                }) @ node.children
+  end
+
+  AABB.abstract(xs) @ leaf.abs
+  let x <- EvenSplit(xs, 8) @ leaf.children
+  AABB.abstract(x) @ item_abs
+end
+
+statistic PickMedian( xs : Set(X) ) : { int, num }
+requires
+  X.mid     : X -> vec3
+do
+  let lo, hi  = reduce( x <- xs )
+    lo min= x.mid
+    hi max= x.mid
+  end
+  let w     = hi-lo
+  let axis  = (w[0] > w[1])? ( (w[0] > w[2])? 0 : 2 )
+                           : ( (w[1] > w[2])? 1 : 2 )
+
+  let p       = sample(xs, 3)
+  let m     = { p[0].mid[axis], p[1].mid[axis], p[2].mid[axis] }
+  if m[0] > m[1] then   m[0],m[1] = m[1],m[0]   end
+  if m[1] > m[2] then   m[1],m[2] = m[2],m[1]   end
+  if m[0] > m[1] then   m[0],m[1] = m[1],m[0]   end
+  
+  return axis, m[1]
+end
+
+
+
+So, what constructs can we use while building a data structure?
+
+From the above we see
+
+<stmt>  ::=   while <cond> do <stmt> end
+                  in <stmt>
+          |   abstract(<abs>, <setvar>) @ <label>
+                  in <stmt>
+          |   let <scalarvar> = <stat_func>(<setvar>, <scalarvar>*)
+                  in <stmt>
+          |   <setvar> <- Split(<setvar>, <int_const>, <split_func>) @ <label>
+                  in <stmt>
+          |   <setvar> <- Partition(<part>, <scalarvar>*) @ <label>
+                  in <stmt>
+          |   noop
+
+
+The typing relationship
+
+<stmt> : <type>
+
+                        <s1> : T1       <s2> : T2
+-------------------------------------------------------------------------
+  while <c> do <s1> end in <s2>     :   { <l> : Rec(T1) . T2 }
+
+                                  <s> : T
+-------------------------------------------------------------------------
+  abstract( <A>, <X> ) @ <l> in <s>   :   { <l> : Abstract(<A>) . T }
+
+                              <s> : T
+-------------------------------------------------------------------------
+  let <v> = Stat(<X>, ...) in <s> : T
+
+                                  <s> : T
+-------------------------------------------------------------------------
+  <X1> <- Split(<X2>, n, ...) @ <l> in <s>  :  { <l> : Split(n) . T }
+
+                                  <s> : T
+-------------------------------------------------------------------------
+  <X1> <- Partition(<P>, ...) @ <l> in <s>  :  { <l> : Partition(<P>) . T }
+
+
+
+
+
+-- Here I'm trying to use -> as a composition operator
+-- and a struct-like system of naming.
+-- Can we formalize this?
+
+T   ::= T1 -> T2
+      | l : RT
+      | l : Partition(P)
+      | l : Split(n)
+      | l : Rec { T }
+      | l : Rec { l1 : RT, l2 : T }
+
+RT  ::= { l1 : RT, l2 : T }
+      | Abstract(A)
+
+
+T1 . T2
+{ <l> : Rec { T1 } }
+{ <l> : Abstract(A) }
+{ <l> : Partition(P) }
+{ <l> : Split(n) }
+
+
+So, what are the options for data layout?
+
+Well, an abstraction is relatively obvious outside of bit-packing tricks
+
+A Split happens in a predetermined number of bins, and therefore makes sense as an array, logically.
+
+So, we're left with REC, which can be tricky, and Partition.
+
+One of the non-obvious points here is that when a Split happens, we also know that the sizes of the represented subsets are constrained relative to one another.
+
+Partitions may likewise if disjoint have this property, which is powerful.
+
+Recursion can happen in a data-parallel system by using segmented arrays in the style of NESL.
+
+It can also happen through pointer indirection, which would allow less coherent organization in memory.
+
+As the input data descends the construction process, we also need to have some kind of set data structure that supports various kinds of partitioning.  This structure may be, say an elastic list.  If we know that we're descending strictly through disjoint layers though, this list length can be perfectly predicted, and segmented.
+
+
+Ahh, let's think about this as having a SET of objects prior to a statement executing, and then after executing, we generate a residual data structure and the new organization of the set.  This notion seems to be a segmentation of some kind in the NESL model.
+
+Notation:
+  SEG1, XS1 >>  STMT  >> SEG2, XS2
+
+What is a SEG?
+What is an X?
+
+(I claim that X can be extended or transformed at various points)
+
+S, X >> abstract(A,xs) @ l >> S:A, X
+  where S:A means appending a "parallel array" to S
+
+S, X >> let y = F_STAT(xs, ...) >> S:y, X
+  where S:y means appending a "parallel array" similarly
+
+S, X >> xs <- Split(xs, n, F) @ l >> S2, X2
+  where
+    X2 is a re-arrangement of X, into smaller partitions
+    S2 is a segmentation of X2 based on the split prescribed
+
+S, X >> xs <- Partition(xs, P, ...) @ l >> S2, X2
+  where
+    X2 is an expansion of X
+    S2 is a refinement of S using the partition
+
+ COND & STMT >> 
+----------------------------------------
+S, X >> while COND do STMT end >> S2, X2
+  where
+
+So, what we do here is we need to deal with the problem that each segment
+might pass or fail the condition differently.  This creates imbalance in the data structure.
+
+
+<stmt>  ::=   while <cond> do <stmt> end
+                  in <stmt>
+          |   abstract(<abs>, <setvar>) @ <label>
+                  in <stmt>
+          |   let <scalarvar> = <stat_func>(<setvar>, <scalarvar>*)
+                  in <stmt>
+          |   <setvar> <- Split(<setvar>, <int_const>, <split_func>) @ <label>
+                  in <stmt>
+          |   <setvar> <- Partition(<part>, <scalarvar>*) @ <label>
+                  in <stmt>
+          |   noop
+
+
+Ahh, well one problem is that the segmentation view seems good but doesn't allow for progress independently on different parts of the tree in the event of something like asynchronous multi-core parallelism, or the use of work-stealing queues for that model.
+
+
+This too should ultimately look pipeline-like.  The difference is that the work packets refer to potentially large chunks of data being the set of input stuff, and that is being transformed into an index.
+
+
+
+
+
+e.g. consider this
+
+build( xs : Set(X) ) : BVH(X)
+requires
+  AABB.abstract   : X -> AABB
+  X.mid           : X -> vec3
+do
+  while #xs > 8 do
+    AABB.abstract(xs) @ node.abs
+    let axis, val = PickMedian(xs)
+    xs <- Split(xs, 2,
+                (x) => {
+                  (x.mid[axis] < val)? 0 : 1
+                }) @ node.children
+  end
+
+  AABB.abstract(xs) @ leaf.abs
+  let x <- EvenSplit(xs, 8) @ leaf.children
+  AABB.abstract(x) @ item_abs
+end
+
+
+We have
+  CHECK #xs
+  node.abs
+  PickMedian
+  node.children
+  leaf.abs
+  leaf.children
+  item_abs
+
+Those are the different compute points.
+
+As data packets get pushed forward, we can store a patch pointer with them as part of the continuation.
+
+
+This is the issue, is that each part of this process needs to read and dump to memory.  So these aren't properly just dataflow graphs, because there's an attached memory.
+
+
+
+So, look at the following:
+
+T ::=   T1 . T2
+    |   l:Abstract(A)
+    |   l:Partition(P)
+    |   l:Split(n)
+    |   l:List  -- optionally set a max?
+    |   l:Rec(T)
+
+We need to convert this to a specific memory storage system, i.e. C-types
+
+In doing this, I'll use pre-fix array notation to be consistent with pointers
+*T, [n]T, [*]T is a flexible array
+
+Here's a naive conversion:
+
+Typ< (l : Abs(A)) . T >             = { l : Typ<A>;  Typ<T> }
+Typ< (l : Part(P)) . T >            = [l:n] Typ<T>
+  where n = Size(P)
+Typ< (l : Split(n)) . T >           = [l:n] Typ<T>
+Typ< (l : Rec(T1)) . T2 >           = ( let RT = { case_bit : bit;
+                                                   idx      : uint }
+                                        in { Loops  : [*]Typ<T1 . RT>
+                                             Bases  : [*]Typ<T2> } )
+Typ< PTR(T) >                       = 
+
+
+TYPE< Typs, IdxType >
+TYP< E, T > = set of E
+
+
+
+
+
+
+
+
+
+
+

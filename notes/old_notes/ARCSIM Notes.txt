@@ -1,0 +1,85 @@
+MESH STRUCTURE IN ARCSIM
+
+
+VERT
+  node : NODE
+  adjf : LIST[ FACE ]
+  index : int -- position in mesh.verts
+
+NODE
+  uuid : int  -- what is this?
+  mesh : MESH POINTER
+  label : int
+  verts : LIST[ VERT ]
+  index : int -- position in mesh.nodes
+  adje : LIST[ EDGE ] -- adjacent edges
+
+EDGE
+  n     : NODE[2]
+  adjf  : FACE[2] -- adjacent faces
+  index : int -- position in mesh.edges
+
+FACE
+  v     : VERT[3]
+  adje  : EDGE[3] -- adjacent edges
+  index : int
+
+
+
+Vertices are in material space
+Nodes are in world space?
+
+There's a one node to many vertex relationship between them
+
+However, the edges keep track of the nodes
+
+
+
+Note that this complication means that we have to write a slightly different remeshing operation...
+
+Found seemingly unnecessary check for repeated edges between two nodes
+
+Collapse Edge( edge )
+  node0, node1 = edge.n
+  DELETE node0
+  DELETE edge
+  for edge1 in node0.adje
+    DELETE edge1
+    node2 = edge1->n -- not node 0
+    if node2 != node1 AND there are no more edges between node2 and node1
+      -- why is the no more edges check there?
+      NEW edge(node1, node2, copy_data_from_edge1)
+  get pair of vertices for each side of the edge
+    vert0, vert1 = vertices for this side
+    SKIP this side if vert0 does not exist (huh?) or
+         this is the second side and vert0 == vert0_for_the_first_side
+    DELETE vert0
+    for face in vert0.adjf
+      DELETE face
+      if vert1 is not in face
+        NEW Face with the verts, using vert1 in place of vert0
+
+This operation works by hiding various bits of references behind new/remove calls.  That is, some of this topology is considered to be dependently derived from the other topology.
+
+
+Everybody who implements remeshing ends up putting together a transactional log of sorts, that lets them abort the operation
+
+
+OHHHH, this is probably because fracture.
+
+Because of fracture, the data model had to change, and then the remeshing operations had to change.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

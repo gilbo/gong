@@ -1,0 +1,23 @@
+
+
+Note: Hybrid algorithm is what the eventually go with
+Using a non-SAH construction at the top level and then
+SAH-based BVH at the lower levels of the tree
+
+
+LBVH:
+  Sort everything according to Morton-Code (Z-shaped space filling curve)
+  Ok, actual algorithm is...
+    parallel sort based on Morton codes
+    from each (tri,tri[i+1]), compute list of splits {(tri,level)}
+    and concatenate those lists
+    parallel sort based on level
+    Now, if grouped by level, this list specifies the intervals each level should be divided into; this is processed to generate the tree pointers
+    Singleton chains are rolled up.
+    Also compute correct bounding boxes
+    (Sorts are radix sorts)
+
+Can we do this LBVH algorithm more compactly?  What might we need in terms of operators?
+
+
+

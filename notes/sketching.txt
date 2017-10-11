@@ -1,0 +1,833 @@
+
+
+
+All joins are basically just this at a logical level.
+
+join
+  x : table1
+  y : table2
+where
+  is_isct(x,y)
+do
+  RESPONSE(x,y)
+
+
+
+
+
+
+
+Now, the way we execute this has to do with how we accelerate it using indices.  Largely the question is how to build an index on one or the other table individually.  That's clearly not sufficient, but ok, let's see what we got there...
+
+
+The idea I had sitting around was: what is a type system of structures that decompose sets of objects on some basis or another?
+
+These types are associated with functions that 
+
+
+if
+  SplitFunc :: X --> [N]
+then,
+  SPLIT[SplitFunc] is an IndexType
+it represents
+  a tree node that stands for a disjoint partition of elements
+
+if
+  RenderFunc :: X --> Mask
+  where
+    Mask(N) = Range(lo, hi)   -- potentially multi-dimensional
+            | bitmask(N)      -- a bit-mask with N bits in it
+then,
+  BINS[RenderFunc] is an IndexType
+it represents
+  a tree node that filters elements jointly into a number of bins
+  with the possibility that an object ends up in more than one bin
+
+So we have
+  SPLIT and
+  BINS
+
+We also have abstraction, ....
+
+if
+  Abs :: X --> A
+then,
+  ABSTRACT[Abs] is an IndexType
+it represents
+  a proxy for objects of type X that makes it easier to compute on them.
+
+
+
+We can also define these as objects of a sorts...
+
+ABSTRACTION
+  data
+Methods
+  Abstract(X) :: X --> data   (allows abstraction for each X)
+  IsctWith(B) :: A,B --> Bool (intersection test...
+                               relative to some base predicate?)
+  -- also want the concept of summarizing stuff below of same abstraction...
+  Summarize   :: {A} --> A
+    -- summarization must use deterministic statistics?
+(is that it?  I think so...)
+
+
+PARTITION(N)
+  parameters
+Methods
+  Split(X) :: X --> [N]
+  Bin(X)   :: X --> Mask(N)
+  -- no particular summary...
+
+Given underlying intersection predicates we want certain relationships to hold such that this is a valid indexing scheme...
+
+
+We need to handle choice that is monolithic for the entire set
+We need to handle recursion with a bottoming out
+
+
+
+Ahh, we need the concept of a Statistic of a set
+
+What are some obvious statistics?
+
+  Size          -- number of elements in the set
+  Sum, Prod,
+  Min, Max,
+  ArgMax        -- these are all comm-assoc operators.
+                -- we can reasonably efficiently compute them for a
+                -- set of objects
+
+  But the other question we might have is what statistics can we compute
+  That aren't just those
+
+  e.g. Median
+
+  We might want to compute a lot of such statistics based on SAMPLING.
+  So such statistics might also be unstable to recomputation.
+
+  Regardless, statistics as a concept can give us a way to say
+  "How do we compute important parameters while constraining
+   the way in which those parameters are computed?"
+
+
+
+
+
+
+
+Can we view these different basic building blocks as essentially higher order functions on sets, or is that insufficient?
+
+
+
+
+Main building blocks I speced out
+
+Split           -- corresponding to arrays
+Bin             -- corresponding to other arrays
+Abstract        -- how to insert summative proxies to cull with
+Recurse         -- you know this
+-- corresponding to ADT  X | Y  variants
+Set-Choice      -- the entire set is one or the other
+-- corresponding to ADT  (X , Y)  heterogeneous records
+Elem-Choice     -- each item is one or the other
+
+
+
+Recurse effectively must always have a set-choice that is the bottoming out case.
+
+
+
+What is a sweep algorithm then?
+
+Another question: which sorts can we implement using these algorithms?
+
+Maybe only partition-based sorts...
+
+
+
+
+
+Ok, so sorting is a special operation that could be accelerated in special ways.  That doesn't bode well for the ideas here, but oh well.
+
+
+We could conceivably reason about sorted sets, but I'd rather not if at all possible.  It might be important for a merge/sweep operation, but that's about it.
+
+
+
+Ok, so we can consider ways to build these index structures.
+
+We can define clear functional semantics in terms of sets.  Then we can specify certain correctness criteria independent of whether these criteria are checked.
+
+
+
+
+
+
+
+Main building blocks I speced out
+
+Split           -- corresponding to arrays
+Bin             -- corresponding to other arrays
+Abstract        -- how to insert summative proxies to cull with
+Recurse         -- you know this
+-- corresponding to ADT  X | Y  variants
+Set-Choice      -- the entire set is one or the other
+-- corresponding to ADT  (X , Y)  heterogeneous records
+Elem-Choice     -- each item is one or the other
+
+
+
+
+
+
+How do we do a (whatever strategy with this)
+
+
+
+A standard-ish AABB BVH
+
+
+BVH   =
+  Recurse:
+    Base:   (xs) => { #xs < 16 }
+    Inductive:
+      Abstract[AABB]
+      Split(2)[
+        pivot   = MedianFinding
+        (x) => { x.midpoint < pivot }
+      ]
+  ListAll
+  Abstract[AABB]
+
+
+
+
+
+BVH_Mid = Index( LeafSize : const(int), xs : Set(X) )
+  while #xs > LeafSize do
+    Abstract(AABB, xs)
+    axis  = RandomInt(0,3)
+    pivot = FindMedian(axis, xs)
+    xs <- Split(2, fun (x) x.mid[axis] < pivot end, xs)
+  end
+  return xs
+end
+
+BVH = Index( LeafSize : const(int), xs : Set(X) )
+  subxs <- BVH_Mid(LeafSize, xs)
+  Abstract(AABB, subxs)
+  x <- subxs
+  Abstract(AABB, x)
+  return x
+end
+
+
+
+GridTree3f = Index(
+  n_bins : const(int[3]),
+  widths : const(float[3]),
+  xs : Set(X)
+)
+  w = widths
+  while #xs > 8 and max(w[0], w[1], w[2]) > CUTOFF do
+    prev = xs
+    xs <- Bin(n_bins, fun(x)
+            bb = AABB.Abstract(x)
+            for k=0,3 do
+              min_idx[k] = floor( bb.min[k] / w[k] )
+              max_idx[k] = ceil(  bb.max[k] / w[k] )
+            end
+            -- figure out bit-mask...
+          end, xs)
+    if #xs == #prev then break end
+    for k=0,3 do
+      w[k] = w[k] / n_bins[k]
+    end
+  end
+  return xs
+end
+
+
+ok, what's the data type for GridTree3f({4,4,4},{1.0,1.0,1.0})
+
+GRID = \T. mu(a). ( (a | T)[n_bins] | T )
+
+
+
+split/bin are both partitions...
+
+
+
+What about an actual spatial hash?
+
+SpatialHash = Index(
+  hash_bins : const(int),
+  widths    : const(float[3]),
+  xs : Set(X)
+)
+  w = widths
+  ys <- Bin(hash_bins, HASH(w, hash_bins, x), xs)
+  return ys
+end
+
+
+
+Suppose I have something that's been hashed.  And I want to intersect it with another thing that's been hashed (consistently, whatever that means)
+
+
+Ahh, at some point here I can simply be more explicit about the algorithm that we want to run -- i.e. state it in a very clear language.  That language may include the <- construct to draw from a set, under a monadic semantics.  It could reasonably include a while loop that makes the recursion explicit.
+
+How does this differ from loop-nests or similar? dunno.
+
+Well, we might want to maintain stacks, in keeping with recursion...
+
+Let's just try this language
+
+Ignore the possibility of while loops for the time being.
+
+At every line we have a computation context.  The context is a relation, consisting of tuples.  When we do a join, we start with an undecomposed such relation
+
+{ ( xs : Set(X), ys : Set(Y) ) }
+
+As we continue, we may have multiple such pairs forming a working set.  Operations can thus be defined with respect to the semantics of the environment relation and how they transform it!
+
+{ xs : A, ys : B }  -- type of the environment for a join
+  A = Set(X)
+  B = Set(Y)
+
+Then, the line 
+
+  var s = F(...)
+
+transforms the environment
+{ xs : A, ys : B }
+into
+{ xs : A, ys : B, s : Value }
+in such a way that each tuple is simply extended with a value
+.
+
+The line
+  z <- S(...)
+where S : Set(Z)
+transforms the environment
+{ ... }
+into
+{ ..., z : Z }
+and specifically for each tuple originally in the environment,
+we now have some number more of tuples based on whether S was
+empty or however many elements it had FOR EACH TUPLE CONTEXT
+
+In this respect, we can say something about F and about S
+
+F : Env -> Value
+S : Env -> Set(Z)
+
+That is, S needs to somehow yield a set.  This can work either
+because we have some set already in the tuple; we are just expanding it.
+This can also work because we have a special function.
+NAMELY a partition function that can take a set and yield a set of sets.
+
+What about reducing a set to a value in some way?
+We can do this via reductions which are safe to apply.
+
+var s = reduce(xs)
+  x <- xs
+  s += x.val
+end
+
+
+That's one option.  How does it work?
+
+Here, we're using what I'm calling a "reduction expression"
+
+A reduction expression needs to state what is being reduced over for some reason?  I guess that defines what values from the enclosing scope are possibly accessed in here.  However, that seems unnecessary.
+
+What's actually being done here is that there's a nested scope.  Which seems vaguely crazy, since nothing much can be accomplished.  Except something can be accomplished.  We inherit the environment from immediately before the line.  The reduction expression reduces into the argument variables which will be its output type.  Consequently, all those variables are defined in the scope in a way that they are specially marked for reduction.  AHHH, because these are marked for reduction, as soon as any <- command expands the context set, only reduction operations will be allowed on these reduction variables.
+
+var x1,x2,... = reduce(x1,x2,...)
+  NORMAL_PROGRAM
+end
+
+
+Ok, that's kind of cool.
+
+
+We can do the partition thing.  That then requires appropriate ways to accomplish memory management and movement of data, which is non-trivial.
+
+
+Note in particular the following...
+
+If the only way to expand the environment relation is by drawing from a set,
+and if the set must be in the environment context, then we can start to reason through a few somewhat obvious points.
+
+One of these is that we impose a kind of "linear logic" notion on set decomposition.  Once a set is decomposed, it must be discarded from the environment.  It is now replaced by that thing gotten from decomposing it.  While a covering partition could totally fuck this up if not done carefully, we can otherwise ensure a kind of monotonicity and accompanying bound on the size of the environment context based on the size of sets initially in it.
+
+
+That seems to help considerably.  Reductions might also prohibit complex decompositions on principle.  I'm not sure.
+
+
+We also need to have a non-trivial way to manage memory when we hit partitioning operations.  In the case of disjoint splits, we can (theoretically at least) just shuffle around the objects in place without extra memory.
+
+In the case of bin splits, we might have the luxury of being able to have hash bins.  If so, then we can straightforwardly allocate space proportionate to the bins, but we can't accurately predict the number of elements in each bin, nor the total number of elements resulting from tossing objects into bins overall, because of duplication.  This is a rather shitty state of affairs, but maybe we can do something about it anyway. (DUNNO)
+
+So, on a GPU, we may need to have a dynamic memory allocator to handle this issue.
+
+
+We may also run into trouble if we have to COPY the second set into multiple branches of unpacking the first set.
+
+
+ok, so we can get BVHs with the one possibility.
+We can get hashes, grids, etc.
+
+We cannot get sorting.
+We can get a question about should we have two interacting structures that are woven together?  Simplest answer is ignore that issue.  Then we have more simply the case of just having an index on each table, each side of the join.  And what we do is we figure out how to WEAVE the decompositions of those structures together.  That yields a plan.  Then, we're basically home-free.  We just have to figure out the complicated matter of how best to EXECUTE that plan.
+
+
+Hmmm....
+
+
+
+
+Join
+  tri : Triangle
+  ray : Ray
+where
+  is_isct(tri,ray)
+do
+  
+end
+
+
+Ok, as a plan we do the following
+
+PRECOMPUTE
+(1) Vertex Transform
+(2) Clear BVH bounds
+(3) Precompute Triangle Data
+      (i) gather vertices; (ii) edge eq.s; (iii) compute AABB
+(4) Refit BVH by aggregating up the hierarchy
+
+
+Rays are organized as
+IDX(Ray) = Block({8,8}).Block({16,8}).Ray
+
+Call the top level BLOCKS
+Call the bottom level TILES
+
+
+Block:
+  tiles[8][8]
+  beam : Frustum
+
+For every block, test against BVH (explicit stack):
+  If block.beam CONTAINS bvh.aabb:
+    TileIsct( block, bvh )
+  ElseIf block.beam ISCTS bvh.aabb:
+    Expand(bvh)
+
+THERE IS a bottom out case based on having expanded the BVH enough. Interesting.
+
+(so, we're expanding the bvh until we get enough fan-out)
+
+TileIsct
+  For every (block,bvh) accumulated:
+    tile <- block.tiles
+    TileIsct2(tile, bvh)
+
+TileIsct2(tile, bvh)
+  if tile.beam CONTAINS bvh.aabb:
+    TriIsct
+
+
+
+
+
+
+So, in the entire expansion of a tree etc. we may want to use different schemes to dump the intermediate results to a buffer for e.g. moving to a GPU or other processor.  We may also want to do more breadth first or depth first ordering of the computation.
+
+The breadth vs depth ordering question is somewhat of a storage question, but also one of loop ordering.  Or is it controllable as a question of consumption ordering of an explicit stack buffer structure?
+
+
+
+
+So, can we specify this language then?
+
+
+The idea is that we should think about there being one language for construction of indices -- builds;
+AND another language that's for deconstruction of indices in the process of executing a join.  In between these two languages is a definition of a data structure representing the index.
+
+The data structure language has the following constructs, each of which has a definition in terms of standard data types.
+
+
+T   ::=   X                   -- a type variable
+      |   List(T)             -- a variable number of items (eliminate?)
+      |   T[n]                -- an array of exactly n copies of T
+      |   (S,T)               -- an annotation of scalar values
+      |   Rec(R,B,T1(R,B),T2) -- repeat T1 using R until B then T2
+
+
+The IndexTypes map onto these as...
+Abstract(AABB)        (AABB, T)
+Split(n,f)            T[n]
+Bin(n,f)              T[n]    -- dup?  (need to work that out)
+Rec(IT(x,b))          Rec(x,b, IT(x,b), T)
+
+
+Ok, this seems to make sense.  It preserves the unary nature of these type constructors that we wanted to exploit.
+
+
+
+Then, what is the datatype consumption language?
+
+Well, we use this environment relation idea to say that our function starts by deconstructing one or more objects of the above types, necessarily each representing some set of objects.
+
+Let's work out program statements with a kind of axiomatic semantics
+
+{ ... }
+  var y = F(...)
+{ ..., y -> Eval[F(...)] } -- extend each tuple
+
+{ ..., y -> V }
+  y = F(...)
+{ ..., y -> Eval[F(...)] } -- modify each tuple
+
+{ ..., xs : T[n] }
+  x <- xs
+{ ..., x : T } -- create n tuples for each orig tuple
+-- Note: consumption MUST expire the original.
+-- xs <- xs is allowable if we want to re-use the variable name.
+
+{ ..., xs : List(T) } -- similarly.
+
+-- This is for analyzing.  We use a nicer syntax in practice
+{ ..., xs : (S,T) }
+  s,x <- xs
+{ ..., s : S, x : T } -- no increase in number of tuples
+
+
+{ ..., xs : T }
+  if F(...) then abort end
+Filter( NOT Eval[F], { ..., xs : T } ) -- culling tests...
+
+
+
+Rec(T1(x)|b,T2)
+
+
+-- Linear, Complete Recursion
+{ ..., xs : Rec( T1(a)|b, T ) }
+  recurse on xs do
+{ ...,              xs : T1(a) }
+    <...>
+{ ..., OTHER_STUFF, xs : a }
+  end
+{ ..., xs : T }
+
+-- Mutual, Complete Recursion using cases
+{ ..., xs : Rec( T1(a), T ), ys : Rec( R1(b), R ) }
+  recurse on xs,ys do
+    select F(...)
+    case xs:
+{ ..., xs : T1(a), ys : R1(b) }
+      <...>
+{ ..., OTHER_STUFF, xs : a, ys : R1(b) }
+    case ys:
+{ ..., xs : T1(a), ys : R1(b) }
+      <...>
+{ ..., OTHER_STUFF, xs : T1(a), ys : b }
+  end
+{ ..., xs : T, ys : R }
+
+nah, that's terrible.  It doesn't account for Warren's latest paper worth shit.
+
+
+
+
+hmm, it would help if we used proper recursion for doing recursion?
+
+We can think of such functions as yielding an environment of all return calls
+Functions in this way can go from a single tuple to a set of tuples in general
+
+
+-- the function below can call any number of sub-routines.
+What about if we have properly a situation where the type could be A or B
+that's the tricky thing.  But it's only tricky because we failed to account for it in our basic type scheme.
+
+RecFunc F( xs : Rec(...), ... )
+  
+end
+
+
+
+-- Linear, Complete Recursion
+{ ..., xs : Rec(a,b, IT(a,b), T) }
+  complete_recurse on xs do
+{ ...,              xs : IT(a,b) }
+    <...>
+{ ..., OTHER_STUFF, xs : (a or b) }
+  end
+{ ..., xs : T }
+
+
+-- Mutual, Complete Recursion
+{ ..., xs : Rec(a,b, IT(a,b), T) }
+  complete_recurse on xs,ys do
+{ ...,              xs : IT(a,b) }
+    <...>
+{ ..., OTHER_STUFF, xs : (a or b) }
+  end
+{ ..., xs : T }
+
+(mutual complete recursion is also odd in that both things need to be completely deconstructed...)
+
+
+
+
+Ahh.  Let's take those types again.
+
+T   ::=   X                   -- a type variable
+      |   List(T)             -- a variable number of items (eliminate?)
+      |   T[n]                -- an array of exactly n copies of T
+      |   (S,T)               -- an annotation of scalar values
+      |   Rec(R,B,T1(R,B),T2) -- repeat T1 using R until B then T2
+
+
+T ::= X
+    | Set(T);S
+    | Rec(x,T(x),B) -- recursive with always possible exit to B
+
+So, what we can do is draw out a matrix and provide the possible arrows to move along.  Where-ever there is a choice, that's where we need to actually supply some non-trivial bit of information.  Choice to the degree we allow it makes this planning complicated.
+
+
+
+
+Ahh, but what about the case where we want to hash one side into the other?
+
+That is, we've forgotten too much about the meaning of partitioning
+
+
+
+
+PARTITION(N)
+  parameters
+Methods
+  Split(X) :: X --> [N]
+  Bin(X)   :: X --> Mask(N)
+  -- no particular summary...
+
+
+
+
+Ok, so what a partition provides really is a concept of N bins at a raw data structuring level.
+
+Then, this partitioning needs to be defined relative to a particular kind of abstraction or raw object
+
+
+PARTITION(N)
+  parameters
+Methods
+  role  Bin   :: X --> [N]
+  role  Mask  :: X --> Mask(N)
+where
+  role is either: both, left, or right
+  If both is defined then neither left nor right should be
+  Otherwise, left and right may each be defined at most once
+
+This must satisfy the following algebraic relationships in the context of a join:
+
+Join
+  x <- X
+  y <- Y
+where
+  P(x,y)
+do ... end
+
+P(x,y) =>
+     left Bin(x)    ==        right Bin(y)
+  or left Bin(x)    in        right Mask(y)
+  or left Mask(x) contains    right Bin(y)
+  or left Mask(x) intersects  right Mask(y)
+
+depending on which case is applicable.
+
+
+
+What does all this mean?
+
+We can have an IndexType system now.
+
+
+We have the ability to define two key types of objects
+
+gong abstraction AABBf {
+  -- data similar to a struct
+  min_p : vec3f
+  max_p : vec3f
+
+  -- coercions/abstractions from other abstractions or base tables
+  -- may be defined.
+  abstracts( t : Triangle )
+    min_p = min( t.v[0].pos, t.v[1].pos, t.v[2].pos )
+    max_p = max( t.v[0].pos, t.v[1].pos, t.v[2].pos )
+  end
+
+  intersects( a : AABBf, b : AABBf )
+    return not(a.min_p[0] > b.max_p[0] or a.min_p[1] > b.max_p[1] or
+                                          a.min_p[2] > b.max_p[2] or
+               b.min_p[0] > a.max_p[0] or b.min_p[1] > a.max_p[1] or
+                                          b.min_p[2] > a.max_p[2]
+  end
+
+  union( as : Set(AABBf) )
+    for a in as do
+      min_p   min=  a.min_p
+      max_p   max=  a.max_p
+    end
+  end
+}
+
+-- these functions may also be broken out
+gong AABBf.abstracts( e : Edge ) ... end
+gong intersects( a : AABBf, e : Edge ) ... end
+-- union may not be broken out.  It must be defined internally.
+
+
+The second object is a partition.
+Its parameters define the number of bins
+Its data will have to be defined whenever it is used
+
+gong partition SquareGrid2f(n,m) {
+  w : float  -- width of squares
+
+  mask( a : AABB2f )
+    let xlo, xhi  = clamp( floor( minp[0] ), 0, n ),
+                    clamp( floor( maxp[0] ), 0, n )
+    let ylo, yhi  = clamp( floor( minp[1] ), 0, m ),
+                    clamp( floor( maxp[1] ), 0, m )
+    return range(xlo, xhi, ylo, yhi)
+  end
+
+  bin( p : Point2f )
+    let x, y  = clamp( floor( p[0] ), 0, n ),
+                clamp( floor( p[1] ), 0, m )
+  end
+}
+
+-- The partition may be extended by functions broken out
+gong SquareGrid2f(n,m).bin( e : Edge ) ... end
+
+
+
+The Index Type system is
+
+T ::=   T1 . T2
+    |   l:Abstract(A)
+    |   l:Partition(P(n,m), w=3.0f) -- etc.
+    |   l:Split(n)
+    |   l:List  -- optionally set a max?
+    |   l:Rec(T)
+where l is a label
+
+That should be about it for the Index Type system.
+
+The next bit is to ask about traversal algorithms and build algorithms.
+
+
+Traversal algorithms more or less amount to specifying decision making plans.  These plans arise as rules specifying how to respond at a given (l1,l2) potential traversal point.
+
+e.g.
+
+BVH = node:Rec( box:Abs(AABB)
+               .fan:Split(2) )
+     .mid:Abs(AABB)
+     .leaves:List(max=16)
+     .bottom:Abs(AABB)
+
+
+
+plan(L:BVH, R:BVH)
+  node,_:     next L
+  _,node:     next R
+  box,box:    test; if flip then next L else next R end
+  fan,_:      next L
+  _,fan:      next R
+  box,mid:    test; next L
+  mid,box:    test; next R
+  mid,mid:    test; next L; next R
+  leaves,leaves:  next L; next R
+  bottom,bottom: test; next L; next R
+
+Ok, that's an odd format.  What sort of code does it generate?
+Well, we could say it generates a data-flow graph, with variable rates.  Each node in this graph is identified by one of the cases above.
+
+-- NODE NODE                        [1]
+Plan( L : node , R : node )
+  case of L
+    Rec(lbox)   =>
+      case of R
+        Rec(rbox)   =>  Plan(lbox, rbox)
+        rmid        =>  Plan(lbox, rmid)
+    lmid        =>
+      case of R
+        Rec(rbox)   =>  Plan(lmid, rbox)
+        rmid        =>  Plan(lmid, rmid)
+
+-- BOX BOX                          [2]
+Plan( L : box , R : box )
+  if L.AABB.intersects(R.AABB):
+    if flip() == 0 then:
+      for k=0,2:
+        case of L.fan[k]
+          Rec(lbox)   => Plan(lbox,R)
+          lmid        => Plan(lmid,R)
+    else:
+      for k=0,2:
+        case of R.fan[k]
+          Rec(rbox)   => Plan(L,rbox)
+          rmid        => Plan(L,rmid)
+
+-- BOX MID                          [3]
+Plan( L : box , R : mid )
+  if L.AABB.intersects(R.AABB):
+    for k=0,2:
+      case of L.fan[k]
+        Rec(lbox)   => Plan(lbox,R)
+        lmid        => Plan(lmid,R)
+
+-- MID BOX                          [4]
+Plan( L : mid , R : box )
+  if L.AABB.intersects(R.AABB):
+    for k=0,2:
+      case of R.fan[k]
+        Rec(rbox)   => Plan(L,rbox)
+        rmid        => Plan(L,rmid)
+
+-- MID MID                          [5]
+Plan( L : mid , R : mid )
+  if L.AABB.intersects(R.AABB):
+    for ll in L.leaves:
+      for rl in R.leaves:
+        Plan(ll,rl)
+
+-- BOT BOT                          [6]
+Plan( L : bottom, R : bottom )
+  if L.AABB.intersects(R.AABB):
+    EXIT(L,R)
+
+
+
+[1]   ==>   [2 | 3 | 4 | 5]
+[2] =(2?)=> [2 | 3 | 4]
+[3] =(2?)=> [3 | 5]
+[4] =(2?)=> [4 | 5]
+[5] =(16x16?)=> [6] =?=> exit
+
+
+Ok, so we then might wonder:
+-   How do we schedule this thing?
+
+Let me punt on that question, which probably influences the design of the traversal specification language a bit (in so far as the )
+
+
+

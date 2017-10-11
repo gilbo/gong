@@ -1,0 +1,80 @@
+
+
+As support, we allow for the definition of two key types of objects
+
+The first of these is an abstraction
+
+gong abstraction AABBf {
+  -- data similar to a struct
+  min_p : vec3f
+  max_p : vec3f
+
+  -- coercions/abstractions from other abstractions or base tables
+  -- may be defined.
+  abstracts( t : Triangle )
+    min_p = min( t.v[0].pos, t.v[1].pos, t.v[2].pos )
+    max_p = max( t.v[0].pos, t.v[1].pos, t.v[2].pos )
+  end
+
+  intersects( a : AABBf, b : AABBf )
+    return not(a.min_p[0] > b.max_p[0] or a.min_p[1] > b.max_p[1] or
+                                          a.min_p[2] > b.max_p[2] or
+               b.min_p[0] > a.max_p[0] or b.min_p[1] > a.max_p[1] or
+                                          b.min_p[2] > a.max_p[2]
+  end
+
+  union( as : Set(AABBf) )
+    for a in as do
+      min_p   min=  a.min_p
+      max_p   max=  a.max_p
+    end
+  end
+}
+
+-- these functions may also be broken out
+gong AABBf.abstracts( e : Edge ) ... end
+gong intersects( a : AABBf, e : Edge ) ... end
+-- union may not be broken out.  It must be defined internally.
+
+
+
+The second object is a partition.
+Its parameters define the number of bins
+Its data will have to be defined whenever it is used
+
+gong partition SquareGrid2f(n,m) {
+  w : float  -- width of squares
+
+  mask( a : AABB2f )
+    let xlo, xhi  = clamp( floor( minp[0] ), 0, n ),
+                    clamp( floor( maxp[0] ), 0, n )
+    let ylo, yhi  = clamp( floor( minp[1] ), 0, m ),
+                    clamp( floor( maxp[1] ), 0, m )
+    return range(xlo, xhi, ylo, yhi)
+  end
+
+  bin( p : Point2f )
+    let x, y  = clamp( floor( p[0] ), 0, n ),
+                clamp( floor( p[1] ), 0, m )
+  end
+}
+
+-- The partition may be extended by functions broken out
+gong SquareGrid2f(n,m).bin( e : Edge ) ... end
+
+
+
+
+
+
+TODO: Think about how and whether we can implement a spatial hash as a partition.  What other schemes might we want if any?
+
+
+
+
+
+
+
+
+
+

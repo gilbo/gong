@@ -1,0 +1,1247 @@
+
+
+==============================================================================
+DECLARATIVE LAYER
+
+gong join join_name
+  a <- A
+  b <- B
+  <scalar block>
+  where <cond>
+  ...
+  do
+    <action block>
+  end
+end
+
+
+==============================================================================
+FUNCTIONAL LAYER
+
+Index Types
+
+  T is an index type
+
+  T ::=   T1 . T2
+      |   l:Abstract(A)
+      |   l:Partition(P)
+      |   l:Split(n)
+      |   l:List  -- optionally set a max?
+      |   l:Rec(T)
+  where l is a label
+        A is an abstraction
+        P is a partition
+        n is a constant natural number
+
+  Note that a List may not occur inside a Rec or before a Part/Split
+
+  join_name:index('A', IndexType)
+
+
+Build Algorithms
+
+  gong build join_name( xs : Set(A) )
+    <build_stmt>
+  end
+
+  <build_stmt>
+  BS  ::=   BS1 ; BS2
+        |   @l
+        |   Abstract(xs, A)
+        |   xs <- Partition(xs, P(...))
+        |   xs <- Split(xs, n, split_func)
+        |   while <cond> do BS end
+        |   <var> = <scalar_func>(...)
+        |   <var> = Sample(xs, n)
+        |   <var> = <reduce_func>(xs, ...)
+        |   x <- List(xs)
+        |   return [x | xs]
+
+
+  Cool.  There's an algorithm.
+
+  join_name:build('A', BuildAlgorithm)
+
+Traversal Algorithms
+
+  gong traversal join_name( a : T(A), b : T(B), ... )
+    ( region r : Abstraction ) ?
+    <traversal_rule> *
+  end
+
+  <traversal_rule> ::=
+    (a @ label, b @ label) => { <traversal_stmt> }
+    (a == b @ label)       => { <traversal_eq_stmt> }
+
+  <traversal_stmt>
+  TS  ::=   TS1 ; TS2
+        |   check(x,y)    -- x and y should be abstractions, either
+                          -- the index operands or the region
+        |   check(r)      -- can also check the region for emptiness
+        |   expand(A)           -- A @ anything (steps forward)
+        |   partition(A by B)   -- A @ Abstract or end & B @ Partition
+        |   if <cond> then TS1 else TS2 end
+        |   <var> = <scalar_func>(...)
+        |   <var> = random(n)
+        |   <var> = is_rec(A)   -- A @ Rec(T)
+        |   <region> = intersect(A, <region>)
+
+Region Abstractions must have a universe initialization function.
+They may furthermore have a number of intersection functions with other abstractions or objects.
+And there may be a way to check whether a given abstraction data is empty
+
+abstraction A {
+  ...
+  universe() { <init> }
+  intersect(lhs : A, rhs : A) : A { ... }
+  empty(lhs : A) : bool { ... }
+}
+
+Finally, Partition objects may specify intersection as well as partitioning.
+This happens by supplying or emiting an extra region parameter in a partition's functions.
+
+
+
+==============================================================================
+IMPERATIVE LAYER
+
+
+Target Layout Language
+
+  Basically C-structs
+
+  <structural_type>
+  struct <name> { ST }
+  ST  ::=   ST1 ; ST2
+        |   l : Ref(<name>)
+        |   l : Choose(ST1, ST2)    -- forms a tagged union
+        |   l : Maybe(ST)           -- tag of whether object even exists
+        |   l : [n]ST
+        |   l : <prim_type>         -- including abstractions and params
+        |   l : Row(<table>)        -- placeholder for bottoming out
+
+  sizeof(Ref)         =   tunable
+  sizeof(ST1 ; ST2)   =   sizeof(ST1) + sizeof(ST2)   (modulo some issues)
+  sizeof(Choose(ST1, ST2))  = 1 bit + max(sizeof(ST1),sizeof(ST2))
+  sizeof(Maybe(ST))   =   1 bit + sizeof(ST)
+  sizeof()
+
+
+  Simple Lowering
+    ST( l:Abstract(A) . T )   =
+      l : A ; ST(T)
+    ST( l:Partition(P) . T )  =
+      l.data : P ; l.bins : [#P]Maybe( ST(T) )
+    ST( l:Split(n) . T )      =
+      l : [n]Maybe( ST(T) )
+    ST( l:List . T )          =
+      let nm = NewName()
+          struct nm { item : ST(T) ; next : Maybe(Ref(nm)) }
+      in
+        l : Maybe(Ref(nm))
+    ST( l:Rec(T1) . T2 )      =
+      let nmR = NewName()
+          nmB = NewName()
+          struct nmR { ST(T1) ; l : Choose(Ref(nmR), Ref(nmB)) }
+          struct nmB { ST(T2) }
+      in
+        l : Choose(Ref(nmR), Ref(nmB))
+    ST( BaseTable )           =
+      base_row : Row(BaseTable)
+
+
+  We might actually want to apply transformations...?
+
+    - Rotate the recursion?
+    - pushdown arrays
+    - ensure proper bit-packing strategies
+
+
+  The resulting structure returns a cursor object.  This object encapsulates reading and writing code.
+
+
+Target Build Language
+
+  <buildstage> ::=
+    stage : l1 -> l2
+      <buildstage_stmt>
+    end
+  |
+    stage : START -> l1
+
+  <buildstage_stmt>
+  BSS ::=   BSS1 ; BSS2
+        |   <var> = MapReduce(f, xs, ...)
+        |   Write(label, ...)
+        |   <var> = <func>(...)
+        |   <var> = Sample(xs, n)
+        |   emit( label )
+        |   for k,xs in Partition(xs, p) do BSS end
+        |   for k,xs in Split(xs, f, ...)
+        |   if <cond> then BSS1 else BSS2 end
+        |   seq x in xs do BSS end
+
+  WORK(BS) =
+    { xs : Set(Row), wc : GenType(BS), ctxt : LIVE(BS) }
+
+  STAGE(BS) -- ignoring compound BS
+
+  STAGE( BS=    Abstract(xs, A) )                 =
+    stage : BS -> BS.next
+      a         = MapReduce(A.abstract, xs)
+                  Write('Data', a)
+                  emit( BS.next )
+    end
+  STAGE( BS=    vL = Abstract(xs, A) )            =
+    stage : BS -> BS.next
+      [vL]      = MapReduce(A.abstract, xs)
+                  Write('Data', a)
+                  emit( BS.next )
+    end
+  STAGE( BS=    xs <- Partition(xs, P(v1,...)) )  =
+    stage : BS -> BS.next
+      p         = P( [v1], ... )
+                  Write('Data', p)
+      for k,xs in Partition(xs, p) do
+                  Write('ArrayBin', k)
+        if #xs == 0 then
+                  Write('None')
+        else
+                  Write('Some')
+                  emit( BS.next )
+        end
+      end
+    end
+  STAGE( BS=    xs <- Split(xs, n, split_func) )  =
+    stage : BS -> BS.next
+      for k,xs in Split(xs, split_func, [v1], ...) do
+                  Write('ArrayBin', k)
+        if #xs == 0 then
+                  Write('None')
+        else
+                  Write('Some')
+                  emit( BS.next )
+        end
+      end
+    end
+  STAGE( BS=    while <cond> do BS_body end ) =
+    stage : BS -> (BS.next | BS_body)
+      if <cond> then
+                  Write('Left')
+                  Write('Ref')
+                  emit( BS_body )
+      else
+                  Write('Left')
+                  Write('Ref')
+                  emit( BS.next )
+      end
+    end
+  STAGE( BS=    vL = func(v1,...) ) =
+    stage : BS -> BS.next
+      [vL]      = func( [v1], ... )
+                  emit( BS.next )
+    end
+  STAGE( BS=    vL = Sample(xs,n) ) =
+    stage : BS -> BS.next
+      [vL]      = Sample(xs, n)
+                  emit( BS.next )
+    end
+  STAGE( BS=    vL = red_f(xs, v1,...) ) =
+    stage : BS -> BS.next
+      [vL]      = MapReduce(red_f, [v1], ..., xs)
+                  emit( BS.next )
+    end
+  STAGE( BS=    x <- List(xs) ) =
+    stage : BS -> BS.next
+      seq x in xs do
+                  Write('Some')
+                  Write('Ref')
+                  emit( BS.next )
+                  Write('SkipSub')
+      end
+                  Write('None')
+    end
+
+
+
+
+Scheduling Language for Build Algorithms
+
+types of objects:
+  ProgramPoint
+    Queue             -- every queue is also a program point
+
+A program point consists of
+  a queue, with a hole
+  a stack of loops, with holes
+  a statement
+  ( q(.), { qL(.) }, qS )
+
+ProgramPoint:QueueHere()
+  -> transforms the program to establish a queue at the given point
+  -> RETURNS the program point, now a Queue
+  ( name, q(.), {...,qL(.)}, qS ) -->
+    if qL does not exist:
+      write   q(emit name)
+      return  queue name() qS end
+    if qL does exist:
+      gah...
+    BUT WE NEED TO break any loops that this point might occur in...
+
+Queue:Inline( arg )
+  - if arg is a queue, then inline only into that queue
+  - if arg is a program point, then try to inline into the statement part
+    of that program point
+  - if arg is missing, try to inline everywhere
+  -> replace every occurence of 'emit Queue' with the body of Queue
+      and eliminate Queue from the overall program
+  -> RETURNS nothing
+
+
+Queue:CutoffVariants( cutoff )
+  -> replaces the queue by two queues, and inlines dispatch logic into
+      every call site.
+  ( Q nm() QS end ) { QC(.), emit nm } -->
+      ( Q nm_lt_<cutoff>() QS end )
+      ( Q nm_gt_<cutoff>() QS end )
+      { QC(.), if #xs <= cutoff then emit nm_lt_<cutoff>
+                                else emit nm_gt_<cutoff> }
+  -> RETURNS the pair of split queues
+
+
+Queue:Batch{ ... }
+  -> attempt to process incoming work packets in the specified batch,
+      but may process smaller numbers of packets as necessary.
+  -> by default, batching is set to process packet-by-packet
+  - { work_packets = k }    : process work packets in exactly groups of k.
+  - { min_data = n }        : process work packets as soon as SUM #xs >= n
+  - { max_data = n }        : process work packets as soon as adding another
+                              packet would make SUM #xs > n
+  ( appears as an annotation on the queue )
+  -> RETURNS the original Queue
+
+
+Queue:Replicate{ k=#, ... }
+  -> make k copies of this queue
+  - { sharing = true }      : use the k queues to jointly process
+                              a single piece of work
+  - { stealing = true }     : the k queues can all steal from each other
+  - { policy = 'roundrobin' } : assign work round robin, (etc.)
+  -> RETURNS a list of queues
+
+  {Queue}:Replicate{ k=#, ... }
+    -> apply the above queue replication, but if two queues are both being
+       replicated, and one emits into the other, then simply create parallel
+       copies.  e.g. suppose Q1 feeds into Q2 and both are replicated x2.
+       Then we produce Q1A feeding into Q2A only and Q1B feeding into Q2B
+       only.  If instead we replicated each queue separately, Q1A would emit
+       into both Q2A and Q2B, using round-robin or whatever other policy.
+
+
+Queue:CPU(k)
+  -> place the queue onto CPU k
+  (adds an annotation to the queue)
+  -> RETURNS the queue
+
+  {Queue}:CPU(k)
+    -> places all of the queues onto CPU k
+  {Queue}:CPU({k1,k2,...})
+    -> places each queue onto the specified CPU in the list
+
+Queue:GPU(k)
+  -> similar to the above but place onto a GPU instead
+
+
+Queue:LIFO()
+  -> set work processing order to be stack-like.  Queue-like by default.
+
+Queue:Priority(k)
+  -> set a priority value for this queue that changes the order in which
+     queues are processed.
+
+Queue:Parallelize(prog)
+  prog is drawn from this language:
+    PP  ::=   ByWork.<WP>
+          |   ByData.<DP>
+    WP  ::=   Seq(k).<WP>
+          |   CPUs(k).<WP>
+          |   GPUBlock(k).<WP>
+          |   ByData.<DP>
+          |   END
+    DP  ::=   Seq(k).<DP>
+          |   CPUs(k).<DP>
+          |   GPUBlock(k).<DP>
+          |   Vectorize(k).<DP>
+          |   GPUWarp(k).<DP>
+          |   END
+  That is, prog is a sequence starting with an optional ByWork section
+  followed by a ByData section.  In each section, there is a sequence of
+  directives.  At most one directive in each section may be assigned a
+  variable token in place of k.  Other rules constrain the combination of
+  these directives.
+  -> parallelization directives are stored as annotations on a queue.
+
+
+
+
+
+
+Fusion of this stuff
+
+  <buildstage_stmt>
+  BSS ::=   BSS1 ; BSS2
+        |   <var> = MapReduce(f, xs, ...)
+        |   Write(label, ...)
+        |   <var> = <func>(...)
+        |   <var> = Sample(xs, n)
+        |   emit( label )
+        |   for k,xs in Partition(xs, p) do BSS end
+        |   for k,xs in Split(xs, f, ...)
+        |   if <cond> then BSS1 else BSS2 end
+        |   seq x in xs do BSS end
+
+
+-- all based on kernel system
+
+for k,xs in PartSplit(...) do
+  Write('ArrayBin', k)
+  if #xs == 0 then
+    Write('None')
+  else
+    Write('Some')
+    for k2,xs2 in PartSplit(xs,...) do
+      Write('ArrayBin', k2)
+      if #xs2 == 0 then
+        Write('None')
+      else
+        Write('Some')
+        ...
+      end
+    end
+  end
+end
+
+If we switch to a model of none being set by default, then we can have
+
+for k,xs in PartSplit(...) do
+  Write('ArrayBin', k)
+  if #xs > 0 then
+    Write('Some')
+    for k2,xs2 in PartSplit(xs,...) do
+      Write('ArrayBin', k2)
+      if #xs > 0 then
+        Write('Some')
+        ...
+      end
+    end
+  end
+end
+
+That doesn't really resolve well.
+
+Likewise, a lot of the kernel stuff doesn't really incorporate writing or scalar computation well...https://www.reuters.com/investigates/special-report/usa-taser-911/
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  <sel> ::= Schedule.select('label')
+
+  <sel>.QueueHere()
+    meaning is to break the remainder of this queue statement into a new
+    queue
+
+  <queue_func>
+  QF  ::=   build_stage l()  <QS>  end
+
+  <queue_stmt>
+  QS  ::=   QS1 ; QS2
+        |   @l
+        |   Abstract(xs, A)
+        |   xs <- Partition(xs, P(...))
+        |   xs <- Split(xs, n, split_func)
+        |   while <cond> do QS end            -- ultimately should be absent
+        |   <var> = <scalar_func>(...)
+        |   <var> = Sample(xs, n)
+        |   <var> = <reduce_func>(xs, ...)
+        |   x <- List(xs)
+        |   return x
+        -- extensions provided by scheduling directives
+        |   emit l
+        |   if <cond> then QS1 else QS2 end
+
+
+
+
+Can get a fusion scheme by specifying queue locations in the orginal program via interleaving points.  This doesn't quite resolve re-ordering.  Presumably fusion directives could do that by inducing an instruction shuffling.
+  queue @<name>
+
+
+Once we have selected a fusion of stages, we might also want to implement data-dependent strategies.  To do that, we need to get stage variants
+
+SizeVariants(size_cutoff)     -- split based on #xs
+
+
+Then, we also need to have a notion of parallelism, which could be parallelization attached to a queue or to a data-parallelism primitive.
+
+The simplest question for parallelization is granularity.  For that, we can talk about batching the incoming work items.  What batching policies can we have?
+
+Batch(k)              -- batch a fixed number of work queue items
+BatchMinData(min)     -- batch until SUM[#xs] >= min
+BatchMaxData(max)     -- batch k items where SUM_{k+1}[#xs] > max
+
+
+Ok, now we have an input grain to a stage specified as some number of work packets #packet, and some amount of data items #data.
+
+We can parallelize this work to be done at the data level (for some primitives) or at the work level.
+
+The following directives concern the queue-system manipulations and where computations are placed.
+
+SyncCores({p})        -- use these cores to process a single grain jointly
+StealPool({p})        -- replicate across these cores with work stealing
+RoundRobin({p})       -- replicate across these cores using round robin
+CPU(p-id)             -- place queue on cpu processor p
+GPU(p-id)             -- place queue on gpu processor p
+
+FIFO()                -- set to process in fifo order
+LIFO()                -- set to process in lifo order
+Priority(rank)        -- set queue priority
+
+Then, we also have to decide how to use SIMD, GPU or multi-core within a grain
+
+The main thing is to break down the work
+
+Seq(k)
+Vectorize(k)          -- always a constant
+GPUWarp(k)            -- must be <= 32 and constant
+GPUBlock(k)
+CPUCores(k)           -- always a constant
+
+We can ask to break down a grain by work or by data.
+ByWork()
+ByData()
+Once broken on data, it cannot be broken down by work.
+
+Once a particular handle is grabbed, the various division operations can be used.
+
+e.g.
+ByWork().CPUCores(4).Seq()
+says break down a grain by work packet.  Divide those packets evenly across the cores, and process the packets assigned to each core sequentially.
+ByWork().Seq().CPUCores(4)
+would instead divide the work packets across the cores round-robin.
+
+ByData().GPUBlock().GPUWarp(32)
+is the standard way you might map a large array across the GPU to compute on.  However many blocks are necessary get allocated.  However, we could also fix the number of blocks explicitly:
+ByData().GPUBlock(32).Seq().GPUWarp(32)
+and now we're handling each of 32 chunks each using a block running through the data sequentially.
+
+
+Finally, we need to be able to specify how the splits/partitions get handled algorithmically:
+
+CountAndCopy()      -- prefix sum on other hardware
+Sort()
+Shuffle()           -- if entirely single core processing and n=2 split
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+fusing or not is good.  That captures "compute-at"
+
+blocking seems straight-forward-ish...
+
+-- trivial blocking as processing k-at-a-time from the queue
+stage( w : WORK1[k] ) : WORK2
+  for i=0,k do
+    var w = w[i]
+    <PREV_BODY>
+  end
+end
+
+-- vectorizing (also for GPU?)
+stage( w : WORK1[k] ) : WORK2
+  var x[k]    = y[k]
+  var s[k]    = VEC(Sample)(xs[k], n)
+  var a[k]    = VEC(MapReduce)(xs[k], f, ctxt[k])
+  var wc2[k]  = VEC(Write)(wc1[k], ctxt[k])
+  for ys, i,j in VEC(Partition)(xs[k], ctxt[k]) do ... end
+  seq x[k] in xs[k] do ... end
+  if TEST then ... else ... end
+  VEC(FINAL_WRITE)(wc[k], x[k])
+end
+
+
+
+
+for_gpu tid,wid=0,n_threads do    -- wid = tid / 32
+  ...
+    restrictions?
+end
+
+for_seq i=0,n do
+  ...
+    no restrictions
+end
+
+for_proc p=0,n_proc do
+  ...
+    restrictions?
+end
+
+for_simd tid=0,n_lanes do
+  ...
+    restrictions?
+end
+
+
+
+
+What kind of transformations do we want to do to stages?
+
+Well, we want to be able to fuse stages.  That looks like function inlining.
+We want to be able to schedule stages as SIMD-wide across k work-items, maybe using SIMD; maybe not.
+We want to be able to play with work queue scheduling policies.
+
+
+Halide concepts:
+  - thread-pool/task-queue (parallel)
+  - SIMD parallelism (vectorize)
+  - temporary storage (store-at)
+  - recompute? (compute-at)
+  - blocking (split)
+
+
+
+  T ::=   T1 . T2
+      |   l:Abstract(A)
+      |   l:Partition(P)
+      |   l:Split(n)
+      |   l:List  -- optionally set a max?
+      |   l:Rec(T)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  <stmt> ::= 
+      <stmt> ; <stmt>
+      NOOP
+      <v>   = MapReduce(xs, <r_func>, ... )
+      Write(<mode>, ... )
+      emit(<stage>)
+      <v>   = <Partition>( ... )
+      <v>   = <s_func>( ... )
+      <v>   = Sample(xs, n)
+      for <v>,xs in Partition(xs, <v>) do <stmt> end
+      for <v>,xs in Split(xs, <split_func>, ... ) do <stmt> end
+      if <expr> then <stmt> else <stmt> end
+      seq x in xs do <stmt> end
+    -- additions for scheduling
+      work_seq n do <stmt> end
+
+    -- note ... stands for a list of 0 or more variables
+
+
+  Fuse transform amounts to function inlining
+    Suppose we inline
+      stageB : Y -> (Z | U)
+    into
+      stageA : X -> (Y | W)
+    Then we get
+      stageAB : X -> (Z | U | W)
+
+  In addition to fusing, we want to have ways to schedule stages.
+  Notably, we'd like to be able to schedule a stage on the GPU.
+  We'd also like to be able to batch a stage (process k at a time seq.)
+  We'd also like to be able to vectorize a stage.
+  We'd also like to be able to GPU-ify a stage in some way.
+
+
+  batch_seq(k, STAGE S1) =
+    STAGE work_seq k do S1 end
+
+  vectorize_work(k, STAGE S1) = STAGE VEC(k, S1)
+    VEC(k, NOOP) =
+      NOOP
+    VEC( k, <v>   = MapReduce(xs, <r_func>, ... ) ) =
+      <v>[k]    = VEC_MapReduce(xs[k], VEC(k, <r_func>), ... )
+    VEC( k, Write(<mode>, ... ) ) =
+      VEC_Write(<mode>, ... )
+    VEC( k, emit(<stage>) ) =
+      VEC_emit(<stage>)
+    VEC( k, <v>   = <Partition>( ... ) ) =
+      <v>[k]    = VEC(k, <Partition>)( ... )
+    VEC( k, <v>   = <s_func>( ... ) ) =
+      <v>[k]    = VEC(k, <s_func>)( ... )
+    VEC( k, <v>   = Sample(xs, n) ) =
+      <v>[k]    = VEC_Sample(xs[k], n)
+    VEC( k, for ID,xs in Partition(xs, <v>) do <stmt> end ) =
+      for ID[k],xs[k] in VEC_Partition(xs[k], P[k]) do VEC(k, S1) end
+    VEC( k, for <v>,xs in Split(xs, <split_func>, ... ) do <stmt> end ) =
+
+    VEC( k, if <expr> then <stmt> else <stmt> end ) =
+
+    VEC( k, seq x in xs do <stmt> end ) =
+
+  vectorize_data(k, STAGE S1) = STAGE VEC(k, S1)
+    VEC(k, NOOP) =
+      NOOP
+    VEC( k, <v>   = MapReduce(xs, <r_func>, ... ) ) =
+      <v>       = VEC_MapReduce(xs, VEC(k, <r_func>), ... )
+    VEC( k, Write(<mode>, ... ) ) =
+      Write(<mode>, ... )
+    VEC( k, emit(<stage>) ) =
+      emit(<stage>)
+    VEC( k, <v>   = <Partition>( ... ) ) =
+      <v>       = <Partition>( ... )
+    VEC( k, <v>   = <s_func>( ... ) ) =
+      <v>       = <s_func>( ... )
+    VEC( k, <v>   = Sample(xs, n) ) =
+      <v>       = VEC_Sample(xs, n)
+    VEC( k, for ID,xs in Partition(xs, <v>) do <stmt> end ) =
+      for ID,xs in VEC_Partition(xs[k], P[k]) do VEC(k, S1) end
+
+
+
+
+Every MapReduce falls into one of the statements
+  Abstract()
+  <red_func>()
+Every Partition/Split falls into
+  Partition()
+  Split()
+Every seq falls into 
+  List()
+Every Sample falls into
+  Sample()
+
+Therefore every data parallelism primitive can be named by a statement in the high-level build algorithm.
+
+We might want to apply parallelism within one of these primitives, as well as or instead of parallelism across stage input work.
+
+As part of this, list
+  y   = Sample(xs)
+  y   = MapReduce(xs,f,...)
+  for xs in Split(xs, ...) do ... end
+  seq x in xs do ... end
+
+Generalize the looping construct:
+
+kernel(xs)
+  par x in xs do
+    y += x.foo -- etc.
+    ...
+  Split(xs, ...)
+  par x in Split(xs) do
+    z min= x.bar
+    ...
+sub k,xs do
+  ...
+end
+
+This construct allows for fusing reductions and mapped computations into the pre- and post- loops (potentially the same?)
+
+y = MapReduce(xs, f, ...)
+==>
+kernel(xs)
+  par x in xs do
+    y RED= f(...)
+  end
+do
+  ...
+end
+
+for xs in Split(xs, ...) do ... end
+==>
+kernel(xs)
+  Split(xs, ...)
+sub k,xs do
+  ...
+end
+
+seq x in xs do
+  ...
+end
+==>
+SEQ_KERNEL(xs)
+seq x in xs do
+  ...
+end
+
+The following...
+
+kernel(xs)
+  par x in xs do <A> end
+  Split(xs, ...)
+  par x in xs do <B> end
+sub k,xs do
+  kernel(xs)
+    par x in xs do <C> end
+    Split(xs, ...)
+    ...
+  end
+end
+
+What's up with SEQ?
+
+If we have
+
+kernel(xs)
+  par x in xs do <A> end
+  Split(xs, ...)
+  par x in xs do <B> end
+sub k,xs do
+  SEQ x in xs do
+    <B>
+  end
+end
+
+Then we should be able to merge the SEQ up into the above Split(), at least on CPUs 
+
+
+
+
+can be rewritten, moving <B> into <C> or vice-versa, except if there are dependencies on variables that obstruct the motion.
+
+Such is the basic fusion question.
+
+The basic question of parallelization then is whether the Kernel is data-parallelized or whether it's work-parallelized (meaning multiple copies of the kernel are processed at the same time)
+
+
+
+
+SPLIT/PART versions
+  n     -- number of bins
+  hw    -- kind of hardware: CPU, GPU, or p-CPU
+  dup   -- Bool; true when duplication is possible
+    u   -- duplication multiplier limit when duplication is possible.
+
+strategies:
+  Count-then-copy (2-pass)
+  Prefix-sum-then-copy (2-pass)
+  Sort (front-pass) (2-pass to gen output bin data?)
+  n=2 shuffle (1-pass)
+
+
+
+
+SPLIT/PART versions
+  n     -- number of bins
+  hw    -- kind of hardware: CPU, GPU, or p-CPU
+  dup   -- Bool; true when duplication is possible
+    u   -- duplication multiplier limit when duplication is possible.
+
+strategies:
+  Count-then-copy (2-pass)
+  Prefix-sum-then-copy (2-pass)
+  Sort (front-pass) (2-pass to gen output bin data?)
+  n=2 shuffle (1-pass)
+
+
+
+
+
+
+Once we have chosen a batching policy for a stage, 
+
+
+
+
+Note that reductions are pretty trivial to deal with data-parallelism for, so the big tricky one is to deal with split/part data-parallelism.
+
+One form of data parallelism is to put it on the GPU.  To SIMD vectorize, to use p-cores, etc.
+
+That is, if we have N items, we can block/loop the computation as
+  [multicore(n_cores)] or [gpu()] or [thread-pool()]
+  [block(n)]*
+  [vectorize(n)]
+
+If nada, + block&vectorize, then
+  n=2 shuffle
+  or count-then-copy
+If multicore(p) + b&v, then
+  count individual into p copies
+
+YIKES THIS IS NOT EASY TO ARTICULATE
+
+
+
+
+
+
+
+Ok, so the target queueing model is the following:
+A program is defined by:
+  1. A number p of threads, plus p_gpu many GPU threads.
+  2. A set of queues.
+  3. A distinguished start queue.
+A queue is defined by
+  1. A work packet format.
+      - this must include a #data descriptor that defines the
+        number of data items represented by a given packet of work
+      - work packets must be of a uniform fixed size
+  2. A work processing function.
+      - this function must take one or more work packets as input.
+      - this function may call enqueue routines for other queues.
+  3. A set of references to other output queues
+      - each such queue should have a variable rate bound (e.g. 0-4, 2-2)
+      - a flag declaring this a strict data partition or not.
+        i.e. whether the output work packets satisfy #data_in = SUM #data_out
+  4. Pool Membership
+      - a pool consists of multiple queues.
+      - a queue may be a member of a stealing pool.
+      - a queue may be a member of a symmetric pool.
+      - a queue may not be a member of more than one pool.
+  5. Scheduling Parameters
+      - processor id (which proc this queue is on)
+          * queues in a pool must be on different processors
+      - LIFO or FIFO
+          * queues in a stealing pool must be FIFO
+          * queues which are output queues for queues on remote
+            processors must be FIFO
+      - priority rank
+          * each queue has a ranking specifying its priority ordering.
+  6. A "Ready"-policy
+      - some criterion for defining how to batch multiple work-packets
+        into a single grain of work.  A queue is said to be ready when
+        this criterion is satisfied.
+
+A given processor selects the next queue to process using this algorithm:
+  1. The highest priority "ready" queue.
+  2. The highest flush-modified-priority "non-empty" queue.
+  3. Try to steal from all stealable queues in flush-modified priority.
+  4. Enter the "try to quit" protocol.
+
+
+
+
+
+
+  STAGE( BS=    Abstract(xs, A) )                 =
+    stage : BS -> BS.next
+      a         = MapReduce(A.abstract, xs)
+                  Write('Data', a)
+                  emit( BS.next )
+    end
+  STAGE( BS=    vL = Abstract(xs, A) )            =
+    stage : BS -> BS.next
+      [vL]      = MapReduce(A.abstract, xs)
+                  Write('Data', a)
+                  emit( BS.next )
+    end
+  STAGE( BS=    xs <- Partition(xs, P(v1,...)) )  =
+    stage : BS -> BS.next
+      p         = P( [v1], ... )
+                  Write('Data', p)
+      for k,xs in Partition(xs, p) do
+                  Write('ArrayBin', k)
+        if #xs == 0 then
+                  Write('None')
+        else
+                  Write('Some')
+                  emit( BS.next )
+        end
+      end
+    end
+  STAGE( BS=    xs <- Split(xs, n, split_func) )  =
+    stage : BS -> BS.next
+      for k,xs in Split(xs, split_func, [v1], ...) do
+                  Write('ArrayBin', k)
+        if #xs == 0 then
+                  Write('None')
+        else
+                  Write('Some')
+                  emit( BS.next )
+        end
+      end
+    end
+  STAGE( BS=    while <cond> do BS_body end ) =
+    stage : BS -> (BS.next | BS_body)
+      if <cond> then
+                  Write('Left')
+                  Write('Ref')
+                  emit( BS_body )
+      else
+                  Write('Left')
+                  Write('Ref')
+                  emit( BS.next )
+      end
+    end
+  STAGE( BS=    vL = func(v1,...) ) =
+    stage : BS -> BS.next
+      [vL]      = func( [v1], ... )
+                  emit( BS.next )
+    end
+  STAGE( BS=    vL = Sample(xs,n) ) =
+    stage : BS -> BS.next
+      [vL]      = Sample(xs, n)
+                  emit( BS.next )
+    end
+  STAGE( BS=    vL = red_f(xs, v1,...) ) =
+    stage : BS -> BS.next
+      [vL]      = MapReduce(red_f, [v1], ..., xs)
+                  emit( BS.next )
+    end
+  STAGE( BS=    x <- List(xs) ) =
+    stage : BS -> BS.next
+      seq x in xs do
+                  Write('Some')
+                  Write('Ref')
+                  emit( BS.next )
+                  Write('SkipSub')
+      end
+                  Write('None')
+    end
+  STAGE( BS=    Abstract(x, A) ) =
+    stage : BS -> BS.next
+      a         = A.abstract(x)
+                  Write('Data', a)
+                  emit( BS.next )
+    end
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+==============================================================================
+IMPERATIVE TRAVERSAL LAYER
+
+Consider the BNF we created, alongside the index types
+
+  <traversal_rule> ::=
+    (a @ label, b @ label) => { <traversal_stmt> }
+    (a == b @ label)       => { <traversal_eq_stmt> }
+
+  <traversal_stmt>
+  TS  ::=   TS1 ; TS2
+        |   check(x,y)    -- x and y should be abstractions, either
+                          -- the index operands or the region
+        |   check(r)      -- can also check the region for emptiness
+        |   expand(A)           -- A @ anything (steps forward)
+        |   <region> = B.partition(A) -- A @ Abstract or end & B @ Partition
+        |   if <cond> then TS1 else TS2 end
+        |   <var> = <scalar_func>(...)
+        |   <var> = random(n)
+        |   <var> = is_rec(A)   -- A @ Rec(T)
+        |   if expand_rec(A) then TS1 else TS2 end
+        |   <region> = intersect(A, <region>)
+
+  T ::=   T1 . T2
+      |   l:Abstract(A)
+      |   l:Partition(P)
+      |   l:Split(n)
+      |   l:List  -- optionally set a max?
+      |   l:Rec(T)
+  where l is a label
+        A is an abstraction
+        P is a partition
+        n is a constant natural number
+
+We look at a valid correspondence between traversal statements and types
+
+
+All:
+    check(region)
+    if <cond> then ... else ... end
+    <var> = func(...)
+    <var> = random(n)
+
+a @ Abstract(A):
+    expand(a)                             => ( next(a), b )
+    <region> = intersect(a, <region>)
+  b @ Abstract(A):
+    check(a,b)
+
+a @ Parition(P):
+    expand(a)                             => ( next(a), b )
+  b @ Abstract(A):
+    <region> = a.partition(b,<region>)    => ( next(a), b )
+    a.partition(b)                        => ( next(a), b )
+  b @ ROW:
+    a.partition(b)                        => ( next(a), b )
+
+a @ Split(n):
+    expand(a)                             => ( next(a), b )
+a @ List:
+    expand(a)                             => ( next(a), b )
+a @ Rec(T1).T2:
+    if expand_rec(a) then ...             => ( next(a), b )
+                     else ... end         => ( next(a), b )
+    <var> = is_rec(a)
+
+
+SCHEDULES FOR TRAVERSAL
+
+a ProgramPoint in this context is identified by a polymorphic traversal case
+
+-- fusion data
+ProgramPoint:QueueHere()
+Queue:Inline( arg )
+
+Queue:Batch(n)
+
+Queue:Replicate{ k=#, ... }
+  can do stealing or other load-balancing
+
+Queue:CPU(k)
+  {Queue}:CPU(k)
+  {Queue}:CPU({k1,k2,...})
+
+Queue:GPU(k)
+  ...
+
+Queue:LIFO()
+Queue:Priority(k)
+
+Queue:Parallelize(prog)
+  prog is drawn from this language:
+    DP  ::=   Seq(k).<DP>
+          |   CPUs(k).<DP>
+          |   GPUBlock(k).<DP>
+          |   Vectorize(k).<DP>
+          |   GPUWarp(k).<DP>
+          |   END
+
+
+
+
+
+
+
+a deduplication scheme is all about choosing exactly one copy of a pair to pass a filter.
+Therefore, fundamentally deduplication is a filter function.
+
+Partition P
+  P.dedup : (AxB) x bin --> Bool
+
+Dedup should allow through at most one (AxB) pair
+
+We can use memo-ization as a dynamic bin-agnostic strategy.  This is what mail-boxing is, combined with an optimization that compresses storage based on iteration order and therefore being able to quickly discard the memory cache.
+
+But the other strategy we can do is to supply a choice function.  A choice function should select which unique bin to resolve a pair in
+  dedup_choice : (AxB) --> bin
+
+This is reasonably straightforward for the spatial hash function...
+
+Mailboxing should be a memoization scheme...
+
+
+
+
+
+
+
+
+
+
+
+
+
+
