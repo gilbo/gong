@@ -24,12 +24,13 @@ local PPContacts      = G.NewTable('PPContacts', {
                         })
 PPContacts:NewField('p0', Planks)
 PPContacts:NewField('p1', Planks)
-PPContacts:NewField('ptcontact', G.vec3f)
-PPContacts:NewField('norm01', G.vec3f)
-PPContacts:NewField('friction_0', G.vec3f)
-PPContacts:NewField('friction_1', G.vec3f)
+PPContacts:NewField('n_pts')
+PPContacts:NewField('ptcontact',  G.vec3f[4])
+PPContacts:NewField('norm01',     G.vec3f[4])
+PPContacts:NewField('friction_0', G.vec3f[4])
+PPContacts:NewField('friction_1', G.vec3f[4])
 --PPContacts:NewField('friction_mass', G.float)
-PPContacts:NewField('penetration_depth', G.float)
+PPContacts:NewField('penetration_depth', G.float[4])
 
 -- coefficients on norm, friction_0, friction_1
 PPContacts:NewField('l_mult', G.vec3f)
@@ -59,18 +60,20 @@ end)
 
 
 
-local gong struct obbResult {
+local gong
+struct obbResult {
   is_isct   : bool
-  n_pt      : G.int
+  n_pts     : G.int
   pt        : G.vec3f[4]
   norm      : G.vec3f[4]
   pen_depth : G.float[4]
 }
 
-local gong function NoObbResult() : obbResult
+local gong
+function NoObbResult() : obbResult
   return obbResult {
     is_isct = false
-    n_pt    = 0
+    n_pts   = 0
   }
 end
 
@@ -124,7 +127,8 @@ local edge_edge_obb = G.macro(function(
   end end
 end)
 
-local gong function obb_isct( p0 : Planks, p1 : Planks ) : obbResult
+local gong
+function obb_isct( p0 : Planks, p1 : Planks ) : obbResult
   var R0  = transpose( quat2mat(p0.rot) )
   var R1  = transpose( quat2mat(p1.rot) )
 
@@ -267,11 +271,13 @@ local gong function obb_isct( p0 : Planks, p1 : Planks ) : obbResult
     -- compute the final point as the average of these points
     var pt      = G.float(0.5) * (mA + hA*ta + mB + hB*tb)
 
-    return obbResult { is_isct = true, n_pts = 0,
-                       pt      = {pt,pt,pt,pt},
-                       norm    = {world_norm,world_norm,world_norm,world_norm},
-                       pen_depth = {depth,depth,depth,depth}
-                     }
+    var res     : obbResult
+    res.is_isct       = true
+    res.n_pts         = 1
+    res.pt[0]         = pt
+    res.norm[0]       = world_norm
+    res.pen_depth[0]  = depth
+    return res
 
   -- face-body collision
   else
@@ -364,120 +370,191 @@ local gong function obb_isct( p0 : Planks, p1 : Planks ) : obbResult
       swap(dp0,dp1)
       swap(p0,p1)
     end
+    var res : obbResult
+    res.is_isct   = true
+    res.n_pts     = n_pts
     var mass_per = mass/G.float(n_pts)
     for k=0,n_pts do
-      var e       = G.vec3f({0,0,0})
-      e[ vMinAbsAxis(norm) ] = 1
-      var f0      = vNormalize( vCross(norm, e) )
-      var f1      = vCross(norm, f0)
-      emit { p0=p0, p1=p1, ptcontact=A_pts[k],
-             norm01 = norm, friction_0 = f0, friction_1 = f1,
-             penetration_depth = depths[k] }
-        in PPContacts
+      res.pt[0]         = A_pts[k]
+      res.norm          = norm
+      res.pen_depth     = depth
+      return res
     end
   end
 end
 
-
-
-
-local gong join find plank_iscts ()
-
-
-
-
-local gong function is_isct_spheres( x : Spheres, y : Spheres ) : bool
-  var d   = y.pos - x.pos
-  var d2  = G.dot(d,d)
-  return d2 < sphere_radius * sphere_radius
+local gong
+function compute_friction(norm : G.vec3f) : G.vec3f[2]
+  var f : G.vec3f[2]
+  var e     = G.vec3f({0,0,0})
+  e[ vMinAbsAxis(norm) ] = 1
+  f[0]      = vNormalize( vCross(norm, e) )
+  f[1]      = vCross(norm, f0)
+  return f
 end
 
-local gong join find_sphere_iscts ()
-  x <- Spheres
-  y <- Spheres
-  var r = y.pos - x.pos
-  where is_isct_spheres(x,y)
-do
-  emit { s0=x, s1=y, r=r } in SSContacts
-end
+local gong
+struct obbResult {
+  is_isct   : bool
+  n_pts     : G.int
+  pt        : G.vec3f[4]
+  norm      : G.vec3f[4]
+  pen_depth : G.float[4]
+}
 
+local gong
+join find_plank_iscts ()
+  p0 <- Planks
+  p1 <- Planks
+  var res = obb_isct(p0, p1)
+  where res.is_isct
+  do
+    var f0 : G.vec3f[4]
+    var f1 : G.vec3f[4]
+    for k=0,res.n_pts do
+      var f = compute_friction(res.norm[k])
+      f0[k] = f[0]
+      f1[k] = f[1]
+    end
+    emit  { p0=p0, p1=p1,
+            n_pts       = res.n_pts,
+            ptcontact   = res.pt,
+            norm01      = res.norm,
+            friction_0  = f0,
+            friction_1  = f1,
+            penetration_depth = res.pen_depth,
+    } in PPContacts
+  end
+end
 
 
 ------------------------------------------------------------------------------
 -- Algorithmic / Functional Specfication
 
--- Grid approach
---local SHLib           = require 'spatial_hash'
+-- -------------- --
+-- REPEAT EXACTLY
+local gong abstraction AABB3f {
+  lo : G.vec3f
+  hi : G.vec3f
 
-local factor          = 2.001 -- 2 + epsilon ideally at a minimum
-local cell_w          = G.Const(G.float, factor * sphere_radius:get())
-
-local gong partition SpatialHash3f[n] {
-  n   : G.size32
-
-  init( sz : G.size32 )
-    n = sz
+  abstractall( as : G.Set(AABB3f) )
+    for a in as do
+      lo min= a.lo
+      hi max= a.hi
+    end
   end
 
-  -- argument becomes key
-  use hashing( i : int32, j : int32, k : int32 ) : uint32
-    --var Xmult = 0x3a99068f
-    --var Ymult = 0xbe93625f
-    --var Zmult = 0xe823bd4f
-    var Xmult   = [G.int32](73856093)
-    var Ymult   = [G.int32](19349663)
-    var Zmult   = [G.int32](83492791)
-    var hid     = (i*Xmult) ^ (j*Ymult) ^ (k*Zmult)
-    return hid % n
+  intersect( a : AABB3f, b : AABB3f )
+    lo = G.max(a.lo, b.lo)
+    hi = G.min(a.hi, b.hi)
   end
 
-  generate( s : Spheres )
-    var inv_w = 1.0f / cell_w
-    var sp    = inv_w * s.pos
-    var r     = { sphere_radius, sphere_radius, sphere_radius }
-    var min   = G.floor(  sp - r  )
-    var max   = G.ceil(   sp + r  )
-    for i=min[0],max[0] do
-      for j=min[1],max[1] do
-        for k=min[2],max[2] do
-          emit(i,j,k)
-    end end end
+  check( a : AABB3f )
+    return a.lo[0] < a.hi[0] and a.lo[1] < a.hi[1] and a.lo[2] < a.hi[2]
+  end
+  check( a : AABB3f, b : AABB3f )
+    return (a.hi[0] > b.lo[0] and a.lo[0] < b.hi[0])
+       and (a.hi[1] > b.lo[1] and a.lo[1] < b.hi[1])
+       and (a.hi[2] > b.lo[2] and a.lo[2] < b.hi[2])
   end
 }
+-- REPEAT EXACTLY
+-- -------------- --
 
-local n_bins          = 1e4
-
-
-local hashIndex       =  G.Index()
-                          :Partition( 'bins', SpatialHash3f )
-                          :List( 'list' )
-                          (Spheres)
-
-
-local gong build construct_hashing( xs : G.Set(Spheres) ) : hashIndex
-  xs  <- Partition(xs, SpatialHash3f(n_bins))
-  x   <- List(xs)
-  return x
+gong AABB3f.abstract( p : Planks )
+  var R   = transpose( quat2mat(p0.rot) )
+  var bd  : G.vec3f
+  for k=0,3 do  bd[k] = G.max(    G.fabs(R[k][0]),
+                           G.max( G.fabs(R[k][1]),
+                                  G.fabs(R[k][2]) )   end
+  lo = p.pos - bd
+  hi = p.pos + bd
 end
 
 
-local gong traversal self_hash_traversal( a : hashIndex, b : hashIndex )
-  ( a == b @ bins ) => { expand(a,b) } -- scan the bins
-  ( a == b @ list ) => {
-    expand(a,b)           -- cross product of bins
+local n_node          = 2
+local n_leaf          = 8
+
+-- -------------- --
+-- REPEAT EXACTLY
+local BVH_Template    =  G.Index()
+                          :Rec('node', G.Index()
+                                :Abstract('box',    AABB3f)
+                                :Split('children',  n_node)
+                          )
+                          :Abstract('leaf_box', AABB3f)
+                          :List('leaf_list',  { max=n_leaf })
+                          :Abstract('item_box', AABB3f)
+-- REPEAT EXACTLY
+-- -------------- --
+
+local PlankIndex      = BVH_Template(Planks)
+
+local gong function pMid( p : Planks ) : G.vec3f
+  return p.pos
+end
+
+
+-- -------------- --
+-- REPEAT EXACTLY
+local gong function mid_of_3( a : G.float, b : G.float, c : G.float ) : G.float
+  var lo : G.float  = 0.0f
+  var hi : G.float  = 0.0f
+  if a > b then hi = a ; lo = b
+           else hi = b ; lo = a end
+  var mid : G.float = 0.0f
+  if      c < lo then mid = lo
+  elseif  c > hi then mid = hi
+                 else mid = c  end
+  return mid
+end
+
+local function build_gen(name, set, index, midfunc)
+  local gong build build_bvh( xs : G.Set(set) ) : index
+    while #xs > n_leaf do
+      abstract(xs, AABB3f)
+      var x3    = Sample(xs, 3)
+      var axis  = random(3)
+      var mid   = mid_of_3( midfunc(x3[0])[axis],
+                            midfunc(x3[1])[axis],
+                            midfunc(x3[2])[axis] )
+      xs <- Split(xs, 2,  ( x : set ) => {
+                            return (midfunc(x)[axis] < mid)? 0 : 1
+                          })
+    end
+    abstract(xs, AABB3f)
+    x <- List(xs)
+    abstract(x, AABB3f)
+  end
+  build_bvh:setname(name)
+  return build_bvh
+end
+-- REPEAT EXACTLY
+-- -------------- --
+
+local build_PlankIndex =
+        build_gen('build_PlankIndex', Planks, PlankIndex, pMid)
+
+local gong traversal plank_bvh_traverse( a : PlankIndex, b : PlankIndex)
+  ( a @ node.box, b @ node.box) => {
+    check(a,b)
+    var flip = random(2)
+    if flip == 0 then   expand(a,a)
+                 else   expand(b,b) end
   }
+  ( a @ node.box, b @ leaf_box ) => { check(a,b); expand(a,a) }
+  ( a @ leaf_box, b @ node.box ) => { check(a,b); expand(b,b) }
+  ( a @ leaf_box, b @ leaf_box ) => { check(a,b); expand(a,b,a,b) }
+  ( a @ item_box, b @ item_box ) => { check(a,b); expand(a,b) }
 end
-
-self_hash_traversal:DedupFilterBeforeAction()
-
 
 -- set the indexing option, build & traversal schemes
 find_sphere_iscts:UseAlgorithm {
-  index_left    = hashIndex,
-  index_right   = hashIndex,
-  build_left    = construct_hashing,
-  build_right   = construct_hashing,
-  traversal     = self_hash_traversal,
+  index_left    = PlankIndex,
+  index_right   = PlankIndex,
+  build_left    = build_PlankIndex,
+  build_right   = build_PlankIndex,
+  traversal     = plank_bvh_traverse,
 }
 
 
@@ -487,12 +564,30 @@ find_sphere_iscts:UseAlgorithm {
 
 -- schedule for a single CPU
 
-local hbSchedule = construct_hashing:Schedule()
-  ebSchedule:QueueBefore('bins')   :Priority(0)
-    :CPU(0)
-  -- allow the listing to be fused in
 
-local travSchedule = self_hash_traversal:Schedule()
-  travSchedule:QueueBefore('bins , bins')   :Priority(0)
+local bvhSchedule = build_PlankIndex:Schedule()
+  bvhSchedule:QueueBefore('node.children')
+    :LIFO() -- depth first
     :CPU(0)
+  bvhSchedule:QueueBefore('leaf_list')       :Priority(2)
+    :CPU(0)
+
+
+local travSchedule = plank_bvh_traverse:Schedule()
+  travSchedule:QueueBefore('node.box , node.box')   :Priority(0)
+    :LIFO()
+    :CPU(0)
+  travSchedule:QueueBefore('node.box , leaf_box')   :Priority(2)
+    :LIFO()
+    :CPU(0)
+  travSchedule:QueueBefore('leaf_box , node.box')   :Priority(4)
+    :LIFO()
+    :CPU(0)
+  travSchedule:QueueBefore('leaf_box , leaf_box')   :Priority(6)
+    :LIFO()
+    :CPU(0)
+  travSchedule:QueueBefore('item_box , item_box')   :Priority(8)
+    :CPU(0)
+
+
 

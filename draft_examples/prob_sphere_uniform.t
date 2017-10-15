@@ -2,6 +2,8 @@ import 'gong'
 
 local G               = (gong.stdlib)
 
+-- maybe turn this into molecular dynamics?
+
 
 ------------------------------------------------------------------------------
 -- Declarative Specification absent loading data
@@ -120,7 +122,7 @@ find_sphere_iscts:UseAlgorithm {
 -- schedule for a single CPU
 
 local hbSchedule = construct_hashing:Schedule()
-  ebSchedule:QueueBefore('bins')   :Priority(0)
+  hbSchedule:QueueBefore('bins')   :Priority(0)
     :CPU(0)
   -- allow the listing to be fused in
 
