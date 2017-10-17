@@ -43,32 +43,10 @@ end
 ------------------------------------------------------------------------------
 -- Algorithmic / Functional Specfication
 
+local n_leaf          = 8
 
-local gong abstraction AABB3f {
-  lo : G.vec3f
-  hi : G.vec3f
-
-  abstractall( as : G.Set(AABB3f) )
-    for a in as do
-      lo min= a.lo
-      hi max= a.hi
-    end
-  end
-
-  intersect( a : AABB3f, b : AABB3f )
-    lo = G.max(a.lo, b.lo)
-    hi = G.min(a.hi, b.hi)
-  end
-
-  check( a : AABB3f )
-    return a.lo[0] < a.hi[0] and a.lo[1] < a.hi[1] and a.lo[2] < a.hi[2]
-  end
-  check( a : AABB3f, b : AABB3f )
-    return (a.hi[0] > b.lo[0] and a.lo[0] < b.hi[0])
-       and (a.hi[1] > b.lo[1] and a.lo[1] < b.hi[1])
-       and (a.hi[2] > b.lo[2] and a.lo[2] < b.hi[2])
-  end
-}
+local AABB3f          = BVHlib.AABB3f
+local BVH             = BVHlib.FullBVH(AABB3f, 3, n_leaf)
 
 gong AABB3f.abstract( e : Edges )
   lo = G.min(e.hd.pos, e.tl.pos)
@@ -79,20 +57,8 @@ gong AABB3f.abstract( t : Tris )
   hi = G.max( t.v[0].pos, G.max( t.v[1].pos, t.v[2].pos ))
 end
 
-local n_node          = 2
-local n_leaf          = 8
-
-local BVH_Template    =  G.Index()
-                          :Rec('node', G.Index()
-                                :Abstract('box',    AABB3f)
-                                :Split('children',  n_node)
-                          )
-                          :Abstract('leaf_box', AABB3f)
-                          :List('leaf_list',  { max=n_leaf })
-                          :Abstract('item_box', AABB3f)
-
-local EdgeIndex       = BVH_Template(Edges)
-local TriIndex        = BVH_Template(Tris)
+local EdgeIndex       = BVH.Type(Edges)
+local TriIndex        = BVH.Type(Tris)
 
 local gong function eMid( e : Edges ) : G.vec3f
   return 0.5f * (e.hd.pos + e.tl.pos)
@@ -100,6 +66,20 @@ end
 local gong function tMid( t : Tris ) : G.vec3f
   return (1.0f/3.0f) * (t.v[0].pos + t.v[1].pos + t.v[2].pos)
 end
+
+local build_PlankIndex = BVH.gen_mid_build('build_PlankIndex', {
+  index     = PlankIndex,
+  midfunc   = pMid,
+})
+
+
+
+
+
+
+
+
+
 
 local gong function mid_of_3( a : G.float, b : G.float, c : G.float ) : G.float
   var lo : G.float  = 0.0f

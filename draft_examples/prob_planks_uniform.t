@@ -1,6 +1,8 @@
-include 'gong'
+import 'gong'
 
 local G               = (gong.stdlib)
+
+local BVHlib          = require 'bvh_aabb'
 
 
 ------------------------------------------------------------------------------
@@ -394,18 +396,10 @@ function compute_friction(norm : G.vec3f) : G.vec3f[2]
 end
 
 local gong
-struct obbResult {
-  is_isct   : bool
-  n_pts     : G.int
-  pt        : G.vec3f[4]
-  norm      : G.vec3f[4]
-  pen_depth : G.float[4]
-}
-
-local gong
 join find_plank_iscts ()
   p0 <- Planks
   p1 <- Planks
+  where p0 ~= p1
   var res = obb_isct(p0, p1)
   where res.is_isct
   do
@@ -431,35 +425,11 @@ end
 ------------------------------------------------------------------------------
 -- Algorithmic / Functional Specfication
 
--- -------------- --
--- REPEAT EXACTLY
-local gong abstraction AABB3f {
-  lo : G.vec3f
-  hi : G.vec3f
 
-  abstractall( as : G.Set(AABB3f) )
-    for a in as do
-      lo min= a.lo
-      hi max= a.hi
-    end
-  end
+local n_leaf          = 8
 
-  intersect( a : AABB3f, b : AABB3f )
-    lo = G.max(a.lo, b.lo)
-    hi = G.min(a.hi, b.hi)
-  end
-
-  check( a : AABB3f )
-    return a.lo[0] < a.hi[0] and a.lo[1] < a.hi[1] and a.lo[2] < a.hi[2]
-  end
-  check( a : AABB3f, b : AABB3f )
-    return (a.hi[0] > b.lo[0] and a.lo[0] < b.hi[0])
-       and (a.hi[1] > b.lo[1] and a.lo[1] < b.hi[1])
-       and (a.hi[2] > b.lo[2] and a.lo[2] < b.hi[2])
-  end
-}
--- REPEAT EXACTLY
--- -------------- --
+local AABB3f          = BVHlib.AABB3f
+local BVH             = BVHlib.FullBVH(AABB3f, 3, n_leaf)
 
 gong AABB3f.abstract( p : Planks )
   var R   = transpose( quat2mat(p0.rot) )
@@ -471,81 +441,33 @@ gong AABB3f.abstract( p : Planks )
   hi = p.pos + bd
 end
 
-
-local n_node          = 2
-local n_leaf          = 8
-
--- -------------- --
--- REPEAT EXACTLY
-local BVH_Template    =  G.Index()
-                          :Rec('node', G.Index()
-                                :Abstract('box',    AABB3f)
-                                :Split('children',  n_node)
-                          )
-                          :Abstract('leaf_box', AABB3f)
-                          :List('leaf_list',  { max=n_leaf })
-                          :Abstract('item_box', AABB3f)
--- REPEAT EXACTLY
--- -------------- --
-
-local PlankIndex      = BVH_Template(Planks)
+local PlankIndex      = BVH.Type(Planks)
 
 local gong function pMid( p : Planks ) : G.vec3f
   return p.pos
 end
 
+local build_PlankIndex = BVH.gen_mid_build('build_PlankIndex', {
+  index     = PlankIndex,
+  midfunc   = pMid,
+})
 
--- -------------- --
--- REPEAT EXACTLY
-local gong function mid_of_3( a : G.float, b : G.float, c : G.float ) : G.float
-  var lo : G.float  = 0.0f
-  var hi : G.float  = 0.0f
-  if a > b then hi = a ; lo = b
-           else hi = b ; lo = a end
-  var mid : G.float = 0.0f
-  if      c < lo then mid = lo
-  elseif  c > hi then mid = hi
-                 else mid = c  end
-  return mid
-end
-
-local function build_gen(name, set, index, midfunc)
-  local gong build build_bvh( xs : G.Set(set) ) : index
-    while #xs > n_leaf do
-      abstract(xs, AABB3f)
-      var x3    = Sample(xs, 3)
-      var axis  = random(3)
-      var mid   = mid_of_3( midfunc(x3[0])[axis],
-                            midfunc(x3[1])[axis],
-                            midfunc(x3[2])[axis] )
-      xs <- Split(xs, 2,  ( x : set ) => {
-                            return (midfunc(x)[axis] < mid)? 0 : 1
-                          })
-    end
-    abstract(xs, AABB3f)
-    x <- List(xs)
-    abstract(x, AABB3f)
-  end
-  build_bvh:setname(name)
-  return build_bvh
-end
--- REPEAT EXACTLY
--- -------------- --
-
-local build_PlankIndex =
-        build_gen('build_PlankIndex', Planks, PlankIndex, pMid)
-
-local gong traversal plank_bvh_traverse( a : PlankIndex, b : PlankIndex)
-  ( a @ node.box, b @ node.box) => {
+local gong traversal plank_bvh_traverse( a : PlankIndex, b : PlankIndex )
+  ( a == b @ bvh_node.box) => {
+    expand(a,a,b,b) -- cross product of children
+  }
+  ( a @ bvh_node.box, b @ bvh_node.box) => {
     check(a,b)
     var flip = random(2)
     if flip == 0 then   expand(a,a)
                  else   expand(b,b) end
   }
-  ( a @ node.box, b @ leaf_box ) => { check(a,b); expand(a,a) }
-  ( a @ leaf_box, b @ node.box ) => { check(a,b); expand(b,b) }
+  ( a @ bvh_node.box, b @ leaf_box ) => { check(a,b); expand(a,a) }
+  ( a @ leaf_box, b @ bvh_node.box ) => { check(a,b); expand(b,b) }
   ( a @ leaf_box, b @ leaf_box ) => { check(a,b); expand(a,b,a,b) }
+  --( a == b @ leaf_box ) => { expand(a,b,a,b) } -- cross product
   ( a @ item_box, b @ item_box ) => { check(a,b); expand(a,b) }
+  ( a == b @ item_box ) => { expand(a,b) }
 end
 
 -- set the indexing option, build & traversal schemes
@@ -574,19 +496,19 @@ local bvhSchedule = build_PlankIndex:Schedule()
 
 
 local travSchedule = plank_bvh_traverse:Schedule()
-  travSchedule:QueueBefore('node.box , node.box')   :Priority(0)
+  travSchedule:QueueBefore('bvh_node.box , bvh_node.box')   :Priority(0)
     :LIFO()
     :CPU(0)
-  travSchedule:QueueBefore('node.box , leaf_box')   :Priority(2)
+  travSchedule:QueueBefore('bvh_node.box , leaf_box')       :Priority(2)
     :LIFO()
     :CPU(0)
-  travSchedule:QueueBefore('leaf_box , node.box')   :Priority(4)
+  travSchedule:QueueBefore('leaf_box , bvh_node.box')       :Priority(4)
     :LIFO()
     :CPU(0)
-  travSchedule:QueueBefore('leaf_box , leaf_box')   :Priority(6)
+  travSchedule:QueueBefore('leaf_box , leaf_box')           :Priority(6)
     :LIFO()
     :CPU(0)
-  travSchedule:QueueBefore('item_box , item_box')   :Priority(8)
+  travSchedule:QueueBefore('item_box , item_box')           :Priority(8)
     :CPU(0)
 
 

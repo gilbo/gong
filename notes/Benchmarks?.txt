@@ -1,0 +1,8 @@
+
+
+Systems to Compare Against:
+
+- Bullet
+- ODE
+- (maybe) FCL (from Willow Garage, re Robotics)
+
