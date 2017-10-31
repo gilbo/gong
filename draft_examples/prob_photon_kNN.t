@@ -9,8 +9,6 @@ import 'gong'
 -- with multiple hash tables to do aKNN
 
 -- Issues to be addressed:
---  Trivial index with hash: No need to put query points
--- in hash grid, but how to query hashgrid then...
 -- 
 -- kNN; Ideally would filter out all but closest k contacts
 -- Also ideally, would return distance to kth contact or return them
@@ -28,14 +26,14 @@ local QueryPoints     = G.NewTable('QueryPoints')
 QueryPoints:NewField('pos', G.vec3f)
 local max_radius      = G.Const(G.float, 4.0)
 
-local QPContacts      = G.NewTable('QPContacts', {
-                          join_policy = 'rebuild',
-                          -- i.e. destroy and rebuild the table
-                          -- every time a join emits into it.
-                        })
-QPContacts:NewField('p', Photons)
-QPContacts:NewField('q', QueryPoints)
-QPContacts:NewField('d2',  G.float)
+
+local max_neighbors = 50
+
+local gong struct Neighbor {
+  photon : Photons
+  sqDistance : G.float
+}
+QueryPoints:NewField('neighbors', G.dynbuffer(Neighbor,max_neighbors))
 
 local gong function get_distance_squared( q : QueryPoints, p : Photons ) : Bool
   var d   = q.pos - p.pos
@@ -49,7 +47,7 @@ local gong join find_photons ()
   d2 = get_distance_squared(q,p)
   where d2 < max_radius*max_radius
 do
-  emit { p=p, q=q, d2=d2 } in QPContacts
+  q.neighbors multi_argmin(sqDistance)= {photon=p,sqDistance=d2}
 end
 
 
@@ -78,12 +76,25 @@ local gong partition SpatialHash3f[n] {
     return hid % n
   end
 
-  generate( p : Photons )
+  bin( p : Photons )
     var inv_w = 1.0f / cell_w
     var cell_p    = G.round(inv_w * p.pos)
     emit(cell_p[0],cell_p[1],cell_p[2])
   end
 }
+
+gong SpatialHash3f.generate( q : QueryPoints )
+    var inv_w = 1.0f / cell_w
+    var qp    = G.round(inv_w * q.pos)
+    var r     = { max_radius, max_radius, max_radius }
+    var min   = G.floor( qp - r )
+    var max   = G.ceil( qp + r )
+    for i=min[0],max[0] do
+      for j=min[1],max[1] do
+        for k=min[2],max[2] do
+          emit(i,j,k)
+    end end end
+end
 
 local n_bins          = 1e4
 
@@ -92,11 +103,8 @@ local hashIndex       =  G.Index()
                           :Partition( 'bins', SpatialHash3f )
                           :List( 'list' )
                           (Photons)
---[[
-local trivialIndex    =  G.Index()
-                          :List( 'list' )
-                          (QueryPoints)
---]]
+
+local QueryUnindexed  =  G.Unindexed(QueryPoints)
 
 local gong build construct_hashing( xs : G.Set(Photons) ) : hashIndex
   xs  <- Partition(xs, SpatialHash3f(n_bins))
@@ -105,20 +113,18 @@ local gong build construct_hashing( xs : G.Set(Photons) ) : hashIndex
 end
 
 
-local gong traversal hash_traversal( a : hashIndex, b : hashIndex )
-  ( a @ bins, b @ list ) => { expand(a) } -- scan the bins
-  ( a @ list, b @ list ) => {
-    expand(a,b)           -- cross product of bins
-  }
+local gong traversal hash_traversal( a : hashIndex, b : QueryUnindexed )
+  ( a @ bins, b ) => { a.partition(b) } -- scan the bins
+  ( a @ list, b ) => { expand(a) }
 end
 
 
 -- set the indexing option, build & traversal schemes
 find_photon_queries:UseAlgorithm {
   index_left    = hashIndex,
-  index_right   = hashIndex, -- This is wrong, make no acceleration structure over query points
+  index_right   = QueryUnindexed,
   build_left    = construct_hashing,
-  build_right   = construct_hashing, -- This is wrong, make no acceleration structure over query points
+  build_right   = nil, 
   traversal     = hash_traversal,
 }
 
@@ -136,3 +142,5 @@ local hbSchedule = construct_hashing:Schedule()
 local travSchedule = self_hash_traversal:Schedule()
   travSchedule:QueueBefore('bins')   :Priority(0)
     :CPU(0)
+
+-- TODO: GPU schedule
