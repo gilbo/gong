@@ -45,7 +45,7 @@ local gong function is_isct_raytri( ray : Rays, tri : Tris ) : Bool
     var f = 1/a;
     var s = ray.origin - tri.v[0];
     var u = f * G.dot(edge1,h);;
-    if u < 0.0 || u > 1.0 then
+    if u < 0.0 or u > 1.0 then
         return false
     end
     var q = G.cross(s,edge1)
@@ -53,7 +53,7 @@ local gong function is_isct_raytri( ray : Rays, tri : Tris ) : Bool
     if (v < 0.0 or (u + v) > 1.0) then
         return false
     end
-    var t = f * edge2.dotProduct(q);
+    var t = f * G.dot(edge2,q);
     if (t > EPSILON and t < ray.tMax) then
         return true;
     else 
