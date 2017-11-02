@@ -67,65 +67,24 @@ local gong function tMid( t : Tris ) : G.vec3f
   return (1.0f/3.0f) * (t.v[0].pos + t.v[1].pos + t.v[2].pos)
 end
 
-local build_PlankIndex = BVH.gen_mid_build('build_PlankIndex', {
-  index     = PlankIndex,
-  midfunc   = pMid,
+local build_EdgeIndex = BVH.gen_mid_build('build_EdgeIndex', {
+  index     = EdgeIndex,
+  midfunc   = eMid,
+})
+local build_TriIndex  = BVH.gen_mid_build('build_TriIndex', {
+  index     = TriIndex,
+  midfunc   = tMid,
 })
 
-
-
-
-
-
-
-
-
-
-local gong function mid_of_3( a : G.float, b : G.float, c : G.float ) : G.float
-  var lo : G.float  = 0.0f
-  var hi : G.float  = 0.0f
-  if a > b then hi = a ; lo = b
-           else hi = b ; lo = a end
-  var mid : G.float = 0.0f
-  if      c < lo then mid = lo
-  elseif  c > hi then mid = hi
-                 else mid = c  end
-  return mid
-end
-
-local function build_gen(name, set, index, midfunc)
-  local gong build build_bvh( xs : G.Set(set) ) : index
-    while #xs > n_leaf do
-      abstract(xs, AABB3f)
-      var x3    = Sample(xs, 3)
-      var axis  = random(3)
-      var mid   = mid_of_3( midfunc(x3[0])[axis],
-                            midfunc(x3[1])[axis],
-                            midfunc(x3[2])[axis] )
-      xs <- Split(xs, 2,  ( x : set ) => {
-                            return (midfunc(x)[axis] < mid)? 0 : 1
-                          })
-    end
-    abstract(xs, AABB3f)
-    x <- List(xs)
-    abstract(x, AABB3f)
-  end
-  build_bvh:setname(name)
-  return build_bvh
-end
-
-local build_EdgeIndex = build_gen('build_EdgeIndex', Edges, EdgeIndex, eMid)
-local build_TriIndex  = build_gen('build_TriIndex', Tris, TriIndex, tMid)
-
 local gong traversal et_bvh_traverse( e : EdgeIndex, t : TriIndex )
-  ( e @ node.box, t @ node.box) => {
+  ( e @ bvh_node.box, t @ bvh_node.box) => {
     check(e,t)
     var flip = random(2)
     if flip == 0 then   expand(e,e)
                  else   expand(t,t) end
   }
-  ( e @ node.box, t @ leaf_box ) => { check(e,t); expand(e,e) }
-  ( e @ leaf_box, t @ node.box ) => { check(e,t); expand(t,t) }
+  ( e @ bvh_node.box, t @ leaf_box ) => { check(e,t); expand(e,e) }
+  ( e @ leaf_box, t @ bvh_node.box ) => { check(e,t); expand(t,t) }
   ( e @ leaf_box, t @ leaf_box ) => { check(e,t); expand(e,t,e,t) }
   ( e @ item_box, t @ item_box ) => { check(e,t); expand(e,t) }
 end
@@ -146,7 +105,7 @@ find_sphere_iscts:UseAlgorithm {
 -- schedule for a single CPU
 
 local ebSchedule = build_EdgeIndex:Schedule()
-  ebSchedule:QueueBefore('node.children')   :Priority(0)
+  ebSchedule:QueueBefore('bvh_node.children')   :Priority(0)
     :LIFO() -- depth first
     :CPU(0)
   ebSchedule:QueueBefore('leaf_list')       :Priority(2)
@@ -154,7 +113,7 @@ local ebSchedule = build_EdgeIndex:Schedule()
 
 
 local tbSchedule = build_TriIndex:Schedule()
-  tbSchedule:QueueBefore('node.children')
+  tbSchedule:QueueBefore('bvh_node.children')
     :LIFO() -- depth first
     :CPU(0)
   tbSchedule:QueueBefore('leaf_list')       :Priority(2)
@@ -162,13 +121,13 @@ local tbSchedule = build_TriIndex:Schedule()
 
 
 local travSchedule = et_bvh_traverse:Schedule()
-  travSchedule:QueueBefore('node.box , node.box')   :Priority(0)
+  travSchedule:QueueBefore('bvh_node.box , bvh_node.box')   :Priority(0)
     :LIFO()
     :CPU(0)
-  travSchedule:QueueBefore('node.box , leaf_box')   :Priority(2)
+  travSchedule:QueueBefore('bvh_node.box , leaf_box')   :Priority(2)
     :LIFO()
     :CPU(0)
-  travSchedule:QueueBefore('leaf_box , node.box')   :Priority(4)
+  travSchedule:QueueBefore('leaf_box , bvh_node.box')   :Priority(4)
     :LIFO()
     :CPU(0)
   travSchedule:QueueBefore('leaf_box , leaf_box')   :Priority(6)
