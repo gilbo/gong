@@ -27,12 +27,36 @@ local gong partition axisSplit3f(2) {
   axis    : G.uint8
   coord   : G.float
 
+  derived lo  : G.vec3f
+  derived hi  : G.vec3f
+
   init( a : G.uint8, c : G.float )
     self.axis   = a
     self.coord  = c
   end
 
-  -- blah
+  derive_from()
+    self.lo     = { -math.huge, -math.huge, -math.huge }
+    self.hi     = {  math.huge,  math.huge,  math.huge }
+  end
+
+  derive_from( a : AABB3f )
+    self.lo     = a.lo
+    self.hi     = a.hi
+  end
+
+  derive_from( p : axisSplit3f, id : G.uint32 )
+    var lo    = p.lo
+    var hi    = p.hi
+    if id == 0 then
+      hi[self.axis] min= self.coord
+    else
+      lo[self.axis] max= self.coord
+    end
+    self.lo = lo
+    self.hi = hi
+  end
+
   mask( bb : AABB3f ) : G.bits(2)
     var a   = G.uint(self.axis)
     var lo  = (bb.lo[a] <= self.coord)? 1 : 0
@@ -40,15 +64,11 @@ local gong partition axisSplit3f(2) {
     return 2*hi + lo
   end
 
-  clip( bin : G.uint32, bb : AABB3f ) : AABB3f
-    var lo = bb.lo
-    var hi = bb.hi
-    if bin == 0 then
-      hi[self.axis] min= self.coord
-    else
-      lo[self.axis] max= self.coord
-    end
-    return { lo = lo, hi = hi }
+  mask( p : axisSplit3f )
+    var a   = G.uint(self.axis)
+    var lo  = (p.lo[a] < self.coord)? 1 : 0
+    var hi  = (p.hi[a] > self.coord)? 1 : 0
+    return 2*hi + lo
   end
 }
 

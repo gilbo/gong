@@ -14,14 +14,6 @@ local gong abstraction AABB3f {
     end
   end
 
-  intersect( a : AABB3f, b : AABB3f )
-    lo = G.max(a.lo, b.lo)
-    hi = G.min(a.hi, b.hi)
-  end
-
-  check( a : AABB3f )
-    return a.lo[0] < a.hi[0] and a.lo[1] < a.hi[1] and a.lo[2] < a.hi[2]
-  end
   check( a : AABB3f, b : AABB3f )
     return (a.hi[0] > b.lo[0] and a.lo[0] < b.hi[0])
        and (a.hi[1] > b.lo[1] and a.lo[1] < b.hi[1])
@@ -41,24 +33,10 @@ local gong abstraction AABB2f {
     end
   end
 
-  intersect( a : AABB2f, b : AABB2f )
-    lo = G.max(a.lo, b.lo)
-    hi = G.min(a.hi, b.hi)
-  end
-
-  check( a : AABB2f )
-    return a.lo[0] < a.hi[0] and a.lo[1] < a.hi[1]
-  end
   check( a : AABB2f, b : AABB2f )
     return (a.hi[0] > b.lo[0] and a.lo[0] < b.hi[0])
        and (a.hi[1] > b.lo[1] and a.lo[1] < b.hi[1])
   end
 }
 Exports.AABB2f = AABB2f
-
-
-
-
-
-
 
