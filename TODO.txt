@@ -1,15 +1,15 @@
 
 prob_shadowing
   split into two
-    ray-tri shadow
-    psaap shadow
+    ray-tri shadow      X
+    psaap shadow        X
 
-Octree
-Grid
+Octree                  X
+Grid                    X
 
-Finish Planks
-Finish Edge_Tri isct
+Finish Planks           X
+Finish Edge_Tri isct    X
 
 
 MMara
-  Molecular Dynamics
+  Molecular Dynamics    ?X

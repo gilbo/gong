@@ -7,6 +7,7 @@ local G               = (gong.stdlib)
 -- Declarative Specification absent loading data
 
 local keyT            = G.uint32
+local EPSILON         = 1.0e-7
 
 local Verts           = G.NewTable('Verts')
 local Edges           = G.NewTable('Edges')
@@ -27,16 +28,39 @@ ETcontacts:NewField('tri',  Tris)
 ETcontacts:NewField('pos',  G.vec3f)
 
 local gong function et_is_isct( e : Edges, t : Tris ) : { Bool, G.vec3f }
-  -- math
+  var v0  = t.v[0].pos
+  var v1  = t.v[1].pos
+  var v2  = t.v[2].pos
+  var ee  = e.hd.pos - e.tl.pos
+  var eo  = e.tl.pos
+
+  var e1  = v1 - v0
+  var e2  = v2 - v0
+
+  var h   = G.cross(ee, e2)
+  var a   = G.dot(e1, h)
+  if a > -EPSILON and a < EPSILON then    return false, {0,0,0}   end
+  var f   = 1.0f/a
+  var s   = eo - v0
+  var u   = f * G.dot(s,h)
+  if u < 0.0f or u > 1.0f then            return false, {0,0,0}   end
+  var q   = G.cross(s, e1)
+  var v   = f * G.dot(ee, q)
+  if v < 0.0f or u + v > 1.0f then        return false, {0,0,0}   end
+  var t   = f * G.dot(e2, q)
+  if t <= EPSILON or t >= 1.0f - EPSILON then return false, {0,0,0} end
+  -- otherwise
+  var pos = (1.0f-t)*e.hd.pos + t*e.tl.pos
+  return true, pos
 end
 
 local gong join find_et_iscts ()
   e <- Edges
   t <- Tris
-  var pass,pos = et_is_isct
+  var pass,pos = et_is_isct(e,t)
   where pass
 do
-  emit { edge=e, tri=t, r=r } in ETcontacts
+  emit { edge=e, tri=t, pos=pos } in ETcontacts
 end
 
 

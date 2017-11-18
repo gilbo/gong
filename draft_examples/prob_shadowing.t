@@ -8,55 +8,52 @@ local G               = (gong.stdlib)
 
 local keyT            = G.uint32
 
-local ShadowRays      = G.NewTable('ShadowRays')
-local Verts           = G.NewTable('Verts')
-local Tris            = G.NewTable('Tris')
+local RayEdges        = G.NewTable('RayEdges')
+local Particles       = G.NewTable('Particles')
 
-ShadowRays:NewField('origin', G.vec3f)
---ShadowRays:NewField('light',  G.vec3f)
-Verts:NewField('pos', G.vec3f)
-Tris:NewField('v',   G.vector(Verts, 3), { keyrep = keyT })
+RayEdges:NewField('p0', Particles)
+RayEdges:NewField('p1', Particles)
+Particles:NewField('pos', G.vec3f)
+RayEdges:NewField('is_shadowed', G.bool)
 
-local lightpos        = G.Global(G.vec3f, {0,0,0})
+local particle_diameter
+                      = G.Global('particle_diameter', G.float, 1.0e-3)
+
 local EPS             = 1e-7
 
+local gong function is_occluding( re : RayEdges, p : Particles ) : G.bool
+  var pp    = p.pos
+  var p0    = re.p0.pos
+  var p1    = re.p1.pos
 
-local gong function ray_tri( ray : ShadowRays, t : Tris ) : Bool
-  var r0  = ray.origin
-  var r1  = lightpos
+  -- strategy: the three points form a triangle, with re as a base.
+  --           part of our question is about the height of that triangle
+  --           as the direction orthogonal to the base.  Consequently...
+  --    H = A / B   (where A is twice the triangle's area)
+  -- We can compute the area
+  var e     = p1-p0
+  var pe    = pp-p0
+  var A     = G.fabs(G.cross(e, pe))
+  var B     = G.magnitude(e)
+  -- is H < DIAM ?   A / B < DIAM ?   A < B * DIAM
+  if A > B * particle_diameter then return false end
 
-  var p0  = t.v[0].pos
-  var p1  = t.v[1].pos
-  var p2  = t.v[2].pos
-
-  -- Moller Trumbore transcription from Wikipedia (comments added)
-  var e1  = p1 - p0
-  var e2  = p2 - p0
-
-  var h   = G.cross(r1-r0, e2)
-  -- a  is the double-pyramid volume formed by the line segment and triangle
-  var a   = G.dot(e1, h)          -- a = [r1-r0;e2;e1]
-  -- reject any line segment parallel to the triangle
-  if a > -EPS and a < EPS then return false end
-  var f   = 1.0f / a
-  var s   = r0 - p0
-  -- u  is the coordinate on the e1 basis of the triangle
-  var u   = f * G.dot(s, h)       -- u = [r1-r0;e2;r0-p0] / a
-  if u < 0.0f or u > 1.0f then return false end
-  var q   = G.cross(s, e1)
-  -- v  is the coordinate on the e2 basis of the triangle
-  var v   = f * G.dot(r1-r0, q)   -- v = [r1-r0;r0-p0;e1] / a
-  if v < 0.0f or u + v > 1.0f then return false end
-  var t   = f * G.dot(e2, q)      -- t = [r0-p0;e1;e2] / a
-  if t > EPS and t < 1.0f-EPS then return true
-                              else return false end
+  -- the other part of our question is whether the point lies
+  -- in-between the two other points; determined now by projection
+  var scale = (B < EPS)? 1.0f/EPS : 1.0f/B
+  var t     = scale * G.dot(e,pe)
+  if t < EPS or t > 1.0f-EPS then return false else return true end
 end
+
 
 
 local gong join find_et_iscts ()
-  e <- ShadowRays
-  t <- Tris
-  where ray_tri(r,t)
+  re <- RayEdges
+  p  <- Particles
+  where re.p0 ~= p and re.p1 ~= p
+  where is_occluding(re,p)
 do
-  emit { edge=e, tri=t, r=r } in ETcontacts
+  r.is_shadowed or= true
 end
+
+
