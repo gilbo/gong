@@ -47,15 +47,127 @@ local swap = G.macro(function(a, b)
   end
 end)
 
-local clipQuad = G.Macro(function(Fa01, Fbvs, n_pts, clip_pts)
-  return quote do
+local clipQuad = G.Macro(function(clipby, in_pts, n_pts, out_pts)
+  --  INPUT  clipby   : vec2f
+  --         in_pts   : vec2f[4]
+  --  OUTPUT n_pts    : int32
+  --         out_pts  : vec2f[8]
 
+  local single_clip = G.Macro(function(
+    rPts, nRead, wPts, nWrite,
+    clip_sign, clip_i
+  )
+    local clip_test = G.Macro(function(v)
+      if clip_sign == 1 then
+        return gong `v[clip_i] <= clipby[clip_i]
+      else
+        return gong `v[clip_i] >= -clipby[clip_i]
+      end
+    end)
+    local output = G.Macro(function(pt)
+      return gong quote do  wPts[nWrite] = pt;  nWrite = nWrite+1   end
+    end)
+
+    return gong quote do
+      -- Setup for Clip Loop
+      nWrite  = 0
+      var prevPt = rPts[nRead-1]
+      var prevIn = clip_test(prevPt)
+      -- Clip Loop
+      for k=0,nRead do
+        var currPt  = rPts[k]
+        var currIn  = clip_test(currPt)
+        -- If we crossed the clip-line, then output the intersection point
+        if currIn ~= prevIn then
+          var c   = clip_sign * clipby[clip_i]
+          var d   = currPt[clip_i] - prevPt[clip_i]
+          var t   = c - prevPt[clip_i]
+          if d*d < OBB_EPSILON*OBB_EPSILON then t = 0.0f
+                                           else t = t/d end
+          var pt = (1-t)*prevPt + t*currPt
+          output(pt)
+        end
+        -- Regardless of intersection, now copy over the current point to
+        -- the output array
+        output(currPt)
+        -- Adjust for next iteration
+        G.assert(nWrite <= 8)
+        prevPt  = currPt
+        prevIn  = currIn
+      end
+    end end
+  end)
+
+  return gong quote do
+    var clip_tmp  : G.vec2f[8]
+    var nRead     = 4
+    var nWrite    = 0
+
+    single_clip(in_pts,   nRead, clip_tmp,  nWrite,  1, 0)
+    nRead = nWrite
+    single_clip(clip_tmp, nRead, out_pts,   nWrite,  1, 1)
+    nRead = nWrite
+    single_clip(out_pts,  nRead, clip_tmp,  nWrite, -1, 0)
+    nRead = nWrite
+    single_clip(clip_tmp, nRead, out_pts,   nWrite, -1, 1)
+    
+    n_pts = nWrite
   end end
 end)
 
-local cullPoints = G.Macro(function( n_pts, A_pts, depths )
-  return gong quote do
+-- reduce the number of points down to 4
+local cullPoints = G.Macro(function( n_pts, pts, depths )
+  --  INPUT  n_pts    : int
+  --  IN_OUT pts      : vec3f[8]
+  --         depths   : float[8]
 
+  -- let d[i] = normalize(pts[i] - centroid)
+  -- (See below)
+  local compute_d = G.Macro(function(d)
+    return gong quote
+      var centroid = G.vec3f({0,0,0})
+      for k=0,n_pts do
+        centroid = centroid + pts[k]
+      end
+      centroid = (1.0f/n_pts) * centroid
+
+      for k=0,n_pts do
+        var v   = pts[k] - centroid
+        var n   = G.norm(v)
+        d[k]    = (1.0f / ((n > OBB_EPSILON)? n : OBB_EPSILON)) * v
+      end
+    end
+  end)
+
+  -- Always keep point 0.
+  -- Choose the 3 remaining points which minimize
+  --  (1)   |< d[i], d[0] >|  (i.e. most orthogonal)
+  --  (2)    < d[i], d[0] >   (i.e. most opposite)
+  --  (3)   |< d[i], d[1] >|  (i.e. most opposite to most orthogonal)
+  local case_logic = G.Macro(function(d, case)
+    return gong quote do
+      var i     = 0
+      var best  = G.float(math.huge)
+      for k=case,n_pts do
+        var val : G.float
+        if      case == 1 then  val = G.fabs(G.dot(d[0],d[k]))
+        elseif  case == 2 then  val = G.dot(d[0], d[k])
+                          else  val = G.dot(d[1], d[k]) end
+        -- yah
+        if val < best then best = val; i = k end
+      end
+      swap(d[case],       d[i])
+      swap(pts[case],     pts[i])
+      swap(depths[case],  depths[i])
+    end end
+  end)
+
+  return gong quote do
+    var d   : G.vec3f[8]
+    compute_d(d)
+    case_logic(d, 1)
+    case_logic(d, 2)
+    case_logic(d, 3)
   end end
 end)
 
@@ -64,7 +176,7 @@ end)
 
 local gong
 struct obbResult {
-  is_isct   : bool
+  is_isct   : G.bool
   n_pts     : G.int
   pt        : G.vec3f[4]
   norm      : G.vec3f[4]
