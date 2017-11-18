@@ -2,9 +2,6 @@ import 'gong'
 
 local G               = (gong.stdlib)
 
--- maybe turn this into molecular dynamics?
-
-
 ------------------------------------------------------------------------------
 -- Declarative Specification absent loading data
 
