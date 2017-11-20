@@ -13,3 +13,42 @@ Finish Edge_Tri isct    X
 
 MMara
   Molecular Dynamics    ?X
+
+
+
+
+Looking at possible comparisons:
+
+cloth_self_trimesh
+  There's a squishy_ball dataset and other datasets I have code for
+  This is probably what we want to do a lot of comparisons to "state-of-the-art" collision detection with.
+
+planks
+  Compare to Bullet directly
+
+molecular dynamics
+  (CHARM++?)
+  Are there other systems implementing the same CHARM++ problem?
+
+photon_kNN
+  ...?
+
+points_in_tetgrid
+  ...?
+
+psaap_shadow
+  I don't think there's a reference code to compare against
+
+raycast_incoherent
+  Some other rendering systems?
+
+sphere_uniform
+  Compare to the yarn simulation work from Doug's group
+
+Boolean Ops?
+  (can compare to some code from a huge benchmark paper)
+
+
+
+
+
