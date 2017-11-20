@@ -50,5 +50,23 @@ Boolean Ops?
 
 
 
+Assignments of Examples:
+Gilbert
+  Planks / Bullet
+  Boolean Ops (Cork? Carve? LibIGL?)
+
+Michael
+  Charm++
+  Optix / Rendering
+
+Unassigned
+  Cloth Self-collision / UNC Gamma
+  Point in Tetgrid?
+  Sphere-Uniform
+  PSAAP Shadow
+
+
+
+
 
 
