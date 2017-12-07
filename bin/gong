@@ -1,0 +1,89 @@
+#!/usr/bin/env terra
+
+-- print the number of and specific arguments (for debugging)
+--print(#arg, unpack(arg))
+
+-- Note: both of the following argument processing blocks
+-- leave the remaining arguments around for the called script to consume
+local cmd_arg = arg[0]
+
+-- Extract options
+local options = {}
+local i = 1
+while i<=#arg do
+  if arg[i] == '--help' then
+    options.help = true
+  elseif arg[i] == '--coverage' then
+    options.coverage = true
+  else break end
+  i = i+1
+end
+arg = {select(i,unpack(arg))}
+
+-- Script filename?
+local scriptname = nil
+if #arg > 0 then
+  scriptname = arg[1]
+  arg = {select(2,unpack(arg))}
+end
+
+-- restore the command argument
+arg[0] = cmd_arg
+
+local function printhelp()
+print([[
+gong [options] source_file.t
+OPTIONS:
+  --help        print this help message
+  --coverage    run with internal code coverage analysis on
+                (for gong developers, not users)
+]])
+end
+
+if options.help then
+  printhelp()
+  os.exit(0)
+end
+
+
+-- Extract script filename to run
+if not scriptname then
+  printhelp()
+  print('Error: expected source file to run; got none')
+  os.exit(1)
+end
+
+-- get the directory of this launcher script file using a Lua trick
+local C = terralib.includecstring [[ #include <stdlib.h> ]]
+local ffi = require 'ffi'
+local script_path = debug.getinfo(1,"S").source:match("@(.*)$")
+script_path = C.realpath(script_path, nil)
+if script_path == nil then
+  error('error locating this script')
+else
+  local c_str = script_path
+  script_path = ffi.string(c_str)
+  C.free(c_str)
+end
+-- has the form 'path_to_bin_dir/gong', so...
+local bindir_path    = script_path:sub(1,-#'gong' - 1)
+local incdir_path    = bindir_path..'../include'
+-- For debug
+--print(script_path, bindir_path, incdir_path)
+
+-- Now that we have the path, we can use it to extend the Terra
+-- searchpath to find the Sew files
+package.terrapath = package.terrapath..';'..incdir_path..'/?.t'
+
+if options.coverage then
+  require 'gong.src.coverage'
+end
+
+-- and we can launch the script safely now
+local gong_script, load_err = terralib.loadfile(scriptname)
+if load_err then
+  print(load_err)
+  os.exit(1)
+else
+  gong_script() -- actually execute the script
+end
