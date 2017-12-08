@@ -1,6 +1,7 @@
 #!/usr/bin/env terra
 
 local ffi = require 'ffi'
+local PN  = require 'include.gong.tools.pathname'
 
 local SCAN_DIR      = 'include/gong/src'
 local ANALYSIS_DIR  = 'coverage_src'
@@ -15,6 +16,16 @@ local mkdircmd  = "mkdir -p "..ANALYSIS_DIR
 local covinfo   = loadfile("coverageinfo.lua")
 if not covinfo then error('Could not find file "coverageinfo.lua"') end
 covinfo         = covinfo()
+-- normalize filepaths
+local covcpy    = {}
+covcpy, covinfo = covinfo, covcpy
+for k,v in pairs(covcpy) do
+  if k:sub(1,2) == '@/' then
+    k = '@'..tostring(PN.Pathname.new(k:sub(2)):abspath():cleanpath())
+  end
+  covinfo[k] = v
+end
+
 
 -- ensure that we have somewhere to put the analyzed files
 os.execute(mkdircmd)
@@ -74,7 +85,8 @@ for line in io.popen(lscmd):lines() do
   if filename and filename:match('coverage%.t') then filename = nil end
 
   if filename then
-    local lookupname = '@./'..filename
+    filename = tostring(PN.Pathname.new(filename):abspath():cleanpath())
+    local lookupname = '@'..tostring(filename)
     local lineinfo = covinfo[lookupname]
     if lineinfo then
       genReport(filename, lineinfo)

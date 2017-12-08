@@ -15,7 +15,7 @@
 
 
 local PN = {}
-package.loaded["seam.tools.pathname"] = PN
+package.loaded["gong.tools.pathname"] = PN
 
 local ffi = require("ffi")
 
@@ -91,7 +91,7 @@ char* readdir_str(DIR *dirp) {
 
 
 ------------------------------------------------------------------------------
--- Reference Path Strings: Seam Root & Working Directory                    --
+-- Reference Path Strings: Gong Root & Working Directory                    --
 ------------------------------------------------------------------------------
 
 -- compute the current working directory...
@@ -107,24 +107,24 @@ if not WORKING_DIRECTORY_CACHED or #WORKING_DIRECTORY_CACHED == 0 then
   error('Failed to determine working directory.  Aborting system')
 end
 
--- Compute the Seam root directory
+-- Compute the Gong root directory
 -- Super Hacky!
-local SEAM_RELEASE_DIR_CACHED
+local GONG_RELEASE_DIR_CACHED
 (function()
   local info = debug.getinfo(1, "S")
   local src  = info.source
-  -- strip leading '@' and trailing 'seam/tools/pathname.t'
-  local strip = ('seam/tools/pathname.t'):len()
-  SEAM_RELEASE_DIR_CACHED   = src:sub(2,-strip-1)
-  if SEAM_RELEASE_DIR_CACHED:sub(1,1) == '.' then
-    SEAM_RELEASE_DIR_CACHED = WORKING_DIRECTORY_CACHED..
-                              (SEAM_RELEASE_DIR_CACHED:sub(2))
+  -- strip leading '@' and trailing 'gong/tools/pathname.t'
+  local strip = ('gong/tools/pathname.t'):len()
+  GONG_RELEASE_DIR_CACHED   = src:sub(2,-strip-1)
+  if GONG_RELEASE_DIR_CACHED:sub(1,1) == '.' then
+    GONG_RELEASE_DIR_CACHED = WORKING_DIRECTORY_CACHED..
+                              (GONG_RELEASE_DIR_CACHED:sub(2))
   end
 end)()
 
 -- functions providing absolute paths as strings
 PN.pwd_str = function() return WORKING_DIRECTORY_CACHED end
-PN.seam_root_str = function() return SEAM_RELEASE_DIR_CACHED end
+PN.gong_root_str = function() return GONG_RELEASE_DIR_CACHED end
 
 
 ------------------------------------------------------------------------------
@@ -280,26 +280,26 @@ Pathname.__tostring = Pathname.tostring
 -- Pathname Constants                                                       --
 ------------------------------------------------------------------------------
 
--- throw a comprehensible error if the seam_root contains
+-- throw a comprehensible error if the gong_root contains
 -- non POSIX-portable filenames along the way.  Right now,
 -- let's just error on this case.  We may be forced to support
 -- a wider class of valid pathnames later to prevent users complaining.
-if not POSIX_valid_pathname(PN.seam_root_str()) then
+if not POSIX_valid_pathname(PN.gong_root_str()) then
   error(POSIX_name_rules_text.."\n"..
-        "The current installation path for Seam is not POSIX portable.\n"..
+        "The current installation path for Gong is not POSIX portable.\n"..
         "The current installation path is... \n"..
-        PN.seam_root_str().."\n"..
+        PN.gong_root_str().."\n"..
         "\n"..
-        "Please contact the Seam developers if this is a serious problem.")
+        "Please contact the Gong developers if this is a serious problem.")
 end
 
 Pathname.root         = Pathname.new('/')
 Pathname.pwd          = Pathname.new(PN.pwd_str())
-Pathname.seam_root    = Pathname.new(PN.seam_root_str())
+Pathname.gong_root    = Pathname.new(PN.gong_root_str())
 
 function PN.root        ()  return Pathname.root        end
 function PN.pwd         ()  return Pathname.pwd         end
-function PN.seam_root   ()  return Pathname.seam_root   end
+function PN.gong_root   ()  return Pathname.gong_root   end
 PN.getwd = PN.pwd
 
 function Pathname.scriptdir()
@@ -560,5 +560,5 @@ function Pathname:mkpath()
   return true -- success
 end
 
-
+return PN
 
