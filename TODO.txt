@@ -15,8 +15,6 @@ MMara
   Molecular Dynamics    ?X
 
 
-
-
 Looking at possible comparisons:
 
 cloth_self_trimesh
@@ -31,6 +29,8 @@ molecular dynamics
   Are there other systems implementing the same CHARM++ problem?
 
 photon_kNN
+  Library (slow) implementations: FLANN, nanoflann, libnabo
+  http://research.nvidia.com/publication/toward-practical-real-time-photon-mapping-efficient-gpu-density-estimation
   ...?
 
 points_in_tetgrid
@@ -40,14 +40,13 @@ psaap_shadow
   I don't think there's a reference code to compare against
 
 raycast_incoherent
-  Some other rendering systems?
+  OptiX/Embree
 
 sphere_uniform
   Compare to the yarn simulation work from Doug's group
 
 Boolean Ops?
   (can compare to some code from a huge benchmark paper)
-
 
 
 Assignments of Examples:
@@ -60,12 +59,14 @@ Michael
   Optix / Rendering
 
 Unassigned
-  Cloth Self-collision / UNC Gamma
+  Cloth Self-collision / UNC Gamma http://gamma.cs.unc.edu/CAMA/cama.pdf (seems to tightly couple collission detection and resolution...)
   Point in Tetgrid?
   Sphere-Uniform
   PSAAP Shadow
 
 
+Potential Other Examples:
+  Volume Continuous Collision Detection (http://gamma.cs.unc.edu/volccd/paper.pdf)
 
 
 
