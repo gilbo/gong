@@ -7,7 +7,8 @@
 local Exports = {}
 package.loaded["gong.src.stdlib"] = Exports
 
---local Macro   = require 'gong.src.macro'
+local Macro   = require 'gong.src.macro'
+local Global  = require 'gong.src.global'
 local T       = require 'gong.src.types'
 
 local newlist = terralib.newlist
@@ -52,4 +53,21 @@ end
 -------------------------------------------------------------------------------
 
 -- assert?
+
+Exports.macro     = Macro.NewMacro
+Exports.is_macro  = Macro.is_macro
+Exports.is_quote  = Macro.is_quote
+
+Exports.Constant    = Global.NewConstant
+Exports.is_constant = Global.is_constant
+
+
+
+
+
+
+
+
+
+
 

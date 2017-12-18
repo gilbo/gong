@@ -55,6 +55,10 @@ local redop_token_set = {
   ['max']  = true,
 }
 
+Exports.binop_token_set     = binop_token_set
+Exports.unop_token_set      = unop_token_set
+Exports.redop_token_set     = redop_token_set
+
 local function is_func(arg) return type(arg) == 'function' end
 
 -- Definition of AST structure produced by the parser
@@ -65,11 +69,11 @@ local ADT A
   -- Top Level Forms
   Quote       = { body    : Block?,
                   expr    : Expr?,            srcinfo : SrcInfo }
-  Function    = { name    : id_str,
+  Function    = { name    : string,
                   args    : ArgDecl*,
                   rettype : LuaType?,
                   body    : Block,            srcinfo : SrcInfo }
-  Join        = { name    : id_str,
+  Join        = { name    : string,
                   args    : ArgDecl*,
                   filter  : Block,            
                   doblock : Block,            srcinfo : SrcInfo }
@@ -196,7 +200,7 @@ function lang.func_name(P)
   while P:nextif('.') do
     local nextname = P:id_str()
     nametuple:insert(nextname)
-    namestr = namestr..'_'..nextname
+    namestr = namestr..'.'..nextname
   end
   return namestr, { nametuple }
 end

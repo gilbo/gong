@@ -2,7 +2,7 @@
 -- put import 'gong' at the top of files
 
 local P           = require 'gong.src.parser'
---local Specializer = require 'gong.src.specializer'
+local Specializer = require 'gong.src.specializer'
 --local F           = require 'gong.src.functions'
 local StdLib      = require 'gong.src.stdlib'
 -- other passes and things?
@@ -12,8 +12,8 @@ local function handleStatement(self, lexer)
   local constructor = function(env_fn)
     if StdLib._UNIT_TEST_PARSER then
       return ast
---    elseif Lib._UNIT_TEST_SPECIALIZER then
---      return Specializer.specialize(ast, env_fn())
+    elseif StdLib._UNIT_TEST_SPECIALIZER then
+      return Specializer.specialize(ast, env_fn())
 --    else
 --      local decl_ast = Specializer.specialize(ast, env_fn())
 --      return F.NewFunction { decl_ast = decl_ast }
@@ -42,8 +42,8 @@ local function handleExpression(self, lexer)
   local constructor = function(env_fn)
     if StdLib._UNIT_TEST_PARSER then
       return ast
---    elseif Lib._UNIT_TEST_SPECIALIZER then
---      return Specializer.specialize(ast, env_fn())
+    elseif StdLib._UNIT_TEST_SPECIALIZER then
+      return Specializer.specialize(ast, env_fn())
 --    else
 --      local decl_ast = Specializer.specialize(ast, env_fn())
 --      return F.NewFunction { decl_ast = decl_ast }

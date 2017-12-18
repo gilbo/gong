@@ -31,13 +31,12 @@ local function NewTable(name, options)
     _name     = name,
   }, DataTable)
 end
-Exports.NewTable = NewTable
+Exports.NewTable    = NewTable
 
 local function is_table(obj)
   return getmetatable(obj) == DataTable
 end
-Exports.is_table = is_table
-
+Exports.is_table    = is_table
 
 -------------------------------------------------------------------------------
 

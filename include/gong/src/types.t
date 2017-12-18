@@ -369,6 +369,18 @@ function Type:is_pure_tensor()
   return self:is_tensor() and self:basetype():is_primitive()
 end
 
+function Type:is_tuple()
+  if not self:is_record() then return false end
+  if self._is_tuple_flag ~= nil then return self._is_tuple_flag end
+
+  local flag = true
+  for i,p in ipairs(self.fields) do
+    if p.name ~= ('_'..(i-1)) then flag = false; break end
+  end
+  self._is_tuple_flag = flag
+  return flag
+end
+
 -------------------------------------------------------------------------------
 
 function Type:is_integral()

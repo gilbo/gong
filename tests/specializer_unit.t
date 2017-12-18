@@ -2,19 +2,32 @@ import 'gong'
 local test  = require 'tests.test'
 
 local G     = gong.stdlib
-local A     = (require 'gong.src.parser').AST
+local A     = (require 'gong.src.specializer').AST
+local Util  = require 'gong.src.util'
 --local T     = require 'gong.src.types'
 
 -- flip a flag to enable unit testing
-G._UNIT_TEST_PARSER = true
+G._UNIT_TEST_SPECIALIZER = true
 
 ------------------------------------------------------------------------------
 
+local SYM_PROTO = {}
+local function SYM(nm) return setmetatable({name=nm}, SYM_PROTO) end
+local function VAR(nm) return { name = SYM(nm) } end
+
+local function DOUBLE(v) return { value = v, type = G.double } end
+local function FLOAT(v) return { value = v, type = G.float } end
+local function INT(v) return { value = v, type = G.int32 } end
+local function BOOL(v) return { value = v } end
+
 local function test_ast_match(ast, template, prefix)
   prefix = prefix or '<root>'
-  if type(template) == 'function' then
-    if type(ast) ~= 'function' then
-      error('expected a function at '..prefix) end
+  if getmetatable(template) == SYM_PROTO then
+    if not Util.is_symbol(ast) then
+      error('expected a symbol at '..prefix) end
+    if tostring(ast) ~= template.name then
+      error("expected symbol named '"..template.name.."' but got one "..
+            "named '"..tostring(ast).."'  at "..prefix) end
   elseif G.is_type(template) then
     if not G.is_type(ast) then
       error('expected a gong type at '..prefix) end
@@ -49,21 +62,16 @@ local function test_ast_match(ast, template, prefix)
   end
 end
 
-local function DOUBLE(v) return { value = v, type = G.double } end
-local function FLOAT(v) return { value = v, type = G.float } end
-local function INT(v) return { value = v, type = G.int32 } end
-local function BOOL(v) return { value = v } end
-
 ------------------------------------------------------------------------------
 
-gong function retzero(a : int32, b : int32)
+gong function retzero(a : G.int32, b : G.int32)
   return 0
 end
 test_ast_match( retzero,
 {
   name = 'retzero',
-  args = { { name = 'a', type = function()end },
-           { name = 'b', type = function()end }, },
+  args = { { name = SYM('a'), type = G.int32 },
+           { name = SYM('b'), type = G.int32 }, },
   body = { stmts = {
     { exprs = { INT(0) } },
   }}
@@ -81,26 +89,26 @@ test_ast_match( retpair,
   }}
 })
 
-local gong function domath(x : float)
+local gong function domath(x : G.float)
   var y = x * x
   return 1.0f * y + 32f * -x + 12.0f
 end
 test_ast_match( domath,
 {
   name = 'domath',
-  args = { { name = 'x', type = function()end } },
+  args = { { name = SYM('x'), type = G.float } },
   body = { stmts = {
-    { names = {'y'},
+    { names = {SYM('y')},
       type  = nil,
-      rvals = {{ op = '*', lhs = {name = 'x'}, rhs = {name = 'x'} }} },
+      rvals = {{ op = '*', lhs = VAR('x'), rhs = VAR('x') }} },
     { exprs = {{ op = '+',
                  lhs = {  op = '+',
                           lhs = { op  = '*',
                                   lhs = FLOAT(1),
-                                  rhs = {name = 'y'} },
+                                  rhs = VAR('y') },
                           rhs = { op  = '*',
                                   lhs = FLOAT(32),
-                                  rhs = { op = '-', expr = {name = 'x'} } }
+                                  rhs = { op = '-', expr = VAR('x') } }
                        },
                  rhs = FLOAT(12),
               }} },
@@ -118,12 +126,12 @@ test_ast_match( doblock,
   name = 'doblock',
   args = {},
   body = { stmts = {
-    { names = {'x'},
+    { names = {SYM('x')},
       type  = nil,
       rvals = { INT(1) } },
     { body = { stmts = {
-        { lvals = {{name = 'x'}},
-          rvals = {{ op = '+', lhs = {name = 'x'}, rhs = {name = 'x'} }} },
+        { lvals = { VAR('x') },
+          rvals = {{ op = '+', lhs = VAR('x'), rhs = VAR('x') }} },
       }} },
   }}
 })
@@ -174,20 +182,19 @@ end
 test_ast_match( annotate,
 {
   name = 'annotate',
-  args = { { name = 'x', type = function()end } },
+  args = { { name = SYM('x'), type = G.int32 } },
   body = { stmts = {
-    { names = {'y'},
-      type  = function()end,
+    { names = { SYM('y') },
+      type  = G.double,
       rvals = { DOUBLE(0) } },
-    { lvals = {{name = 'y'}},
-      rvals = {{  base = { base = {name = 'G'},
-                           args = {{value = 'double'}} },
-                  args = {{name = 'x'}},
+    { lvals = { VAR('y') },
+      rvals = {{  base = { obj = G.double },
+                  args = { VAR('x') },
               }} },
-    { names = {'z'},
-      type  = function()end,
-      rvals = {{name = 'y'}} },
-    { exprs = {{name = 'z'}} },
+    { names = { SYM('z') },
+      type  = G.double,
+      rvals = { VAR('y') } },
+    { exprs = { VAR('z') } },
   }}
 })
 
@@ -201,46 +208,47 @@ end
 test_ast_match( vecmat,
 {
   name = 'vecmat',
-  args = { { name = 'A', type = function()end } },
+  args = { { name = SYM('A'), type = G.mat2x3i } },
   body = { stmts = {
-    { names = {'x'},
+    { names = { SYM('x') },
       type  = nil,
       rvals = { {exprs = { INT(1), INT(1), INT(1) }} } },
-    { names = {'y'},
+    { names = { SYM('y') },
       type  = nil,
       rvals = { {exprs = { INT(0), INT(0) }} } },
-    { lvals = {{ base = {name = 'y'}, args = {INT(0)} }},
+    { lvals = {{ base = VAR('y'), args = {INT(0)} }},
       rvals = {{
           op  = '+',
           lhs = { op  = '+',
                   lhs = { op  = '*',
-                          lhs = { base = {name='A'}, args = {INT(0),INT(0)} },
-                          rhs = { base = {name='x'}, args = {INT(0)} } },
+                          lhs = { base = VAR('A'), args = {INT(0),INT(0)} },
+                          rhs = { base = VAR('x'), args = {INT(0)} } },
                   rhs = { op  = '*',
-                          lhs = { base = {name='A'}, args = {INT(0),INT(1)} },
-                          rhs = { base = {name='x'}, args = {INT(1)} } } },
+                          lhs = { base = VAR('A'), args = {INT(0),INT(1)} },
+                          rhs = { base = VAR('x'), args = {INT(1)} } } },
           rhs = { op  = '*',
-                  lhs = { base = {name='A'}, args = {INT(0),INT(2)} },
-                  rhs = { base = {name='x'}, args = {INT(2)} } },
+                  lhs = { base = VAR('A'), args = {INT(0),INT(2)} },
+                  rhs = { base = VAR('x'), args = {INT(2)} } },
       }} },
-    { lvals = {{ base = {name = 'y'}, args = {INT(1)} }},
+    { lvals = {{ base = VAR('y'), args = {INT(1)} }},
       rvals = {{
           op  = '+',
           lhs = { op  = '*',
-                  lhs = { base = {name='A'}, args = {INT(1),INT(0)} },
-                  rhs = { base = {name='x'}, args = {INT(0)} } },
+                  lhs = { base = VAR('A'), args = {INT(1),INT(0)} },
+                  rhs = { base = VAR('x'), args = {INT(0)} } },
           rhs = { op  = '+',
                   lhs = { op  = '*',
-                          lhs = { base = {name='A'}, args = {INT(1),INT(1)} },
-                          rhs = { base = {name='x'}, args = {INT(1)} } },
+                          lhs = { base = VAR('A'), args = {INT(1),INT(1)} },
+                          rhs = { base = VAR('x'), args = {INT(1)} } },
                   rhs = { op  = '*',
-                          lhs = { base = {name='A'}, args = {INT(1),INT(2)} },
-                          rhs = { base = {name='x'}, args = {INT(2)} } } },
+                          lhs = { base = VAR('A'), args = {INT(1),INT(2)} },
+                          rhs = { base = VAR('x'), args = {INT(2)} } } },
       }} },
-    { exprs = {{name = 'y'}} },
+    { exprs = { VAR('y') } },
   }}
 })
 
+local noop = {}
 local gong function retone()
   noop
   return retzero() + 1
@@ -250,9 +258,9 @@ test_ast_match( retone,
   name = 'retone',
   args = {},
   body = { stmts = {
-    { expr = {name = 'noop'} },
+    { expr = {obj = noop} },
     { exprs = {{  op  = '+',
-                  lhs = { base = {name='retzero'},
+                  lhs = { base = {obj = retzero},
                           args = {} },
                   rhs = INT(1),
               }} },
@@ -271,15 +279,15 @@ test_ast_match( doubleassign,
   name = 'doubleassign',
   args = {},
   body = { stmts = {
-    { names = {'x'},
-      type  = function()end,
+    { names = {SYM('x')},
+      type  = G.int32,
       rvals = { INT(0) } },
-    { names = {'y'},
-      type  = function()end,
+    { names = {SYM('y')},
+      type  = G.int32,
       rvals = { INT(0) } },
-    { lvals = {{name = 'x'}, {name = 'y'}},
+    { lvals = {VAR('x'), VAR('y')},
       rvals = { INT(1), INT(2) } },
-    { exprs = {{name = 'x'}, {name = 'y'}} },
+    { exprs = {VAR('x'), VAR('y')} },
   }}
 })
 
@@ -292,15 +300,15 @@ end
 test_ast_match( swapfields,
 {
   name = 'swapfields',
-  args = {{name='obj', type=function()end }},
+  args = {{ name=SYM('obj'), type=recT }},
   body = { stmts = {
-    { names = {'temp'},
+    { names = {SYM('temp')},
       type  = nil,
-      rvals = {{ base = {name = 'obj'}, args={{value='f1'}} }}, },
-    { lvals = {{ base = {name = 'obj'}, args={{value='f1'}} }},
-      rvals = {{ base = {name = 'obj'}, args={{value='f2'}} }} },
-    { lvals = {{ base = {name = 'obj'}, args={{value='f2'}} }},
-      rvals = {{ name = 'temp' }} },
+      rvals = {{ base = VAR('obj'), args={{obj='f1'}} }}, },
+    { lvals = {{ base = VAR('obj'), args={{obj='f1'}} }},
+      rvals = {{ base = VAR('obj'), args={{obj='f2'}} }} },
+    { lvals = {{ base = VAR('obj'), args={{obj='f2'}} }},
+      rvals = {VAR('temp')} },
   }}
 })
 
@@ -310,19 +318,19 @@ end
 test_ast_match( tensorindexing,
 {
   name = 'tensorindexing',
-  args = {{name='m', type=function()end },
-          {name='x', type=function()end }},
+  args = {{name=SYM('m'), type=G.mat2x3i },
+          {name=SYM('x'), type=G.vec4i }},
   body = { stmts = {
     { exprs = {{
-        names = {'i','j'},
+        names = {SYM('i'),SYM('j')},
         expr  = { op    = '+',
-                  names = {'k'},
+                  names = {SYM('k')},
                   expr  = {
                       op  = '*',
-                      lhs = { base = {name='m'},
-                              args = {{name='i'},{name='k'}} },
-                      rhs = { base = {name='x'},
-                              args = {{name='j'}} }
+                      lhs = { base = VAR('m'),
+                              args = {VAR('i'),VAR('k')} },
+                      rhs = { base = VAR('x'),
+                              args = {VAR('j')} }
                   } }
               }} }
   }}
