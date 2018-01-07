@@ -28,9 +28,11 @@ local function is_macro(obj) return getmetatable(obj) == Macro end
 Exports.is_macro = is_macro
 
 
-local function NewQuote(expr_ast)
+local function NewQuote(ast, srcinfo, is_stmt)
   local q = setmetatable({
-    _ast = expr_ast,
+    _ast      = ast,
+    _srcinfo  = srcinfo,
+    _is_stmt  = is_stmt,
   }, Quote)
   return q
 end
@@ -44,5 +46,12 @@ Exports.is_quote = is_quote
 function Quote:gettype()
   return self._ast.type
 end
+function Quote:is_statement()
+  return self._is_stmt
+end
+
+
+
+
 
 

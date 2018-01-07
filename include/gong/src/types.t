@@ -108,7 +108,9 @@ local function row(table_obj)
 
   local rowtyp    = NewType('row')
   rowtyp._table   = table_obj
-  rowtyp._name    = 'row('..table_obj:Name()..')'
+  rowtyp._name    = 'row('..table_obj:name()..')'
+
+  rowtyp._terra_type  = table_obj:_INTERNAL_terra_key_type()
 
   return rowtyp
 end
@@ -132,6 +134,7 @@ local function record_obj(flist)
   local rtype             = NewType('record')
   rtype.fields            = flist
   reccount = reccount + 1
+  rtype._field_lookup     = {}
 
   local name = newlist{'{ '}
   for i,p in ipairs(flist) do
@@ -139,6 +142,7 @@ local function record_obj(flist)
     name:insert(p.name)
     name:insert(':')
     name:insert(tostring(p.type))
+    rtype._field_lookup[p.name] = {i,p}
   end
   name:insert(' }')
   rtype._name             = name:concat()
@@ -156,7 +160,8 @@ record_obj = memoize(record_obj)
 local function record(fields)
   if not israwlist(fields) then error('expected list of fields as arg', 2) end
 
-  local f = newlist()
+  local names   = {}
+  local f       = newlist()
   for i,p in ipairs(fields) do
     local name = '_'..(i-1)
     if israwlist(p) and type(p[1]) == 'string' then
@@ -165,7 +170,12 @@ local function record(fields)
     end
     -- Now, p should be a type, and we'll lift it
     local typ = lift_type_from_lua(p, 2)
+    if not typ:is_value() then
+      error("cannot include non-value types in a record", 2) end
     f:insert(record_entry(i, name, typ))
+    if names[name] then
+      error("cannot use field name '"..name.."' twice.", 2) end
+    names[name] = true
   end
 
   return record_obj( memolist(f) )
@@ -401,6 +411,16 @@ function Type:is_numeric()
       or (self:is_primitive() and self ~= Exports.bool)
 end
 
+function Type:is_signed()
+  return (self:is_pure_tensor() and self:basetype():is_float())
+      or (self:is_primitive() and (self == Exports.float or
+                                   self == Exports.double or
+                                   self == Exports.int8 or
+                                   self == Exports.int16 or
+                                   self == Exports.int32 or
+                                   self == Exports.int64) )
+end
+
 function Type:is_logical()
   return (self:is_pure_tensor() and self:basetype():is_logical())
       or self == Exports.bool
@@ -428,6 +448,25 @@ function Type:terrabasetype()
   return self:basetype():terratype()
 end
 
+function Type:record_type()
+  if not self:is_row() then error(':row_record() expects row type', 2) end
+  return self._table:record_type()
+end
+
+function Type:table()
+  if not self:is_row() then error(':table() expects row type', 2) end
+  return self._table
+end
+
+function Type:lookup(fname)
+  -- TODO:  use actual lookup table to
+  --        guarantee asymptotic efficiency
+  if not self:is_record() then error(':lookup() expects record type', 2) end
+  local i_f = self._field_lookup[fname]
+  if i_f then return unpack(i_f)
+         else return nil end
+end
+
 -------------------------------------------------------------------------------
 
 function Type:__tostring()    return self._name     end
@@ -448,9 +487,6 @@ function Type:__tostring()    return self._name     end
 --  Here is a skeleton of the implicit primitive type coercion order
 --  The partial order is the transitive closure of these relations
 --    size**  <  uint**
---    uint8   <  int16
---    uint16  <  int32
---    uint32  <  int64
 --    size8 < size16 < size32 < size64
 --    uint8 < uint16 < uint32 < uint64
 --     int8 <  int16 <  int32 <  int64
@@ -478,9 +514,12 @@ primitive_coerce[T.size16][T.uint16]  = T.uint16
 primitive_coerce[T.size32][T.uint32]  = T.uint32
 primitive_coerce[T.size64][T.uint64]  = T.uint64
 
-primitive_coerce[T.uint8 ][T.int16 ]  = T.int16
-primitive_coerce[T.uint16][T.int32 ]  = T.int32
-primitive_coerce[T.uint32][T.int64 ]  = T.int64
+-- CANNOT implicitly coerce unsigned to signed
+--        since doing so would violate the semi-lattice
+--        axioms for this partial order
+--primitive_coerce[T.uint8 ][T.int16 ]  = T.int16
+--primitive_coerce[T.uint16][T.int32 ]  = T.int32
+--primitive_coerce[T.uint32][T.int64 ]  = T.int64
 
   -- promote to larger size within type
 primitive_coerce[T.size8 ][T.size16]  = T.size16

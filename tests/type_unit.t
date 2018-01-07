@@ -152,13 +152,13 @@ test.eq(T.float:is_coercable_to(T.int32), false)
 test.eq(T.double:is_coercable_to(T.uint64), false)
 test.eq(T.int32:is_coercable_to(T.double), true)
 test.eq(T.int32:is_coercable_to(T.bool), false)
-test.eq(T.uint32:is_coercable_to(T.int64), true)
+test.eq(T.uint32:is_coercable_to(T.int64), false)
 
 test.eq(T.float:join(T.int32), T.double) -- controversial
 test.eq(T.int32:join(T.uint64), T.error)
-test.eq(T.uint32:join(T.int64), T.int64)
+test.eq(T.uint32:join(T.int64), T.error)
 test.eq(T.uint64:join(T.int32), T.error)
-test.eq(T.int64:join(T.uint32), T.int64)
+test.eq(T.int64:join(T.uint32), T.error)
 test.eq(T.uint64:coerce_to(T.int32), T.error)
 
 test.eq(T.vec3d:coerce_to(T.mat3d), T.error)

@@ -30,6 +30,7 @@ local is_macro    = Macro.is_macro
 local is_quote    = Macro.is_quote
 local is_constant = Global.is_constant
 local is_function = Functions.is_function
+local is_builtin  = Functions.is_builtin
 
 local newlist   = terralib.newlist
 
@@ -48,7 +49,7 @@ Exports.redop_token_set     = redop_token_set
 local ADT A
   -- Top Level Forms
   QuoteExpr   = { expr    : Expr,             srcinfo : SrcInfo }
-  QuoteStmt   = { stmt    : Stmt,             srcinfo : SrcInfo }
+  QuoteStmt   = { block   : Block,            srcinfo : SrcInfo }
   Function    = { name    : string,
                   args    : ArgDecl*,
                   rettype : Type?,
@@ -83,7 +84,7 @@ local ADT A
         | DeclStmt    { names     : Symbol*,  type      : Type?,
                         rvals     : Expr* }
     -- Looping
-        | ForLoop     { iternname : Symbol,
+        | ForLoop     { itername  : Symbol,
                         lo        : Expr,     hi        : Expr,
                         stride    : Expr?,
                         body      : Block }
@@ -136,10 +137,10 @@ Exports.AST = A
 local Context = {}
 Context.__index = Context
 
-function Context.New(env, diag)
+function NewContext(env)
   local ctxt = setmetatable({
     env     = env,
-    diag    = diag,
+    diag    = terralib.newdiagnostics(),
   }, Context)
   return ctxt
 end
@@ -158,6 +159,9 @@ end
 function Context:error(ast, ...)
   self.diag:reporterror(ast.srcinfo, ...)
 end
+function Context:finishandabortiferrors(lvl)
+  self.diag:finishandabortiferrors("Errors during specialization", lvl+1)
+end
 
 
 -------------------------------------------------------------------------------
@@ -166,13 +170,12 @@ end
 
 function Exports.specialize(input_ast, luaenv)
   local env     = terralib.newenvironment(luaenv)
-  local diag    = terralib.newdiagnostics()
-  local ctxt    = Context.New(env, diag)
+  local ctxt    = NewContext(env)
 
   ctxt:enterblock()
   local output_ast = input_ast:specialize(ctxt)
   ctxt:leaveblock()
-  diag:finishandabortiferrors("Errors during specialization", 1)
+  ctxt:finishandabortiferrors(1)
 
   return output_ast
 end
@@ -193,9 +196,13 @@ end
 local function eval_type_annotation(annotation, anchor, ctxt)
   local typ = luaeval(annotation, anchor, ctxt, T.error)
 
+  -- promote Gong tables into row types
+  if Schemata.is_table(typ) then
+    typ = T.row(typ)
+
   -- promote raw lists of types into record-tuples
   -- This is especially valuable for return-type function annotations
-  if terralib.israwlist(typ) then
+  elseif terralib.israwlist(typ) then
     local istuple = true
     local tlist   = newlist()
     for i,t in ipairs(typ) do
@@ -338,15 +345,15 @@ end
 ----------------------------------------
 
 function AST.Assignment:specialize(ctxt)
-  local rvals     = specialize_all( self.rvals, ctxt )
   local lvals     = specialize_all( self.lvals, ctxt )
+  local rvals     = specialize_all( self.rvals, ctxt )
   return A.Assignment(lvals, rvals, self.srcinfo)
 end
 
 function AST.Reduction:specialize(ctxt)
-  local rval      = self.rval:specialize(ctxt)
   local lval      = self.lval:specialize(ctxt)
-  return A.Reduction(self.op, lvals, rvals, self.srcinfo)
+  local rval      = self.rval:specialize(ctxt)
+  return A.Reduction(self.op, lval, rval, self.srcinfo)
 end
 
 function AST.DeclStmt:specialize(ctxt)
@@ -368,11 +375,11 @@ function AST.ForLoop:specialize(ctxt)
   local hi        = self.hi:specialize(ctxt)
   local stride    = ( self.stride and self.stride:specialize(ctxt) ) or nil
   ctxt:enterblock()
-  local itername  = introsym(itername, ctxt)
+  local itername  = introsym(self.itername, ctxt)
   local body      = self.body:specialize(ctxt)
   ctxt:leaveblock()
 
-  return A.DeclStmt(names, typ, rvals, self.srcinfo)
+  return A.ForLoop(itername, lo, hi, stride, body, self.srcinfo)
 end
 
 
@@ -445,7 +452,8 @@ end
 
 local function is_gong_obj(obj)
   return is_macro(obj) or is_quote(obj) or type(obj) == 'string'
-                       or is_function(obj)
+                       or is_function(obj) or is_builtin(obj)
+                       or is_type(obj)
 end
 
 
@@ -461,6 +469,7 @@ end
 --    tbl.name          ==>     (replace with lookup)
 --    String            ==>     LuaObj
 --    Function          ==>     LuaObj
+--    BuiltIn           ==>     LuaObj
 --
 
 local ERROBJ = {}

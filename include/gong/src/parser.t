@@ -85,6 +85,9 @@ local ADT A
                   body    : Block,            srcinfo : SrcInfo }
   Block       = { stmts   : Stmt*,            srcinfo : SrcInfo }
 
+  -- temporary throw-away
+  RedOp       = { op : redop,   lhs : Expr,   srcinfo : SrcInfo }
+
   -- Statements
   Stmt  =
     -- Terminal / Effect Statements
@@ -103,7 +106,7 @@ local ADT A
         | DeclStmt    { names     : id_str*,  type      : LuaType?,
                         rvals     : Expr* }
     -- Looping
-        | ForLoop     { iternname : id_str,
+        | ForLoop     { itername  : id_str,
                         lo        : Expr,     hi        : Expr,
                         stride    : Expr?,
                         body      : Block }
@@ -238,10 +241,18 @@ end
 --    .   data access
 --  90
 
-local function parse_binop(P, lhs)
+local function parse_binop(P, lhs, is_redop)
   local info  = P:srcinfo()
   local op    = P:next().type
-  return A.BinaryOp(op, lhs, P:expr(op), info)
+  if is_redop and P:matches('=') then
+    return A.RedOp(op, lhs, info)
+  else
+    return A.BinaryOp(op, lhs, P:expr(op), info)
+  end
+end
+
+local function parse_binop_red(P, lhs)
+  return parse_binop(P,lhs,true)
 end
 
 local function parse_unop(P)
@@ -309,9 +320,9 @@ end)
 :infix('>',   30, parse_binop)
 :infix('<=',  30, parse_binop)
 :infix('>=',  30, parse_binop)
-:infix('+',   40, parse_binop)
+:infix('+',   40, parse_binop_red)
 :infix('-',   40, parse_binop)
-:infix('*',   50, parse_binop)
+:infix('*',   50, parse_binop_red)
 :infix('/',   50, parse_binop)
 :infix('%',   50, parse_binop)
 :infix('[',   80, function(P, base)
@@ -459,6 +470,7 @@ function lang.stmt(P, is_join_filter)
       local cond    = P:expr()
                       P:expectmatch('then',lasttkn,lastinfo.linenumber)
       local body    = P:block()
+      cases:insert(   A.IfCase(cond, body, lastinfo) )
       lastinfo      = P:srcinfo()
       lasttkn       = 'elseif'
     until         not P:nextif('elseif')
@@ -515,9 +527,34 @@ function lang.stmt(P, is_join_filter)
       exprs:insert(   P:expr() )
     until         not P:nextif(',')
 
-    -- which kind of stmt?
-    if P:matches('=')
-    then -- assignment
+    -- reduction unpack
+    local red_op    = nil
+    if #exprs == 1 and A.RedOp.check(exprs[1]) then
+      red_op        = exprs[1].op
+      exprs[1]      = exprs[1].lhs
+                      P:expect('=')
+    elseif redop_token_set[ P:cur().type ] or 
+      ( P:matches(P.name) and ( P:cur().value == 'min' or
+                                P:cur().value == 'max' ) )
+    then
+      if #exprs > 1 then
+        P:error('unexpected comma separated expressions') end
+      red_op        = P:cur().type
+      if P:matches(P.name) then
+        red_op      = P:cur().value
+      end
+                      P:next()
+      info          = P:srcinfo()
+                      P:expect('=')
+    end
+
+    -- REDUCTION
+    if red_op then
+      local rval    = P:expr()
+      return A.Reduction(red_op, exprs[1], rval, info)
+
+    -- ASSIGNMENT
+    elseif P:matches('=') then
       info          = P:srcinfo()
                       P:expect('=')
       local rvals   = newlist()
@@ -526,20 +563,8 @@ function lang.stmt(P, is_join_filter)
       until       not P:nextif(',')
       return A.Assignment(exprs, rvals, info)
 
-    elseif  redop_token_set[ P:cur().type ] or
-      ( P:matches(P.name) and ( P:cur().value == 'min' or
-                                P:cur().value == 'max' ) )
-    then -- reduction
-      if #exprs > 1 then P:error('unexpected comma separated expressions') end
-      local op = P:cur().type
-      if P:matches(P.name) then op = P:cur().value end
-                      P:next()
-      info          = P:srcinfo()
-                      P:expect('=')
-      local rval    = P:expr()
-      return A.Reduction(op, exprs[1], rval, info)
-
-    else -- exprstmt
+    -- EXPR STMT
+    else
       if #exprs > 1 then P:error('unexpected comma separated expressions') end
       return A.ExprStmt(exprs[1], info)
 
@@ -597,6 +622,7 @@ function lang.join(P)
   if P:matches('(')
   then name         = P:gen_anon_name()
   else name, tuple  = P:func_name()       end
+  local openparen   = P:srcinfo()
                       P:expect('(')
   local args        = newlist()
   if not P:nextif(')') then
