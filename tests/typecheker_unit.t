@@ -6,7 +6,6 @@ local A     = (require 'gong.src.typechecker').AST
 local Util  = require 'gong.src.util'
 local T     = require 'gong.src.types'
 
--- flip a flag to enable unit testing
 G._UNIT_TEST_TYPECHECKER = true
 
 ------------------------------------------------------------------------------

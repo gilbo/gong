@@ -78,7 +78,7 @@ local ADT A
                         lval      : Expr,     rval      : Expr  }
     -- Looping & Branching
         | IfStmt      { cases     : IfCase*,  else_body : Block? }
-        | ForLoop     { itername : Symbol,
+        | ForLoop     { itername  : Symbol,
                         lo        : Expr,     hi        : Expr,
                         stride    : Expr?,
                         body      : Block }

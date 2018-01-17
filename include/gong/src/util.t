@@ -195,6 +195,15 @@ function TerraList:reverse()
   return res
 end
 
+function TerraList:filter(fn)
+  local res = terralib.newlist()
+  for i,e in ipairs(self) do
+    if fn(e) then   res:insert(e)   end
+  end
+  return res
+end
+
+
 --[[
 
 SHOULDN'T REMOVE DO THESE?

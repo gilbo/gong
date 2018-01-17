@@ -22,6 +22,7 @@ local function NewFunction(params)
     _argtypes = assert(params.argtypes),
     _rettype  = assert(params.rettype),
     _ast      = assert(params.ast),
+    _effects  = newlist(),
   }, Function)
   return f
 end
@@ -40,6 +41,9 @@ end
 function Function:argtypes()    return self._argtypes:copy()  end
 function Function:rettype()     return self._rettype          end
 
+function Function:_INTERNAL_geteffects()
+  return self._effects
+end
 
 -------------------------------------------------------------------------------
 -- Joins
@@ -54,6 +58,7 @@ local function NewJoin(params)
     _name     = assert(params.name),
     _argtypes = assert(params.argtypes),
     _ast      = assert(params.ast),
+    _effects  = newlist(),
   }, Join)
   return j
 end
@@ -71,6 +76,9 @@ end
 
 function Join:argtypes()    return self._argtypes:copy()  end
 
+function Join:_INTERNAL_geteffects()
+  return self._effects
+end
 
 -------------------------------------------------------------------------------
 -- Built-Ins
@@ -82,9 +90,10 @@ BuiltIn.__index   = BuiltIn
 local function NewBuiltIn(params)
   assert(type(params) == 'table')
   local b = setmetatable({
-    _name       = assert(params.name),
-    _typecheck  = assert(params.typecheck),
-    _codegen    = assert(params.codegen),
+    _name         = assert(params.name),
+    _typecheck    = assert(params.typecheck),
+    _effectcheck  = assert(params.effectcheck),
+    _codegen      = assert(params.codegen),
   }, BuiltIn)
   return b
 end
