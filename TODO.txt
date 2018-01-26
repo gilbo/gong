@@ -1,4 +1,17 @@
 
+
+
+Compiler Mini-Projects / Features
+
+* add a simple builtin.t file with an assert builtin
+* improve test coverage
+* add "and" / "or" reduction operators
+* add argmin/argmax functionality
+* add argmin/max for list of top/bottom k (add a type...)
+
+
+
+
 prob_shadowing
   split into two
     ray-tri shadow      X
