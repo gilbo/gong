@@ -4,19 +4,19 @@ local Exports = {}
 package.loaded["gong.src.types"] = Exports
 local T = Exports
 
-local Util        = require 'gong.src.util'
---local SrcInfo     = Util.SrcInfo
-local is_id_str   = Util.is_id_str
-local is_pos_int  = Util.is_pos_int
-local memoize     = Util.memoize
-local memoize_from = Util.memoize_from
-local memolist    = Util.memolist
+local Util          = require 'gong.src.util'
+local is_id_str     = Util.is_id_str
+local is_pos_int    = Util.is_pos_int
+local memoize       = Util.memoize
+local memoize_from  = Util.memoize_from
+local memolist      = Util.memolist
+local INTERNAL_ERR  = Util.INTERNAL_ERR
 
-local S           = require 'gong.src.schemata'
+local S             = require 'gong.src.schemata'
 -- don't unpack include here, in order to break cyclic dependencies
 
-local newlist     = terralib.newlist
-local israwlist   = terralib.israwlist
+local newlist       = terralib.newlist
+local israwlist     = terralib.israwlist
 
 
 -------------------------------------------------------------------------------
@@ -145,9 +145,10 @@ local function record_obj(flist)
     rtype._field_lookup[p.name] = {i,p}
   end
   name:insert(' }')
-  rtype._name             = name:concat()
+  name                    = name:concat()
+  rtype._name             = name
 
-  local ttype             = terralib.types.newstruct('rec'..reccount)
+  local ttype             = terralib.types.newstruct(name:gsub('%W','_'))
   for i,p in ipairs(rtype.fields) do
     ttype.entries:insert { p.name, p.type:terratype() }
   end
@@ -707,7 +708,7 @@ local function terra_to_luaval(tval, typ)
 
   end
 
-  error("INTERNAL: Should not be trying to convert values of type "..
+  INTERNAL_ERR("Should not be trying to convert values of type "..
         tostring(typ).." from Terra to Lua")
 end
 

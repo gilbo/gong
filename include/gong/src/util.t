@@ -100,6 +100,12 @@ end
 Exports.SrcInfo = A.SrcInfo
 
 
+local function INTERNAL_ERR(msg, depth)
+  msg = 'INTERNAL: '..(msg or '')
+  error(msg, (depth and depth+1) or 2)
+end
+Exports.INTERNAL_ERR = INTERNAL_ERR
+
 -------------------------------------------------------------------------------
 -- Definition of valid identifier strings
 -------------------------------------------------------------------------------
@@ -200,6 +206,13 @@ function TerraList:filter(fn)
   for i,e in ipairs(self) do
     if fn(e) then   res:insert(e)   end
   end
+  return res
+end
+
+function TerraList:sublist(start,stop)
+  stop      = stop or #self
+  local res = newlist()
+  for i=start,stop do res:insert(self[i]) end
   return res
 end
 

@@ -15,6 +15,7 @@ local NewSymbol   = Util.NewSymbol
 local is_symbol   = Util.is_symbol
 local is_id_str   = Util.is_id_str
 local is_int      = Util.is_int
+local INTERNAL_ERR  = Util.INTERNAL_ERR
 
 local Schemata    = require 'gong.src.schemata'
 local Macro       = require 'gong.src.macro'
@@ -50,7 +51,7 @@ local gong_obj_err_msg = "expected a string, Gong Macro, Quote, or Function"
 local ADT A
   -- Top Level Forms
   Function    = { args    : ArgDecl*,
-                  rettype : Type?,
+                  rettype : Type,
                   body    : Block,            srcinfo : SrcInfo }
   Join        = { args    : ArgDecl*,
                   filter  : Block,            
@@ -98,8 +99,8 @@ local ADT A
         -- lookup is base[a1,...]
         | TensorIndex { base  : Expr,         args      : Expr* }
         | RecordRead  { base  : Expr,         arg     : id_str  }
-        | TableRead   { base  : Expr,         arg     : id_str  }
-        | TableWrite  { expr  : Expr                            }
+        | TableRead   { base  : Expr,         path : PathToken* }
+        | TableWrite  { base  : Expr,         path : PathToken* }
     -- Basic building up of conditions and terms
         | BinaryOp    { op    : binop,
                         lhs   : Expr,         rhs       : Expr  }
@@ -117,6 +118,10 @@ local ADT A
                         names : Symbol*,      idxtypes  : Type*,
                                               expr      : Expr  }
         attributes {    type  : Type,         srcinfo : SrcInfo }
+
+  PathToken = PathField { name : id_str }
+            | PathIndex { args : Expr*  }
+            attributes {                      srcinfo : SrcInfo }
 
   extern binop  function(obj) return binop_token_set[obj] end
   extern unop   function(obj) return unop_token_set[obj]  end
@@ -677,7 +682,7 @@ function AST.Reduction:typecheck(ctxt)
       end
       
     else
-      error('INTERNAL: unexpected reduction operator: '..tostring(self.op))
+      INTERNAL_ERR('unexpected reduction operator: '..tostring(self.op))
     end
   end
 
@@ -1017,7 +1022,7 @@ function AST.TensorFold:typecheck(ctxt)
         ftyp      = expr.type
       end
     else
-      error('INTERNAL: unexpected fold reduction operator: '..self.op)
+      INTERNAL_ERR('unexpected fold reduction operator: '..self.op)
     end
   end
 
@@ -1061,8 +1066,16 @@ function AST.Lookup:typecheck(ctxt)
         end
       end
       if not has_err then
+        -- decide whether this is just indexing a tensor object, or
+        -- if we can fold this indexing into a memory-read operation
         local typ = base.type:basetype()
-        return A.TensorIndex(base, args, typ, self.srcinfo)
+        if A.TableRead.check(base) then
+          local path    = base.path:copy()
+          path:insert( A.PathIndex(args, self.srcinfo) )
+          return A.TableRead(base.base, path, typ, self.srcinfo)
+        else
+          return A.TensorIndex(base, args, typ, self.srcinfo)
+        end
       end
     end
 
@@ -1082,7 +1095,13 @@ function AST.Lookup:typecheck(ctxt)
             ctxt:error(self, "could not find field '"..at.value.."' in "..
                              "record of type: "..tostring(base.type))
           else
-            return A.RecordRead(base, f.name, f.type, self.srcinfo)
+            if A.TableRead.check(base) then
+              local path    = base.path:copy()
+              path:insert( A.PathField(f.name, self.srcinfo) )
+              return A.TableRead(base.base, path, f.type, self.srcinfo)
+            else
+              return A.RecordRead(base, f.name, f.type, self.srcinfo)
+            end
           end
         else -- base.type is row
           local tbl   = base.type:table()
@@ -1091,7 +1110,8 @@ function AST.Lookup:typecheck(ctxt)
             ctxt:error( self, "could not find field '"..at.value.."' in "..
                               "row from table: "..tbl:name() )
           else
-            return A.TableRead(base, at.value, f:type(), self.srcinfo)
+            local path = newlist{ A.PathField(at.value, self.srcinfo) }
+            return A.TableRead(base, path, f:type(), self.srcinfo)
           end
         end
       else
@@ -1303,7 +1323,7 @@ function AST.BinaryOp:typecheck(ctxt)
     end
 
   end
-  error(self, "INTERNAL: unrecognized binary operator '"..op.."'")
+  INTERNAL_ERR(self, "unrecognized binary operator '"..op.."'")
 end
 
 function AST.UnaryOp:typecheck(ctxt)
@@ -1319,7 +1339,7 @@ function AST.UnaryOp:typecheck(ctxt)
     if not expr.type:is_signed() then
       ctxt:error(self, "unary '-' expects a signed numeric operand") end
   else
-    error("INTERNAL: unrecognized unary operator '"..op.."'")
+    INTERNAL_ERR("unrecognized unary operator '"..op.."'")
   end
 
   return A.UnaryOp(op, expr, typ, self.srcinfo)
@@ -1362,40 +1382,26 @@ end
 --[[                       Expression L-Value Rules                        ]]--
 -------------------------------------------------------------------------------
 
--- What is allowed: variables and type deconstructors
+-- What is allowed: variables, reads (convert to writes), and deconstructors
 function A.Var:lvalcheck(ctxt)
   return self
 end
 
--- Table Reads get wrapped by Table Writes
+-- Table Reads get converted into Table Writes
 -- otherwise, we leave things as is
 function A.TableRead:lvalcheck(ctxt)
   -- base is a row-type value, which needn't further be an l-value
-  return A.TableWrite(self, self.type, self.srcinfo)
+  return A.TableWrite(self.base, self.path, self.type, self.srcinfo)
 end
 
 function A.TensorIndex:lvalcheck(ctxt)
   local base      = self.base:lvalcheck(ctxt)
-  local write     = false
-  if A.TableWrite.check(base) then
-    write         = true
-    base          = base.expr
-  end
-  local ast       = A.TensorIndex(base, self.args, self.type, self.srcinfo)
-  if write then ast = A.TableWrite(ast, ast.type, self.srcinfo) end
-  return ast
+  return A.TensorIndex(base, self.args, self.type, self.srcinfo)
 end
 
 function A.RecordRead:lvalcheck(ctxt)
   local base      = self.base:lvalcheck(ctxt)
-  local write     = false
-  if A.TableWrite.check(base) then
-    write         = true
-    base          = base.expr
-  end
-  local ast       = A.RecordRead(base, self.arg, self.type, self.srcinfo)
-  if write then ast = A.TableWrite(ast, ast.type, self.srcinfo) end
-  return ast
+  return A.RecordRead(base, self.arg, self.type, self.srcinfo)
 end
 
 

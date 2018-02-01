@@ -21,6 +21,7 @@ local NewSymbol   = Util.NewSymbol
 local is_symbol   = Util.is_symbol
 local is_id_str   = Util.is_id_str
 local is_int      = Util.is_int
+local INTERNAL_ERR  = Util.INTERNAL_ERR
 
 local Schemata    = require 'gong.src.schemata'
 local Macro       = require 'gong.src.macro'
@@ -393,7 +394,7 @@ local function constant_to_ast(cval, typ, anchor)
       return A.NumLiteral(cval, typ, anchor.srcinfo)
     elseif typ:is_logical() then
       return A.BoolLiteral(cval, anchor.srcinfo)
-    else error('INTERNAL: unrecognized primitive type') end
+    else INTERNAL_ERR('unrecognized primitive type') end
   elseif typ:is_tensor() then
     -- conversion
     local exprs           = newlist()
@@ -417,7 +418,7 @@ local function constant_to_ast(cval, typ, anchor)
 
     return A.RecordExpr(names, exprs, anchor.srcinfo)
   else
-    error('INTERNAL: bad constant type')
+    INTERNAL_ERR('bad constant type')
   end
 end
 
@@ -428,7 +429,7 @@ local function lua_primitive_to_ast(luav, anchor)
   elseif type(luav) == 'boolean' then
     return A.BoolLiteral(luav, anchor.srcinfo)
   else
-    error('INTERNAL: SHOULD only see primitive types number/boolean here')
+    INTERNAL_ERR('SHOULD only see primitive types number/boolean here')
   end
 end
 

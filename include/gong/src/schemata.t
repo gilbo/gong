@@ -16,7 +16,8 @@ local is_pos_int  = Util.is_pos_int
 
 local newlist = terralib.newlist
 
-local universalKeyType = uint32
+local universalKeyType    = uint32
+local universal_MAX_SIZE  = math.pow(2,32)-3
 
 -------------------------------------------------------------------------------
 -- DataTable Object
@@ -118,6 +119,12 @@ function DataTable:__index(key)
 end
 function DataTable:_INTERNAL_terra_key_type()
   return self._key_rep
+end
+function DataTable:_INTERNAL_terra_size_type()
+  return self._key_rep
+end
+function DataTable:_INTERNAL_terra_MAX_SIZE()
+  return universal_MAX_SIZE
 end
 function DataTable:record_type()
   self:complete()

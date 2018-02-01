@@ -21,7 +21,8 @@ local function common_constructor(ast)
       if StdLib._UNIT_TEST_TYPECHECKER then
         return tcast
       elseif F.is_function(tcast) or F.is_join(tcast) then
-        tcast._effects  = E.effectcheck(tcast._ast)
+        tcast._effects, tcast._subfuncs
+                  = E.effectcheck(tcast._ast)
         return tcast
       else
         return tcast

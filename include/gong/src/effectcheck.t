@@ -11,20 +11,13 @@ local Util        = require 'gong.src.util'
 local AST         = Typechecker.AST
 local is_type     = T.is_type
 local SrcInfo     = Util.SrcInfo
---local NewSymbol   = Util.NewSymbol
---local is_symbol   = Util.is_symbol
 local is_id_str   = Util.is_id_str
---local is_int      = Util.is_int
+local INTERNAL_ERR  = Util.INTERNAL_ERR
 
 local Schemata    = require 'gong.src.schemata'
 local Macro       = require 'gong.src.macro'
 local Global      = require 'gong.src.global'
 local Functions   = require 'gong.src.functions'
---local is_macro    = Macro.is_macro
---local is_quote    = Macro.is_quote
---local is_constant = Global.is_constant
---local is_function = Functions.is_function
---local is_builtin  = Functions.is_builtin
 
 local newlist   = terralib.newlist
 
@@ -33,17 +26,13 @@ local newlist   = terralib.newlist
 --[[                                Effects                                ]]--
 -------------------------------------------------------------------------------
 
-local binop_token_set       = Typechecker.binop_token_set
-local unop_token_set        = Typechecker.unop_token_set
 local redop_token_set       = Typechecker.redop_token_set
-
-Exports.binop_token_set     = binop_token_set
-Exports.unop_token_set      = unop_token_set
 Exports.redop_token_set     = redop_token_set
 
 local ADT E
   
-  Effect = Filter   {}
+  Effect = Scan     { src  : Type }
+         | Filter   {}
          | Emit     { dst  : Type } -- destination table
          | Return   { type : Type }
          | Write    { dst  : Type,        path : PathToken* }
@@ -54,16 +43,10 @@ local ADT E
 
   PathToken = FieldToken { name : id_str }
             | IndexToken { } -- assume all of the indices are hit for now
-        attributes { type : Type }
 
-  --extern binop  function(obj) return binop_token_set[obj] end
-  --extern unop   function(obj) return unop_token_set[obj]  end
   extern redop    function(obj) return redop_token_set[obj] end
 
   extern Type     is_type
-  --extern Symbol   is_symbol
-  --extern BuiltIn  is_builtin
-  --extern FuncObj  is_function
 
   extern id_str   is_id_str
   extern SrcInfo  function(obj) return SrcInfo.check(obj) end
@@ -100,7 +83,9 @@ local function NewContext()
     _let_depth    = 0,
     _mode         = nil,
     _permissions  = {},
+    _scan_tables  = {},
     _all_effects  = newlist(),
+    _all_subfuncs = {},
   }, Context)
   return ctxt
 end
@@ -120,7 +105,21 @@ function Context:finishandabortiferrors(lvl)
   self.diag:finishandabortiferrors("Errors during typechecking", lvl+1)
 end
 
+function Context:add_func(f)
+  self._all_subfuncs[f] = true
+end
+function Context:add_funcs(fs)
+  for _,f in ipairs(fs) do self:add_func(f) end
+end
+
 function Context:effectlist()       return self._all_effects:copy() end
+function Context:subfunclist()
+  local fs            = newlist()
+  for func,_ in pairs(self._all_subfuncs) do
+    fs:insert(func)
+  end
+  return fs
+end
 
 function Context:enter_letblock()   self._let_depth = self._let_depth+1   end
 function Context:leave_letblock()   self._let_depth = self._let_depth-1   end
@@ -166,6 +165,10 @@ function Context:add_effect(eff)
       err = true
       self:error(eff,
         "emit statements are only allowed inside join do blocks")
+    elseif self._scan_tables[eff.dst] then
+      self:error(eff,
+        "joins must emit into a different table than the operands "..
+        "of the join.")
     else
       if not self:try_write(eff, eff.dst:table(), newlist()) then
         err = true end
@@ -186,8 +189,12 @@ function Context:add_effect(eff)
     self:error(eff,
       "writing to table fields is not allowed in gong")
 
+  elseif E.Scan.check(eff) then
+    self._scan_tables[eff.src] = true
+    -- all good
+
   else
-    error("INTERNAL: unrecognized effect type: "..tostring(eff))
+    INTERNAL_ERR("unrecognized effect type: "..tostring(eff))
   end
 
   -- accumulate in listing of all effects
@@ -293,9 +300,10 @@ function Exports.effectcheck(input_ast)
   ctxt:enterblock()
   local effects     = input_ast:effectcheck(ctxt)
   ctxt:leaveblock()
+  local subfuncs    = ctxt:subfunclist()
   ctxt:finishandabortiferrors(3)
 
-  return effects
+  return effects, subfuncs
 end
 
 local function effectcheck_all(xs, ctxt)
@@ -328,6 +336,10 @@ end
 
 function AST.Join:effectcheck(ctxt)
   effectcheck_all(self.args, ctxt)
+
+  -- add scan effects
+  ctxt:add_effect( E.Scan(self.args[1].type, self.args[1].srcinfo) )
+  ctxt:add_effect( E.Scan(self.args[2].type, self.args[2].srcinfo) )
 
   ctxt:enter_joinfilter()
   self.filter:effectcheck(ctxt)
@@ -375,26 +387,26 @@ function AST.ReturnStmt:effectcheck(ctxt)
   ctxt:add_effect(  E.Return(self.expr.type, self.srcinfo) )
 end
 
-local function get_write_path(lval)
-  lval              = lval.expr
-  local path        = newlist()
-  repeat
-    if AST.TensorIndex.check(lval) then
-      path:insert(    E.IndexToken( lval.type ) )
-    elseif AST.RecordRead.check(lval) or AST.TableRead.check(lval) then
-      path:insert(    E.FieldToken( lval.arg, lval.type ) )
-    else error('INTERNAL: Unexpected Expression in table write effect') end
-    lval            = lval.base
-  until lval.type:is_row()
-  path              = path:reverse()
-  return lval, path
+local function get_readwrite_path(lval, ctxt)
+  return lval.path:map(function(p)
+    p:effectcheck(ctxt)
+    if AST.PathField.check(p) then
+      return E.FieldToken(p.name)
+    elseif AST.PathIndex.check(p) then
+      return E.IndexToken()
+    else INTERNAL_ERR('unexpected path token') end
+  end)
+end
+function AST.PathField:effectcheck(ctxt) end
+function AST.PathIndex:effectcheck(ctxt)
+  effectcheck_all(self.args, ctxt)
 end
 function AST.Assignment:effectcheck(ctxt)
   local lval        = self.lval
   -- check for write?
   if AST.TableWrite.check(lval) then
-    local path      = nil
-    lval, path      = get_write_path(lval)
+    local path      = get_readwrite_path(lval, ctxt)
+    lval            = lval.base
     ctxt:add_effect(  E.Write( lval.type, path, self.srcinfo ) )
   end
   lval:effectcheck(ctxt)
@@ -407,8 +419,8 @@ function AST.Reduction:effectcheck(ctxt)
   local lval        = self.lval
   -- check for write?
   if AST.TableWrite.check(lval) then
-    local path      = nil
-    lval, path      = get_write_path(lval)
+    local path      = get_readwrite_path(lval, ctxt)
+    lval            = lval.base
     ctxt:add_effect(  E.Reduce( self.op, lval.type, path, self.srcinfo ) )
   end
   lval:effectcheck(ctxt)
@@ -460,30 +472,28 @@ end
 --------------------------------------
 
 function AST.RecordExpr:effectcheck(ctxt)
-  effectcheck_all(self.exprs)
+  effectcheck_all(self.exprs, ctxt)
 end
 function AST.ListExpr:effectcheck(ctxt)
-  effectcheck_all(self.exprs)
+  effectcheck_all(self.exprs, ctxt)
 end
 
 --------------------------------------
 
 function AST.TensorIndex:effectcheck(ctxt)
   self.base:effectcheck(ctxt)
-  effectcheck_all(self.args)
+  effectcheck_all(self.args, ctxt)
 end
 function AST.RecordRead:effectcheck(ctxt)
   self.base:effectcheck(ctxt)
 end
 function AST.TableRead:effectcheck(ctxt)
-  -- We can improve this effect's precision if we
-  -- do some AST re-writing
-  local path        = newlist{ E.FieldToken( self.arg, self.type ) }
+  local path        = get_readwrite_path(self, ctxt)
   ctxt:add_effect(    E.Read( self.base.type, path, self.srcinfo ))
   self.base:effectcheck(ctxt)
 end
 function AST.TableWrite:effectcheck(ctxt)
-  error('INTERNAL: Should Never Call Directly')
+  INTERNAL_ERR('Should Never Call Directly')
 end
 
 --------------------------------------
@@ -513,14 +523,21 @@ function AST.Cast:effectcheck(ctxt)
   self.arg:effectcheck(ctxt)
 end
 function AST.BuiltInCall:effectcheck(ctxt)
-  effectcheck_all(self.args)
+  effectcheck_all(self.args, ctxt)
+  local effects     = self.builtin._effectcheck(unpack(self.args))
+  for _,eff in ipairs(effects) do
+    ctxt:add_effect(eff)
+  end
 end
 function AST.FuncCall:effectcheck(ctxt)
-  effectcheck_all(self.args)
+  effectcheck_all(self.args, ctxt)
   local effects     = self.func:_INTERNAL_geteffects()
   for _,e in ipairs(effects) do
-    self:add_effect(e)
+    ctxt:add_effect(e)
   end
+  local subfuncs    = self.func:_INTERNAL_getsubfuncs()
+  ctxt:add_funcs(subfuncs)
+  ctxt:add_func(self.func)
 end
 function AST.TensorMap:effectcheck(ctxt)
   self.expr:effectcheck(ctxt)

@@ -46,6 +46,8 @@ local function test_eff_eq(fobj, template)
     local lookup    = terralib.newlist()
 
     if      E.Filter.check(e) then      lookup:insert('filter')
+    elseif  E.Scan.check(e) then        lookup:insert('scan')
+                                        lookup:insert(e.src)
     elseif  E.Emit.check(e) then        lookup:insert('emit')
                                         lookup:insert(e.dst)
     elseif  E.Return.check(e) then      lookup:insert('return')
@@ -169,6 +171,8 @@ do
   emit { a=a, b=b } in C
 end
 test_eff_eq(aboff, {
+  {effect='scan', type=G.row(A)},
+  {effect='scan', type=G.row(B)},
   {effect='read', type=G.row(A), path={'id'}},
   {effect='read', type=G.row(B), path={'id'}},
   {effect='filter'},
@@ -183,6 +187,8 @@ do
   a.val.s += b.val
 end
 test_eff_eq(redjoin, {
+  {effect='scan', type=G.row(A)},
+  {effect='scan', type=G.row(B)},
   {effect='read', type=G.row(A), path={'id'}},
   {effect='read', type=G.row(B), path={'id'}},
   {effect='filter'},
@@ -190,6 +196,13 @@ test_eff_eq(redjoin, {
   {effect='read', type=G.row(B), path={'val'}},
 })
 
+test.fail(function()
+  local gong join redjoin( a : A, b : B )
+    where a.id+1 == b.id
+  do
+    emit { id=b.id, val={s=b.val,t=a.val.t} } in A
+  end
+end, 'joins must emit into a different table than the operands of')
 
 
 ------------------------------------------------------------------------------

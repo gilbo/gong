@@ -22,6 +22,7 @@ local function NewFunction(params)
     _argtypes = assert(params.argtypes),
     _rettype  = assert(params.rettype),
     _ast      = assert(params.ast),
+    _subfuncs = newlist(),
     _effects  = newlist(),
   }, Function)
   return f
@@ -41,8 +42,11 @@ end
 function Function:argtypes()    return self._argtypes:copy()  end
 function Function:rettype()     return self._rettype          end
 
+function Function:_INTERNAL_getsubfuncs()
+  return self._subfuncs:copy()
+end
 function Function:_INTERNAL_geteffects()
-  return self._effects
+  return self._effects:copy()
 end
 
 -------------------------------------------------------------------------------
@@ -58,6 +62,7 @@ local function NewJoin(params)
     _name     = assert(params.name),
     _argtypes = assert(params.argtypes),
     _ast      = assert(params.ast),
+    _subfuncs = newlist(),
     _effects  = newlist(),
   }, Join)
   return j
@@ -76,8 +81,11 @@ end
 
 function Join:argtypes()    return self._argtypes:copy()  end
 
+function Join:_INTERNAL_getsubfuncs()
+  return self._subfuncs:copy()
+end
 function Join:_INTERNAL_geteffects()
-  return self._effects
+  return self._effects:copy()
 end
 
 -------------------------------------------------------------------------------
