@@ -660,9 +660,7 @@ function AST.Reduction:typecheck(ctxt)
   end
 
   if lval.type ~= T.error and rval.type ~= T.error then
-    if self.op == '+' or self.op == '*' or
-       self.op == 'min' or self.op == 'max'
-    then
+    if redop_token_set[self.op] then
       local has_err = false
       if not lval.type:is_numeric() then
         has_err   = true
@@ -1013,9 +1011,7 @@ function AST.TensorFold:typecheck(ctxt)
   if not has_err and expr.type ~= T.error then
     if not expr.type:is_value() then
       ctxt:error(expr, "expected value-type expression in fold")
-    elseif self.op == '+' or self.op == '*' or
-           self.op == 'min' or self.op == 'max'
-    then
+    elseif redop_token_set[self.op] then
       if not expr.type:is_numeric() then
         ctxt:error(expr, "expected numeric-valued expression to fold")
       else

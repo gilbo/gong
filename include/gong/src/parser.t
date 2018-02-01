@@ -53,6 +53,9 @@ local redop_token_set = {
   ['*']    = true,
   ['min']  = true,
   ['max']  = true,
+  ['and']  = true,
+  ['or']   = true,
+  -- TODO: argmax,argmin,topN. Possibly others (xor,modulo add/mult)
 }
 
 Exports.binop_token_set     = binop_token_set
@@ -265,13 +268,12 @@ local function parse_tensorfold(P)
   local info      = P:srcinfo()
   local op        = P:next().type
   local parens    = P:srcinfo()
-  -- handle special :min and :max operators
+  -- handle special reduction operators
+  local keyword_reduction_ops = {['max']=true,['min']=true,['and']=true,['or']=true}
   if op == ':' and P:matches(P.name) then
     local tkn = P:cur()
-    if tkn.value == 'max' then
-                    P:next();       op = 'max'
-    elseif tkn.value == 'min' then
-                    P:next();       op = 'min'
+    if keyword_reduction_ops[tkn.value] then
+                    P:next();       op = tkn.value
     end
   end
   -- handle index variables
