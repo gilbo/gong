@@ -13,6 +13,7 @@ local T               = require 'gong.src.types'
 local S               = require 'gong.src.schemata'
 local Functions       = require 'gong.src.functions'
 local GenAPI          = require 'gong.src.genapi'
+local C               = require 'gong.src.c'
 
 local newlist = terralib.newlist
 
@@ -83,7 +84,7 @@ Exports.is_function   = Functions.is_function
 Exports.is_builtin    = Functions.is_builtin
 Exports.is_join       = Functions.is_join
 
-
+Exports.cassert       = C.assert
 
 
 

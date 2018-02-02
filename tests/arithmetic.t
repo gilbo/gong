@@ -2,7 +2,7 @@ import 'gong'
 local test    = require 'tests.test'
 
 local G       = gong.stdlib
-local assert  = G.assert
+local assert  = --G.assert
 
 ------------------------------------------------------------------------------
 
@@ -24,33 +24,33 @@ local gong function int32arith()
   assert(y > x)
   assert(y >= x)
   assert(x ~= y)
+
+  return 0
 end
 
-int32arith:test_exec()
-
 local gong function uint64arith()
-  var x : G.uint64 = 42
+  var x : G.uint64 = G.uint64(42)
   var y : G.uint64 = x
-  assert(x-y == 0)
-  assert(x+y == 84)
+  assert(x-y == G.uint64(0))
+  assert(x+y == G.uint64(84))
 
-  x = 3
-  y = 5
-  assert(x*y == 15)
-  assert(x/y == 0)
-  assert(y/x == 1)
+  x = G.uint64(3)
+  y = G.uint64(5)
+  assert(x*y == G.uint64(15))
+  assert(x/y == G.uint64(0))
+  assert(y/x == G.uint64(1))
 
-  assert((-x) * (-y) == x * y)
+  --assert((-x) * (-y) == x * y)
   assert(x <= y)
   assert(x < y)
   assert(y > x)
   assert(y >= x)
   assert(x ~= y)
 
-  assert(-x > 0) -- weird but true cause unsigned
-end
+  --assert(-x > G.uint64(0)) -- weird but true cause unsigned
 
-uint64arith:test_exec()
+  return 0
+end
 
 local gong function floatarith()
   var x = 42.0f
@@ -70,9 +70,9 @@ local gong function floatarith()
   assert(y > x)
   assert(y >= x)
   assert(x ~= y)
-end
 
-floatarith:test_exec()
+  return 0.0f
+end
 
 local gong function doublearith()
   var x = 42.0
@@ -92,9 +92,9 @@ local gong function doublearith()
   assert(y > x)
   assert(y >= x)
   assert(x ~= y)
-end
 
-doublearith:test_exec()
+  return 0.0
+end
 
 local gong function coercearith()
   var x = 42
@@ -114,9 +114,9 @@ local gong function coercearith()
   assert(y > x)
   assert(y >= x)
   assert(x ~= y)
-end
 
-coercearith:test_exec()
+  return 0
+end
 
 local gong function booltests()
   var x = true
@@ -129,14 +129,50 @@ local gong function booltests()
   y = false
   assert( (not x and not y) == not (x or y) )
   assert(x ~= y)
+
+  return false
 end
 
-booltests:test_exec()
+local A = G.NewTable('A')
+local B = G.NewTable('B')
+A:NewField('id', G.int32)
+B:NewField('id', G.int32)
+local gong join alltests( a : A, b : B )
+do
+  var x0    = int32arith()
+  var x1    = uint64arith()
+  var x2    = floatarith()
+  var x3    = doublearith()
+  var x4    = coercearith()
+  var x5    = booltests()
+end
 
---int32arith:printstats()
---uint64arith:printstats()
---floatarith:printstats()
---doublearith:printstats()
+local API = G.CompileLibrary {
+  tables        = {},
+  joins         = {alltests},
+  terra_out     = true,
+}
+
+local terra exec()
+  var store     = API.NewStore()
+  var A         = store:A()
+  var B         = store:B()
+
+  A:beginload(1)
+    A:loadrow(0)
+  A:endload()
+
+  B:beginload(1)
+    B:loadrow(0)
+  B:endload()
+
+  store:alltests()
+
+  store:destroy()
+end
+
+exec()
+
 
 ------------------------------------------------------------------------------
 

@@ -108,7 +108,8 @@ end)
 local hugeDouble      = math.huge
 
 local INIT_REDOP = macro(function(op, typ, arg)
-  assert(typ:is_primitive(), 'INTERNAL: expect primitive type')
+  local ttype   = typ:astype()
+  assert(ttype:isprimitive(), 'INTERNAL: expect primitive type')
   op = op:asvalue()
   assert(type(op) == 'string', 'INTERNAL: expect string operator')
 
@@ -117,12 +118,11 @@ local INIT_REDOP = macro(function(op, typ, arg)
   elseif  op == '*'   then  return quote [arg] = 1 end
   -- min and max initialization change value depending on the type...
   elseif  op == 'min' or op == 'max' then
-    local ttype = typ:terratype()
-    if typ == T.double or typ == T.float then
+    if ttype == double or ttype == float then
       local inf = math.huge
       if op == 'max' then inf = -inf end
       return quote [arg] = [ttype](inf) end
-    elseif not typ:is_signed() then
+    elseif not typ:issigned() then
       if op == 'max' then return quote [arg] = 0 end
       else -- op == 'min'
         if      ttype == uint8  then return quote [arg] = 0xFF       end
@@ -186,7 +186,6 @@ end)
 local UNARY_OP = macro(function(op, arg)
   op = op:asvalue()
   assert(type(op) == 'string', 'INTERNAL: expect string operator')
-  local ttyp = typ:terratype()
   if      op == '-'   then  return `-[arg]
   elseif  op == 'not' then  return `not [arg]
   else INTERNAL_ERR('unexpected unary op: '..tostring(op)) end
@@ -225,7 +224,9 @@ function AST.Function:codegen(ctxt)
   local args            = newlist{ ctxt:StorePtr() }
   args:insertall(fargs)
 
-  local func = terra( [args] ) : rettyp [body] end
+  local func = terra( [args] ) : rettyp
+    [body]
+  end
   return func
 end
 
@@ -624,13 +625,13 @@ function AST.TensorFold:codegen(ctxt)
 
   local op            = self.op
   local typ           = self.type
-  local btyp          = (typ:is_tensor() and typ:basetype()) or nil
+  local btyp          = (typ:is_tensor() and typ:terrabasetype()) or nil
   local ttype         = self.type:terratype()
   local td            = (typ:is_tensor() and typ._n_entries) or 1
 
   return quote
     var res : ttype
-    escape if etype:is_tensor() then
+    escape if typ:is_tensor() then
       emit quote
       for k=0,td do INIT_REDOP(op, btyp, res.d[k]) end
       [tensorop_loops(names, mapdims, quote
@@ -639,7 +640,7 @@ function AST.TensorFold:codegen(ctxt)
       end)] end
     else
       emit quote
-      INIT_REDOP(op, typ, res)
+      INIT_REDOP(op, ttype, res)
       [tensorop_loops(names, mapdims, quote
         REDUCE_OP(op, res, expr)
       end)] end

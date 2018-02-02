@@ -459,7 +459,13 @@ function Wrapper:GenExternCAPI(prefix, export_funcs)
 
   local STRUCTS       = newlist()
   local FUNCS         = newlist()
-  local function add_func(name, f)
+  local HIERARCHY     = {}
+  local function add_func(name, tbl, key, f)
+    if f then
+      tbl[key]        = f
+    else
+      f               = tbl
+    end
     f:setname(name)
     FUNCS:insert(f)
   end
@@ -482,18 +488,23 @@ function Wrapper:GenExternCAPI(prefix, export_funcs)
     return `[ExtStore]({ [uint64](store) })
   end)
 
+  HIERARCHY.Store           = ExtStore
+
   -- NewStore, DestroyStore, GetError
 
   add_func_note("/* New and Destroy Store; Error Handling */")
-  add_func('NewStore', terra() : ExtStore
+  add_func('NewStore', HIERARCHY, 'NewStore',
+  terra() : ExtStore
     var store     = alloc_ptr(CStore, 1)
     store:init()
     return to_hdl(store)
   end)
-  add_func('DestroyStore', terra( hdl : ExtStore )
+  add_func('DestroyStore', HIERARCHY, 'DestroyStore',
+  terra( hdl : ExtStore )
     to_store(hdl):destroy()
   end)
-  add_func('GetError', terra( hdl : ExtStore ) : rawstring
+  add_func('GetError', HIERARCHY, 'GetError',
+  terra( hdl : ExtStore ) : rawstring
     return to_store(hdl):get_error()
   end)
   add_func_note("")
@@ -501,6 +512,7 @@ function Wrapper:GenExternCAPI(prefix, export_funcs)
   -- Exported Joins & Functions
 
   add_func_note("/* Exported Joins */")
+  HIERARCHY.joins = {}
   for _,jf in ipairs(export_funcs) do
     local tfunc   = W:get_terra_function(jf)
     local args    = newlist()
@@ -509,7 +521,8 @@ function Wrapper:GenExternCAPI(prefix, export_funcs)
       args:insert( symbol(params[i]) )
     end
 
-    add_func(jf:getname(), terra( hdl : ExtStore, [args] )
+    add_func(jf:getname(), HIERARCHY.joins, jf:getname(),
+    terra( hdl : ExtStore, [args] )
       return tfunc( to_store(hdl), [args] )
     end)
   end
@@ -517,11 +530,14 @@ function Wrapper:GenExternCAPI(prefix, export_funcs)
 
   -- Table Data Access
 
+  HIERARCHY.tables = {}
   for iTable,Table in ipairs(W._tables) do
     local tname               = Table:name()
     local tbl_cname           = W._c_cache[Table].name
     local SizeT               = Table:_INTERNAL_terra_size_type()
     local KeyT                = Table:_INTERNAL_terra_key_type()
+
+    HIERARCHY.tables[tname]   = {}
 
     -- Build Schema Note
     add_func_note("/*")
@@ -535,12 +551,14 @@ function Wrapper:GenExternCAPI(prefix, export_funcs)
     add_func_note("*/")
 
     -- Check Table Size
-    add_func('GetSize_'..tname, terra( hdl : ExtStore ) : SizeT
+    add_func('GetSize_'..tname, HIERARCHY.tables[tname], 'GetSize',
+    terra( hdl : ExtStore ) : SizeT
       return to_store(hdl).[tbl_cname]:size()
     end)
 
     -- Bulk Load
-    add_func('BeginLoad_'..tname, terra( hdl : ExtStore, size : SizeT )
+    add_func('BeginLoad_'..tname, HIERARCHY.tables[tname], 'BeginLoad',
+    terra( hdl : ExtStore, size : SizeT )
       var store = to_store(hdl)
       if store._load_counter >= 0 then
         store:error('cannot begin load while another table is loading')
@@ -548,7 +566,8 @@ function Wrapper:GenExternCAPI(prefix, export_funcs)
       store._load_counter = 0
       store.[tbl_cname]:resize(size)
     end)
-    add_func('EndLoad_'..tname, terra( hdl : ExtStore )
+    add_func('EndLoad_'..tname, HIERARCHY.tables[tname], 'EndLoad',
+    terra( hdl : ExtStore )
       var store = to_store(hdl)
       if store._load_counter < store.[tbl_cname]:size() then
         store:error(['expected to see %d rows loaded, '..
@@ -563,7 +582,8 @@ function Wrapper:GenExternCAPI(prefix, export_funcs)
       local ftype             = Field:type():terratype()
       vals:insert( symbol(ftype, 'arg'..(iField-1)) )
     end
-    add_func('LoadRow_'..tname, terra( hdl : ExtStore, [vals] )
+    add_func('LoadRow_'..tname, HIERARCHY.tables[tname], 'LoadRow',
+    terra( hdl : ExtStore, [vals] )
       var store = to_store(hdl)
       var row   = store._load_counter
       store._load_counter = row + 1
@@ -575,18 +595,22 @@ function Wrapper:GenExternCAPI(prefix, export_funcs)
       end
     end)
 
+    HIERARCHY.tables[tname].fields  = {}
+    local H_FIELDS                  = HIERARCHY.tables[tname].fields
     for iField,Field in ipairs(Table:fields()) do
       local fname           = Field:name()
       local f_cname         = W._c_cache[Field].name
       local ftype           = Field:type():terratype()
 
+      H_FIELDS[fname]       = {}
+
       -- Per-Row Point Access
-      add_func('Read_'..tname..'_'..fname,
+      add_func('Read_'..tname..'_'..fname, H_FIELDS[fname], 'Read',
       terra( hdl : ExtStore, row : KeyT ) : ftype
         var store = to_store(hdl)
         return [ W:Read(store, T.row(Table), row, newlist{fname} ) ]
       end)
-      add_func('Write_'..tname..'_'..fname,
+      add_func('Write_'..tname..'_'..fname, H_FIELDS[fname], 'Write',
       terra( hdl : ExtStore, row : KeyT, val : ftype )
         var store = to_store(hdl)
         return [ W:Write(store, T.row(Table), row, newlist{fname}, val ) ]
@@ -594,10 +618,12 @@ function Wrapper:GenExternCAPI(prefix, export_funcs)
 
       -- Simple bulk access
       add_func('ReadWriteLock_'..tname..'_'..fname,
+               H_FIELDS[fname], 'ReadWriteLock',
       terra( hdl : ExtStore ) : &ftype
         return to_store(hdl).[tbl_cname].[f_cname]
       end)
       add_func('ReadWriteUnLock_'..tname..'_'..fname,
+               H_FIELDS[fname], 'ReadWriteUnlock',
       terra( hdl : ExtStore )
         -- no-op
       end)
@@ -606,7 +632,7 @@ function Wrapper:GenExternCAPI(prefix, export_funcs)
     add_func_note("")
   end
 
-  return FUNCS, STRUCTS
+return FUNCS, STRUCTS, HIERARCHY
 end
 
 

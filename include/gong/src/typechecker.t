@@ -1210,8 +1210,8 @@ end
 
 local function do_scalartensor_bin_coercion(self, lhs, rhs, ctxt)
   assert(lhs.type:is_tensor() ~= rhs.type:is_tensor())
-  local lbtyp     = lhs.type:basetype()
-  local rbtyp     = rhs.type:basetype()
+  local lbtyp     = (lhs.type:is_tensor() and lhs.type:basetype()) or lhs.type
+  local rbtyp     = (rhs.type:is_tensor() and rhs.type:basetype()) or rhs.type
   local btyp      = lbtyp:join(rbtyp)
   if btyp == T.error then
     ctxt:error(self, "could not find common type to coerce operands to; "..

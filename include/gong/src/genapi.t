@@ -79,14 +79,19 @@ Must supply named arguments to CompileLibrary{}:
   joins         = { Join  } (list of joins)
   c_obj_file    = 'string'  (filename for library object code)
   c_header_file = 'string'  (filename for library header file)
+  terra_out     = bool,     (use instead of filenames to emit Terra API)
 ]]
 function Exports.CompileLibrary(args)
   if type(args) ~= 'table' or
      (args.prefix and type(args.prefix) ~= 'string') or
      not terralib.israwlist(args.tables) or
      not terralib.israwlist(args.joins) or
-     type(args.c_obj_file) ~= 'string' or
-     type(args.c_header_file) ~= 'string'
+     not ((
+            type(args.c_obj_file) == 'string' and
+            type(args.c_header_file) == 'string'
+          ) or (
+            args.terra_out == true
+         ))
   then
     error(compile_lib_err_msg, 2)
   end
@@ -102,26 +107,104 @@ function Exports.CompileLibrary(args)
   local W               = GenerateDataWrapper(args.prefix, tables)
 
   -- Assemble all the structs and funcs to expose
-  local FUNCS, STRUCTS  = W:GenExternCAPI(args.prefix, joins)
-  ---- Add the Join functions to the API next
-  --for _,jf in ipairs(joins) do
-  --  FUNCS:insert( W:get_terra_function(jf, {exposed=true}) )
-  --end
+  local FUNCS, STRUCTS, HIERARCHY =
+                          W:GenExternCAPI(args.prefix, joins)
 
-  -- put Terra structs and funcs into exportable format
-  local HEADER_STR, FUNC_TABLE  = Exports.GenCAPI(args.prefix,
-                                                  STRUCTS,
-                                                  FUNCS)
+  if args.terra_out then
+    local API           = Exports.GenTerraAPI(HIERARCHY)
+    return API
+  else -- C output
+    -- put Terra structs and funcs into exportable format
+    local HEADER_STR, FUNC_TABLE  = Exports.GenCAPI(args.prefix,
+                                                    STRUCTS,
+                                                    FUNCS)
 
-  -- write out the header file
-  local headerF   = io.open(args.c_header_file, "w")
-  headerF:write(HEADER_STR)
-  headerF:close()
+    -- write out the header file
+    local headerF   = io.open(args.c_header_file, "w")
+    headerF:write(HEADER_STR)
+    headerF:close()
 
-  -- compile out the object file
-  terralib.saveobj(args.c_obj_file,
-                   "object",
-                   FUNC_TABLE)
+    -- compile out the object file
+    terralib.saveobj(args.c_obj_file,
+                     "object",
+                     FUNC_TABLE)
+  end
+end
+
+
+-------------------------------------------------------------------------------
+-- Terra API generation
+-------------------------------------------------------------------------------
+
+function Exports.GenTerraAPI(hierarchy)
+  local ROOT              = hierarchy
+  local API               = {}
+
+  local Store             = ROOT.Store
+  API.Store               = Store
+  API.NewStore            = ROOT.NewStore
+  terra Store:destroy()
+    ROOT.DestroyStore( @self )
+  end
+  terra Store:geterror() : rawstring
+    return ROOT.GetError( @self )
+  end
+
+  for jname,j in pairs(ROOT.joins) do
+    local args            = j:gettype().parameters:sublist(2)
+                             :map(function(t) return symbol(t) end)
+    Store.methods[jname]  = terra( self : &Store, [args] )
+      j(@self, [args])
+    end
+    Store.methods[jname]:setname(jname)
+  end
+
+  for tname,TBL in pairs(ROOT.tables) do
+    local TWrap           = terralib.types.newstruct(tname)
+    TWrap.entries:insert{ field='store', type=Store }
+    Store.methods[tname]  = terra( self : &Store ) : TWrap
+      return [TWrap]({ @self })
+    end
+    Store.methods[tname]:setname(tname)
+
+    terra TWrap:getsize() return TBL.GetSize(self.store) end
+    local loadarg         = symbol(TBL.BeginLoad:gettype().parameters[2])
+    terra TWrap:beginload( [loadarg] )
+      TBL.BeginLoad(self.store, loadarg)
+    end
+    terra TWrap:endload() TBL.EndLoad(self.store) end
+    local loadrowargs     = TBL.LoadRow:gettype().parameters:sublist(2)
+                                       :map(function(t) return symbol(t) end)
+    terra TWrap:loadrow( [loadrowargs] )
+      TBL.LoadRow(self.store, [loadrowargs])
+    end
+
+    for fname,FLD in pairs(TBL.fields) do
+      local FWrap         = terralib.types.newstruct(tname..'_'..fname)
+      FWrap.entries:insert{ field='store', type=Store }
+      TWrap.methods[fname]  = terra( self : &TWrap ) : FWrap
+        return [FWrap]({ self.store })
+      end
+      TWrap.methods[fname]:setname(fname)
+
+      local rowtype       = FLD.Read:gettype().parameters[2]
+      local ftype         = FLD.Write:gettype().parameters[3]
+      terra FWrap:read( r : rowtype ) : ftype
+        return FLD.Read(self.store, r)
+      end
+      terra FWrap:write( r : rowtype, v : ftype )
+        FLD.Write(self.store, r, v)
+      end
+      terra FWrap:readwrite_lock() : &ftype
+        return FLD.ReadWriteLock(self.store)
+      end
+      terra FWrap:readwrite_unlock()
+        FLD.ReadWriteUnlock(self.store)
+      end
+    end
+  end
+
+  return API
 end
 
 

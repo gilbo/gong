@@ -438,6 +438,8 @@ function AST.IfStmt:effectcheck(ctxt)
     ctxt.return_flag  = false
     self.else_body:effectcheck(ctxt)
     if not ctxt.return_flag then has_return = false end
+  else
+    has_return = false
   end
   ctxt.return_flag    = has_return
 end
