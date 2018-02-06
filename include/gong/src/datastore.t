@@ -101,6 +101,7 @@ local newlist   = terralib.newlist
     BeginLoad_<Table_i>( CStore, SizeT_i )
       LoadRow_<Table_i>( CStore, FieldT_0, FieldT_1, ... )
     EndLoad_<Table_i>( CStore )
+
     -- Point Access
     Read_<Table_i>_<Field_j>( CStore, Key ) : FieldT
     Write_<Table_i>_<Field_j>( CStore, Key, FieldT )
@@ -182,6 +183,7 @@ local function GenerateWrapperStructs(prefix, W)
     { '_error_msg',     rawstring },
     { '_error_buf',     int8[ERR_BUF_LEN] },
     { '_load_counter',  int64 },
+    { '_load_col_counter', int64 },
   }
   CStore:complete()
   W._c_cache[WRAPPER_ROOT]  = { ctype = CStore, name = nil }
@@ -251,9 +253,10 @@ local function InstallStructMethods(prefix, W)
   -- Initialization and Destruction
   local MIN_INIT_SIZE = 8
   terra CStore:init()
-    var this            = self
-    this._error_msg     = nil
-    this._load_counter  = -1
+    var this                = self
+    this._error_msg         = nil
+    this._load_counter      = -1
+    this._load_col_counter  = -1
     escape for iTable,Table in ipairs(W._tables) do
       local tblname           = W._c_cache[Table].name
       emit quote
@@ -418,6 +421,29 @@ function Wrapper:Reduce(storeptr, tbltype, op, rowsym, path, rval)
   end
 end
 
+function Wrapper:WriteCol(storeptr, tbltype, path, ptr, stride)
+  local W               = self
+  local Table           = tbltype:table()
+  local tblname         = self._c_cache[Table].name
+
+  assert(#path == 1 and type(path[1]) == 'string',
+         'INTERNAL: field path expected')
+  local Field           = assert(Table:fields(path[1]),
+                                 'INTERNAL: field lookup failed')
+  local fname           = self._c_cache[Field].name
+  local ftype           = Field:type():terratype()
+
+  return quote
+    var SIZE    = storeptr.[tblname]:size()
+    var dst_ptr = storeptr.[tblname].[fname]
+    var src_ptr = [&int8](ptr)
+    var STRIDE  = stride
+    for k=0,SIZE do
+      dst_ptr[k] = @( [&ftype](src_ptr + k*STRIDE) )
+    end
+  end
+end
+
 function Wrapper:WriteRow(storeptr, tbltype, rowsym, vals)
   local W               = self
   local Table           = tbltype:table()
@@ -560,21 +586,27 @@ function Wrapper:GenExternCAPI(prefix, export_funcs)
     add_func('BeginLoad_'..tname, HIERARCHY.tables[tname], 'BeginLoad',
     terra( hdl : ExtStore, size : SizeT )
       var store = to_store(hdl)
-      if store._load_counter >= 0 then
+      if store._load_counter >= 0 or store._load_col_counter >= 0 then
         store:error('cannot begin load while another table is loading')
       end
-      store._load_counter = 0
+      store._load_counter     = 0
+      store._load_col_counter = 0
       store.[tbl_cname]:resize(size)
     end)
     add_func('EndLoad_'..tname, HIERARCHY.tables[tname], 'EndLoad',
     terra( hdl : ExtStore )
-      var store = to_store(hdl)
-      if store._load_counter < store.[tbl_cname]:size() then
-        store:error(['expected to see %d rows loaded, '..
-                     'but only %d have been loaded so far'],
-                    store.[tbl_cname]:size(), store._load_counter)
+      var store         = to_store(hdl)
+      var row_success   = ( store._load_counter < store.[tbl_cname]:size() )
+      var col_success   = ( store._load_col_counter < [#Table:fields()] )
+      if not row_success and not col_success then
+        store:error(
+          ['expected to see %d rows loaded or %d columns loaded,\n'..
+           'but only %d rows and %d columns have been loaded so far\n'],
+          store.[tbl_cname]:size(), [#Table:fields()],
+          store._load_counter, store._load_col_counter)
       end
       store._load_counter = -1
+      store._load_col_counter = -1
     end)
 
     local vals = newlist()
@@ -603,6 +635,14 @@ function Wrapper:GenExternCAPI(prefix, export_funcs)
       local ftype           = Field:type():terratype()
 
       H_FIELDS[fname]       = {}
+
+      -- Column Loads
+      add_func('Load_'..tname..'_'..fname, H_FIELDS[fname], 'Load',
+      terra( hdl : ExtStore, ptr : &ftype, stride : uint32 )
+        var store = to_store(hdl)
+        return [ W:WriteCol(store, T.row(Table), newlist{fname},
+                            ptr, stride ) ]
+      end)
 
       -- Per-Row Point Access
       add_func('Read_'..tname..'_'..fname, H_FIELDS[fname], 'Read',
