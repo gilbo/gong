@@ -12,3 +12,5 @@ self_trimesh.h: self_trimesh.t
 self_trimesh: self_trimesh.o self_trimesh.h main.cpp
 	c++ -o self_trimesh self_trimesh.o main.cpp
 
+clean:
+	rm self_trimesh.h self_trimesh.o self_trimesh

@@ -185,7 +185,18 @@ operator==(IsctCheckItem lhs, IsctCheckItem rhs) {
          lhs.e_tl == rhs.e_tl &&
          lhs.e_hd == rhs.e_hd;
 }
-void MeshIsctCheck( Store store, string filename, float EPSILON )
+inline bool
+operator<(IsctCheckItem lhs, IsctCheckItem rhs) {
+  return lhs.t_id < rhs.t_id || ( lhs.t_id == rhs.t_id &&
+          ( lhs.e_tl < rhs.e_tl || ( lhs.e_tl == rhs.e_tl && 
+            ( lhs.e_hd < rhs.e_hd ) )));
+}
+inline ostream&
+operator<<(ostream & out, IsctCheckItem i) {
+  return out << "(t_id=" << i.t_id << ", e_tl=" << i.e_tl
+                                   << ", e_hd=" << i.e_hd << ")";
+}
+void MeshIsctCheck( Store store, string filename )
 {
   vector<IsctCheckItem>   isct_ref;
   {
@@ -197,7 +208,9 @@ void MeshIsctCheck( Store store, string filename, float EPSILON )
     string CHECK_sig;
     F >> CHECK_sig >> n_contact;
     if(!F.good()) { ERR("file-read error in '" << filename << "'"); }
-    if(CHECK_sig != "OFF") { ERR("expected CONTACT_RESULTS file marker"); }
+    if(CHECK_sig != "CONTACT_RESULTS") {
+      ERR("expected CONTACT_RESULTS file marker");
+    }
 
     isct_ref.resize(n_contact);
     for(uint32_t k=0; k<n_contact; k++) {
@@ -219,17 +232,29 @@ void MeshIsctCheck( Store store, string filename, float EPSILON )
                    << "but expected " << isct_ref.size());
     }
 
+    set<IsctCheckItem>      found_iscts;
     uint32_t* e           = store.ETcontacts().edge().readwrite_lock();
     uint32_t* t           = store.ETcontacts().tri().readwrite_lock();
     for(uint32_t k=0; k<n_isct; k++) {
       uint32_t e0         = store.Edges().tl().read(e[k]);
       uint32_t e1         = store.Edges().hd().read(e[k]);
-      //cout << IsctObj(store, e[k], t[k], isct_pos[k]);
+      found_iscts.insert( IsctCheckItem(t[k], e0, e1) );
     }
     store.ETcontacts().edge().readwrite_unlock();
     store.ETcontacts().tri().readwrite_unlock();
-  }
 
+    if(found_iscts.size() != n_isct) {
+      ERR("Found " << n_isct - found_iscts.size() << " duplicate "
+                   << "intersections.");
+    }
+
+    // do the check via lookups
+    for( auto i : isct_ref ) {
+      if(found_iscts.count(i) == 0) {
+        ERR("Could not find expected intersection " << i);
+      }
+    }
+  }
 }
 
 
@@ -237,13 +262,17 @@ int main() {
   Store store  = Store::NewStore();
   CHECK_ERR();
 
-  MeshLoadOFF(store, "two_tri.off");
-  MeshEndLoad(store);
+  {
+    MeshLoadOFF(store, "two_tri.off");
+    MeshEndLoad(store);
 
-  store.find_et_iscts();
+    store.find_et_iscts();
 
-  MeshIsctPrint(store);
+    MeshIsctPrint(store);
+    MeshIsctCheck(store, "two_tri.check");
+  }
 
+  // do this for a more complicated case...?
 
   cout << "self_trimesh done" << endl;
   return 0;
