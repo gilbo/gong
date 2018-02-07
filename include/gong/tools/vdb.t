@@ -1,8 +1,8 @@
 
 local vdb = {}
-package.loaded["seam.tools.vdb"] = vdb
+package.loaded["gong.tools.vdb"] = vdb
 
-local Pathname  = (require "seam.tools.pathname").Pathname
+local Pathname  = (require "gong.tools.pathname").Pathname
 local libdir    = Pathname.scriptdir()
 local VDB_C     = terralib.includecstring([[
 #include <vdb.h>]], {"-I", tostring(libdir)})

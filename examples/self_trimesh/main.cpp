@@ -272,7 +272,14 @@ int main() {
     MeshIsctCheck(store, "two_tri.check");
   }
 
-  // do this for a more complicated case...?
+  {
+    MeshLoadOFF(store, "clothfold.off");
+    MeshEndLoad(store);
+
+    store.find_et_iscts();
+
+    MeshIsctCheck(store, "clothfold.check");
+  }
 
   cout << "self_trimesh done" << endl;
   return 0;
