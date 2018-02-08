@@ -343,6 +343,20 @@ function Wrapper:Scan(storeptr, tbltype, rowsym, bodycode)
   end
 end
 
+function Wrapper:DoubleScan(storeptr, tbltype, row0sym, row1sym, bodycode)
+  local Table           = tbltype:table()
+  local tblname         = self._c_cache[Table].name
+
+  return quote
+    var SIZE  = storeptr.[tblname]:size()
+    for [row0sym]=0,SIZE do
+      for [row1sym]=row0sym,SIZE do
+        [bodycode]
+      end
+    end
+  end
+end
+
 local function apply_path(base, typ, path)
   local stmts = newlist()
   for _,tkn in ipairs(path) do

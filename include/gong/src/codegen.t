@@ -70,6 +70,9 @@ end
 function Context:Scan(srctype, row, code)
   return self._W:Scan(self:StorePtr(), srctype, row, code)
 end
+function Context:DoubleScan(srctype, rowA, rowB, code)
+  return self._W:DoubleScan(self:StorePtr(), srctype, rowA, rowB, code)
+end
 
 function Context:Read(srctype, row, path)
   return self._W:Read(self:StorePtr(), srctype, row, path)
@@ -250,13 +253,18 @@ function AST.Join:codegen(ctxt)
     [doblock]
     return true
   end
-  local outerloop = terra( [outerargs] )
-    -- blah
-    [ ctxt:Scan(typA, rowA,
-        ctxt:Scan(typB, rowB, quote
-          innerloop( [innerargs] )
-        end))]
-  end
+  local outerloop = terra( [outerargs] ) escape
+    if typA == typB then -- self-join
+      emit( ctxt:DoubleScan(typA, rowA, rowB, quote
+              innerloop( [innerargs] )
+            end))
+    else -- not a self-join
+      emit( ctxt:Scan(typA, rowA,
+              ctxt:Scan(typB, rowB, quote
+                innerloop( [innerargs] )
+              end)))
+    end
+  end end
   return outerloop, newlist{ innerloop }
 end
 
