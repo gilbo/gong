@@ -128,7 +128,7 @@ local ADT A
         | UnaryOp     { op    : unop,         expr      : Expr }
         | TernaryExpr { cond  : Expr,
                         lhs   : Expr,         rhs       : Expr }
-        | LetExpr     { block : Block,        expr      : Expr }
+        | LetExpr     { body  : Block,        expr      : Expr }
     -- Data Constructors
         | RecordExpr  { names : id_str*,      exprs     : Expr* }
         | ListExpr    { exprs : Expr* }
@@ -306,7 +306,7 @@ lang.expr = pratt.Pratt()
                     P:expectmatch('end', 'let', info.linenumber)
   return A.LetExpr(block, expr, info)
 end)
-:infix('?',       function(P, cond)
+:infix('?',   08, function(P, cond)
   local info      = P:srcinfo()
                     P:expect('?')
   local lhs       = P:expr(8, 'right')

@@ -227,6 +227,35 @@ function Exports.typecheck(input_ast)
   return output_obj
 end
 
+-- here we can bend some of the rules a bit...
+local function special_coercions(ast, targettype, ctxt)
+  if A.NumLiteral.check(ast) then
+    local val = ast.value
+    if not targettype:is_tensor() and targettype:is_integral() then
+      if not is_int(val) then return end
+      if not targettype:is_signed() and val < 0 then return end
+      if ((targettype == T.uint8  or targettype == T.size8) and
+                  val >= math.pow(2,8)) or
+         ((targettype == T.uint16 or targettype == T.size16) and
+                  val >= math.pow(2,16)) or
+         ((targettype == T.uint32 or targettype == T.size32) and
+                  val >= math.pow(2,32))
+      then return end -- exceeding limits
+      if (targettype == T.int8  and
+            ( val >= math.pow(2,7)  or val < -math.pow(2,7))) or
+         (targettype == T.int16  and
+            ( val >= math.pow(2,15) or val < -math.pow(2,15))) or
+         (targettype == T.int32  and
+            ( val >= math.pow(2,31) or val < -math.pow(2,31)))
+      then return end -- exceeding limits
+      -- otherwise, totally fine...
+      return A.NumLiteral(val, targettype, ast.srcinfo)
+    elseif targettype == T.float then
+      return A.NumLiteral(val, targettype, ast.srcinfo)
+    end
+  end
+end
+
 local function do_coercion(ast, targettype, ctxt)
   if ast.type == targettype then -- shortcut
     return ast
@@ -235,6 +264,9 @@ local function do_coercion(ast, targettype, ctxt)
     -- if the cast is not good, report an error and set the error
     -- type on the cast!
     if not ast.type:is_coercable_to(targettype) then
+      local special = special_coercions(ast, targettype, ctxt)
+      if special then return special end
+      -- otherwise, error
       ctxt:error(ast, "Could not coerce expression of type '"..
                       tostring(ast.type) .. "' into type '"..
                       tostring(targettype) .. "'")
