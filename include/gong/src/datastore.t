@@ -316,7 +316,8 @@ Exports.GenerateDataWrapper = NewWrapper
 function Wrapper:get_terra_function(f_obj)
   if not self._func_cache[f_obj] then
     local tfunc             = CodeGen.codegen(f_obj:getname(),
-                                              f_obj._ast,
+                                              f_obj:_INTERNAL_getast(),
+                                              f_obj:_INTERNAL_geteffects(),
                                               self)
     self._func_cache[f_obj] = tfunc
   end
@@ -354,6 +355,15 @@ function Wrapper:DoubleScan(storeptr, tbltype, row0sym, row1sym, bodycode)
         [bodycode]
       end
     end
+  end
+end
+
+function Wrapper:Clear(storeptr, tbltype)
+  local Table           = tbltype:table()
+  local tblname         = self._c_cache[Table].name
+
+  return quote
+    storeptr.[tblname]:resize(0)
   end
 end
 

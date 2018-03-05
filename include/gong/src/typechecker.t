@@ -71,6 +71,7 @@ local ADT A
         | EmitStmt    { record    : RecordExpr,
                         dst       : Type }
         | ReturnStmt  { expr      : Expr }
+        | BuiltInStmt { builtin   : BuiltIn,  args      : Expr* }
     -- Binding & Assignment
         | Assignment  { lval      : Expr,     rval      : Expr  }
         | DeclStmt    { name      : Symbol,   type      : Type,
@@ -969,9 +970,13 @@ function AST.Call:typecheck(ctxt)
 
     -- Built-In Typechecking
     elseif is_builtin(obj) then
-      local typ, errs   = obj._typecheck(unpack(args))
-      if typ == T.error and #errs > 0 then
-        for _,e in ipairs(errs) do ctxt:error(self, e) end
+      local typ       = obj._typecheck(args,self,ctxt)
+      if typ == T.error then
+      elseif typ == nil then
+        local bi    = A.BuiltInStmt(obj, args, self.srcinfo)
+        local block = A.Block( newlist{ bi }, self.srcinfo )
+        local q     = Macro.NewQuote(block, self.srcinfo, true)
+        return A.LuaObj(T.internal(q), self.srcinfo)
       else
         return A.BuiltInCall(obj, args, typ, self.srcinfo)
       end
@@ -1061,14 +1066,12 @@ end
 function AST.Lookup:typecheck(ctxt)
   local base      = self.base:typecheck(ctxt)
   local args      = typecheck_all( self.args, ctxt )
-  local errtyp    = T.error
 
   if base.type == T.error then -- no-op
 
   -- Tensor Indexing
   elseif base.type:is_tensor() then
     local dims    = base.type.dims
-    errtyp        = base.type:basetype()
     if #args ~= #dims then
       ctxt:error(self, "expected "..(#dims).." arguments, but got "..(#args))
     else
@@ -1089,7 +1092,8 @@ function AST.Lookup:typecheck(ctxt)
           end
         elseif at:is_integral() and at:is_primitive() then -- all-good
         else
-          ctxt:error("cannot index with expression of type: "..tostring(at))
+          ctxt:error(self, "cannot index "..tostring(base.type)..
+                           " with expression of type "..tostring(at))
           has_err = true
         end
       end
@@ -1148,11 +1152,11 @@ function AST.Lookup:typecheck(ctxt)
     end
 
   else
-    ctxt:error(base, "cannot index an expression of this type: "..
+    ctxt:error(self, "cannot index an expression of this type: "..
                      tostring(base.type))
   end
 
-  return A.Var( NewSymbol(), errtyp, self.srcinfo )
+  return A.Var( NewSymbol(), T.error, self.srcinfo )
 end
 
 ---------------------------------------
@@ -1224,6 +1228,15 @@ end
 ---------------------------------------
 
 local function do_bin_coercion(self, lhs, rhs, ctxt, booloverride)
+  -- try convenience coercions of literals
+  if A.NumLiteral.check(lhs) then
+    local ltry = special_coercions(lhs, rhs.type, ctxt)
+    if ltry then lhs = ltry end
+  elseif A.NumLiteral.check(rhs) then
+    local rtry = special_coercions(rhs, lhs.type, ctxt)
+    if rtry then rhs = rtry end
+  end
+
   local typ       = lhs.type:join(rhs.type)
   if typ == T.error then
     ctxt:error(self, "could not find common type to coerce operands to; "..
@@ -1242,6 +1255,16 @@ end
 
 local function do_scalartensor_bin_coercion(self, lhs, rhs, ctxt)
   assert(lhs.type:is_tensor() ~= rhs.type:is_tensor())
+
+  -- try convenience coercions of literals
+  if A.NumLiteral.check(lhs) then
+    local ltry = special_coercions(lhs, rhs.type:basetype(), ctxt)
+    if ltry then lhs = ltry end
+  elseif A.NumLiteral.check(rhs) then
+    local rtry = special_coercions(rhs, lhs.type:basetype(), ctxt)
+    if rtry then rhs = rtry end
+  end
+
   local lbtyp     = (lhs.type:is_tensor() and lhs.type:basetype()) or lhs.type
   local rbtyp     = (rhs.type:is_tensor() and rhs.type:basetype()) or rhs.type
   local btyp      = lbtyp:join(rbtyp)
@@ -1302,7 +1325,9 @@ function AST.BinaryOp:typecheck(ctxt)
     end
 
   elseif op == '==' or op == '~=' then
-    if not lhs.type:dims_match(rhs.type) then
+    if lhs.type == rhs.type then -- exit rows early/safely
+      return A.BinaryOp(op, lhs, rhs, T.bool, self.srcinfo)
+    elseif not lhs.type:dims_match(rhs.type) then
       return err("dimensions don't match")
     else
       return do_bin_coercion(self, lhs, rhs, ctxt, true) -- bool-override

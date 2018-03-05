@@ -1,4 +1,5 @@
 import 'gong'
+local test  = require 'tests.test'
 local G = gong.stdlib
 
 --local keyT            = G.uint32
@@ -177,9 +178,10 @@ local terra exec()
   end
 
   store:destroy()
+  return 0
 end
 
-exec()
+test.eq(exec(), 0)
 
 
 ------------------------------------------------------------------------------

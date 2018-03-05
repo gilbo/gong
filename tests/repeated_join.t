@@ -13,7 +13,7 @@ A:NewField('id', G.int32)
 OUT:NewField('lhs', A)
 OUT:NewField('rhs', A)
 local gong join self_join( lhs : A, rhs : A )
-  where lhs.id+1 == rhs.id or rhs.id+1 == lhs.id
+  where lhs ~= rhs
 do
   emit { lhs=lhs, rhs=rhs } in OUT
 end
@@ -50,30 +50,25 @@ local terra exec()
   var A           = store:A()
   var OUT         = store:OUT()
 
-  A:beginload(4)
+  A:beginload(2)
   A:loadrow( 0 )
   A:loadrow( 1 )
-  A:loadrow( 2 )
-  A:loadrow( 3 )
   A:endload()
   CHECK_ERR(store)
 
-  store:self_join()
-  CHECK_ERR(store)
+  for k=0,10 do
+    store:self_join()
+    CHECK_ERR(store)
+  end
 
   var n_OUT       = OUT:getsize()
   C.printf("got %d output rows\n", n_OUT)
-  if n_OUT ~= 3 then
+  if n_OUT ~= 1 then
     store:destroy()
-    ERR("expected 3 contacts; got another number")
-  end
-  for k=0,3 do
-    C.printf("row %d (lhs,rhs): %d %d\n", k, OUT:lhs():read(k),
-                                             OUT:rhs():read(k) )
+    ERR("expected 1 contact; got another number")
   end
 
   store:destroy()
-
   return 0
 end
 

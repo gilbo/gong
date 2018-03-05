@@ -435,7 +435,7 @@ end
 
 local function luaval_to_ast(luav, anchor)
   if is_constant(luav) then
-    return constant_to_ast(luav:get(), luav:type(), anchor)
+    return constant_to_ast(luav:getvalue(), luav:type(), anchor)
 
   -- default table case
   elseif type(luav) == 'table' or type(luav) == 'string' then

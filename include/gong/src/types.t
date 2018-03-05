@@ -194,16 +194,19 @@ local function valid_dims(dims, errdepth)
     error('expected positive integer size for tensor dimension '..i, errdepth)
   end end
 end
-
-local function tensor_helper(errdepth, basetyp, dims)
-  errdepth = (errdepth or 2)+1
-
+local function norm_dims(basetyp, dims)
   if basetyp:is_tensor() then
     local dd  = basetyp.dims:copy()
     dd:insertall(dims)
-    basetyp   = basetyp._base_type
+    dims      = dd
+    basetyp   = basetyp:basetype()
   end
-  assert(is_type(basetyp))
+  return basetyp, memolist(dims)
+end
+
+local function tensor_helper(errdepth, basetyp, dims)
+  errdepth = (errdepth or 2)+1
+  assert(is_type(basetyp) and not basetyp:is_tensor())
 
   local tensor        = NewType('tensor')
   tensor.dims         = dims
@@ -238,7 +241,7 @@ local function tensor(basetyp, ...)
   if not basetyp:is_value() then error('expected base value type', 2) end
   local dims = {...}
   valid_dims(dims, 2)
-  dims = memolist(dims)
+  basetyp, dims   = norm_dims(basetyp, dims)
   return tensor_helper(2, basetyp, dims)
 end
 local function matrix(basetyp, N,M)
@@ -246,7 +249,7 @@ local function matrix(basetyp, N,M)
   if not basetyp:is_value() then error('expected base value type', 2) end
   local dims = {N,M}
   valid_dims(dims, 2)
-  dims = memolist(dims)
+  basetyp, dims   = norm_dims(basetyp, dims)
   return tensor_helper(2, basetyp, dims)
 end
 local function vector(basetyp, N)
@@ -254,7 +257,7 @@ local function vector(basetyp, N)
   if not basetyp:is_value() then error('expected base value type', 2) end
   local dims = {N}
   valid_dims(dims, 2)
-  dims = memolist(dims)
+  basetyp, dims   = norm_dims(basetyp, dims)
   return tensor_helper(2, basetyp, dims)
 end
 Exports.tensor    = tensor

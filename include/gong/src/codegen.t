@@ -16,10 +16,11 @@ local AST         = Typechecker.AST
 local INTERNAL_ERR  = Util.INTERNAL_ERR
 
 local Schemata    = require 'gong.src.schemata'
---local Global      = require 'gong.src.global'
+local Effects     = require 'gong.src.effectcheck'
 local Functions   = require 'gong.src.functions'
 local is_function = Functions.is_function
 local is_builtin  = Functions.is_builtin
+local is_emit     = Effects.Effects.Emit.check
 
 local newlist   = terralib.newlist
 
@@ -30,10 +31,11 @@ local newlist   = terralib.newlist
 local Context = {}
 Context.__index = Context
 
-local function NewContext(StoreWrap)
+local function NewContext(effects, StoreWrap)
   local ctxt = setmetatable({
     env           = terralib.newenvironment(nil),
     _W            = StoreWrap,
+    effects       = effects,
   }, Context)
   return ctxt
 end
@@ -72,6 +74,10 @@ function Context:Scan(srctype, row, code)
 end
 function Context:DoubleScan(srctype, rowA, rowB, code)
   return self._W:DoubleScan(self:StorePtr(), srctype, rowA, rowB, code)
+end
+
+function Context:Clear(dsttype)
+  return self._W:Clear(self:StorePtr(), dsttype)
 end
 
 function Context:Read(srctype, row, path)
@@ -204,8 +210,8 @@ Exports.UNARY_OP      = UNARY_OP
 --[[                              Entry Point                              ]]--
 -------------------------------------------------------------------------------
 
-function Exports.codegen(name, ast, StoreWrap)
-  local ctxt        = NewContext(StoreWrap)
+function Exports.codegen(name, ast, effects, StoreWrap)
+  local ctxt        = NewContext(effects, StoreWrap)
   local func        = ast:codegen(ctxt)
   func:setname(name)
   return func
@@ -248,12 +254,20 @@ function AST.Join:codegen(ctxt)
   local filter          = self.filter:codegen(ctxt)
   local doblock         = self.doblock:codegen(ctxt)
 
+  local emittbls        = {}
+  for i,e in ipairs(ctxt.effects) do
+    if is_emit(e) then emittbls[e.dst] = true end
+  end
+
   local innerloop = terra( [innerargs] ) : bool
     [filter]
     [doblock]
     return true
   end
   local outerloop = terra( [outerargs] ) escape
+    -- clear out tables we're going to emit into
+    for dst,_ in pairs(emittbls) do emit( ctxt:Clear(dst) ) end
+    -- reset any result tables...
     if typA == typB then -- self-join
       emit( ctxt:DoubleScan(typA, rowA, rowB, quote
               innerloop( [innerargs] )
@@ -302,7 +316,11 @@ function AST.ReturnStmt:codegen(ctxt)
     return [expr]
   end
 end
-
+function AST.BuiltInStmt:codegen(ctxt)
+  local args      = codegen_all(self.args, ctxt)
+  local call      = self.builtin._codegen(args, self, ctxt)
+  return call
+end
 
 function AST.PathField:codegen(ctxt)
   return self.name
@@ -359,13 +377,17 @@ function AST.Reduction:codegen(ctxt)
     local lval, stmts   = reduction_lval_unwind(self.lval, ctxt)
     local op            = self.op
     local typ           = self.lval.type
+    local rtyp          = self.rval.type
     if typ:is_tensor() then
       local btyp        = typ:basetype()
       local Nd          = typ._n_entries
       return quote
         [stmts]
         var rhs = [rval]
-        for k=0,Nd do REDUCE_OP(op, lval.d[k], rhs.d[k]) end
+        for k=0,Nd do
+          REDUCE_OP(op, lval.d[k], [ (rtyp:is_tensor() and `rhs.d[k])
+                                                        or `rhs ])
+        end
       end
     else
       return quote
@@ -412,7 +434,12 @@ function AST.Var:codegen(ctxt)
   return symname
 end
 function AST.LuaObj:codegen(ctxt)
-  INTERNAL_ERR("Should not have LuaObjects left at Codegen")
+  local val = self.type:is_internal() and self.type.value
+  if val and type(val) == 'string' then
+    return val
+  else
+    INTERNAL_ERR("Should not have LuaObjects left at Codegen")
+  end
 end
 function AST.NumLiteral:codegen(ctxt)
   local ttype         = self.type:terratype()
@@ -486,7 +513,9 @@ function AST.BinaryOp:codegen(ctxt)
   local op            = self.op
   local lhs           = self.lhs:codegen(ctxt)
   local rhs           = self.rhs:codegen(ctxt)
-  if ltyp:is_primitive() and rtyp:is_primitive() then
+  if ltyp:is_row() and rtyp:is_row() then
+    return `BINARY_OP(op,lhs,rhs)
+  elseif ltyp:is_primitive() and rtyp:is_primitive() then
     return `BINARY_OP(op,lhs,rhs)
   elseif op == '==' or op == '~=' then
     local btyp        = ltyp:basetype()
@@ -532,7 +561,7 @@ function AST.UnaryOp:codegen(ctxt)
       var res : ttype
       var e = [expr]
       for i=0,Nd do res.d[i] = UNARY_OP(op, e.d[i]) end
-    end
+    in res end
   end
 end
 
@@ -567,7 +596,7 @@ function AST.Cast:codegen(ctxt)
 end
 function AST.BuiltInCall:codegen(ctxt)
   local args          = codegen_all(self.args, ctxt)
-  local call          = self.builtin._codegen(ctxt, args, self.args)
+  local call          = self.builtin._codegen(args, self, ctxt)
   return call
 end
 function AST.FuncCall:codegen(ctxt)

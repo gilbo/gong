@@ -39,6 +39,7 @@ local ADT E
          | Reduce   { op   : redop,
                       dst  : Type,        path : PathToken* }
          | Read     { src  : Type,        path : PathToken* }
+         | Print    {}
         attributes {                                    srcinfo : SrcInfo }
 
   PathToken = FieldToken { name : id_str }
@@ -193,6 +194,9 @@ function Context:add_effect(eff)
     self._scan_tables[eff.src] = true
     -- all good
 
+  elseif E.Print.check(eff) then
+    -- always fine
+    
   else
     INTERNAL_ERR("unrecognized effect type: "..tostring(eff))
   end
@@ -524,9 +528,16 @@ end
 function AST.Cast:effectcheck(ctxt)
   self.arg:effectcheck(ctxt)
 end
+function AST.BuiltInStmt:effectcheck(ctxt)
+  effectcheck_all(self.args, ctxt)
+  local effects     = self.builtin._effectcheck(self.args, self, ctxt)
+  for _,eff in ipairs(effects) do
+    ctxt:add_effect(eff)
+  end
+end
 function AST.BuiltInCall:effectcheck(ctxt)
   effectcheck_all(self.args, ctxt)
-  local effects     = self.builtin._effectcheck(unpack(self.args))
+  local effects     = self.builtin._effectcheck(self.args, self, ctxt)
   for _,eff in ipairs(effects) do
     ctxt:add_effect(eff)
   end
