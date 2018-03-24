@@ -37,6 +37,8 @@ local function table_join_closure(tables, joins)
         TABLES[e.src:table()]   = true
       elseif E.Emit.check(e) then
         TABLES[e.dst:table()]   = true
+      elseif E.Merge.check(e) then
+        TABLES[e.dst:table()]   = true
       end
     end
   end
@@ -56,7 +58,7 @@ local function table_join_closure(tables, joins)
   end
   function add_table(tbl)
     TABLES[tbl]         = tbl
-    for _,f in ipairs(tbl:fields()) do
+    for _,f in ipairs(tbl:_INTERNAL_fields()) do
       if f:type():has_rows() then
         add_table_type(f:type())
       end
@@ -112,6 +114,23 @@ function Exports.CompileLibrary(args)
   -- form a closure to make sure we generate everything we need
   local tables, joins   = table_join_closure(args.tables, args.joins)
 
+  -- go through the joins and modify table features
+  -- to ensure the needed functionality
+  for _,j in ipairs(joins) do
+    for _,eff in ipairs(j:_INTERNAL_geteffects()) do
+      if E.Merge.check(eff) then
+        eff.dst:table():_INTERNAL_ActivateMergeIndex()
+      end
+    end
+  end
+
+  -- Extract Indices
+  local indices         = newlist()
+  for _,tbl in ipairs(tables) do
+    indices:insertall( tbl:_INTERNAL_GetIndices() )
+  end
+
+  -- language mode argument parsing
   local langmode        = (args.terra_out and 'terra') or
                           (args.c_header_file and 'c') or
                           (args.cpp_header_file and 'cpp') or
@@ -122,7 +141,7 @@ function Exports.CompileLibrary(args)
   end
 
   -- generate wrapper
-  local W               = GenerateDataWrapper(prefix, tables)
+  local W               = GenerateDataWrapper(prefix, tables, indices)
 
   -- Assemble all the structs and funcs to expose
   local FUNCS, STRUCTS, HIERARCHY =
@@ -201,7 +220,12 @@ function Exports.GenTerraAPI(hierarchy)
     end
     Store.methods[tname]:setname(tname)
 
-    terra TWrap:getsize() return TBL.GetSize(self.store) end
+    if TBL.GetSize then
+      terra TWrap:getsize() return TBL.GetSize(self.store) end
+    else
+      terra TWrap:get_n_rows() return TBL.GetNRows(self.store) end
+      terra TWrap:get_n_alloc() return TBL.GetNAlloc(self.store) end
+    end
     local loadarg         = symbol(TBL.BeginLoad:gettype().parameters[2])
     terra TWrap:beginload( [loadarg] )
       TBL.BeginLoad(self.store, loadarg)
@@ -222,21 +246,32 @@ function Exports.GenTerraAPI(hierarchy)
       TWrap.methods[fname]:setname(fname)
 
       local rowtype       = FLD.Read:gettype().parameters[2]
-      local ftype         = FLD.Write:gettype().parameters[3]
-      terra FWrap:load( ptr : &ftype, stride : uint32 )
-        FLD.Load(self.store, ptr, stride)
-      end
+      local ftype         = FLD.Read:gettype().returntype
       terra FWrap:read( r : rowtype ) : ftype
         return FLD.Read(self.store, r)
       end
-      terra FWrap:write( r : rowtype, v : ftype )
-        FLD.Write(self.store, r, v)
+      terra FWrap:read_lock() : &ftype
+        return FLD.ReadLock(self.store)
       end
-      terra FWrap:readwrite_lock() : &ftype
-        return FLD.ReadWriteLock(self.store)
+      terra FWrap:read_unlock()
+        FLD.ReadUnlock(self.store)
       end
-      terra FWrap:readwrite_unlock()
-        FLD.ReadWriteUnlock(self.store)
+
+      if fname == 'is_live' then
+        -- nothing for now
+      else
+        terra FWrap:load( ptr : &ftype, stride : uint32 )
+          FLD.Load(self.store, ptr, stride)
+        end
+        terra FWrap:write( r : rowtype, v : ftype )
+          FLD.Write(self.store, r, v)
+        end
+        terra FWrap:readwrite_lock() : &ftype
+          return FLD.ReadWriteLock(self.store)
+        end
+        terra FWrap:readwrite_unlock()
+          FLD.ReadWriteUnlock(self.store)
+        end
       end
     end
   end
@@ -528,7 +563,14 @@ function Exports.GenCppAPI(prefix, structs, funcs, hierarchy)
    '  public:',
    '    _'..tname..'('..prefix..'Store store_) : store(store_) {}',
    '    ',
-      tmethod('    ', 'size', TBL.GetSize),
+    }
+    if TBL.GetSize then
+      CPP:insert( tmethod('    ', 'size', TBL.GetSize) )
+    else
+      CPP:insert( tmethod('    ', 'n_rows', TBL.GetNRows) )
+      CPP:insert( tmethod('    ', 'n_alloc', TBL.GetNAlloc) )
+    end
+    CPP:insertall {
       tmethod('    ', 'beginload', TBL.BeginLoad),
       tmethod('    ', 'endload', TBL.EndLoad),
       tmethod('    ', 'loadrow', TBL.LoadRow),
@@ -543,11 +585,21 @@ function Exports.GenCppAPI(prefix, structs, funcs, hierarchy)
    '    public:',
    '      _'..fname..'('..prefix..'Store store_) : store(store_) {}',
    '      ',
-        tmethod('      ','load',FLD.Load),
         tmethod('      ','read',FLD.Read),
-        tmethod('      ','write',FLD.Write),
-        tmethod('      ','readwrite_lock',FLD.ReadWriteLock),
-        tmethod('      ','readwrite_unlock',FLD.ReadWriteUnlock),
+        tmethod('      ','read_lock',FLD.ReadLock),
+        tmethod('      ','read_unlock',FLD.ReadUnlock),
+      }
+      if fname == 'is_live' then
+        -- nada
+      else
+        CPP:insertall {
+          tmethod('      ','load',FLD.Load),
+          tmethod('      ','write',FLD.Write),
+          tmethod('      ','readwrite_lock',FLD.ReadWriteLock),
+          tmethod('      ','readwrite_unlock',FLD.ReadWriteUnlock),
+        }
+      end
+      CPP:insertall {
    '    };',
    '    _'..fname..' '..fname..'() { return _'..fname..'(store); }',
    '    ',

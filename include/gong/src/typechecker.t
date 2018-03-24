@@ -53,8 +53,9 @@ local ADT A
   Function    = { args    : ArgDecl*,
                   rettype : Type,
                   body    : Block,            srcinfo : SrcInfo }
-  Join        = { args    : ArgDecl*,
-                  filter  : Block,            
+  Join        = { scanargs  : ArgDecl*, -- exactly 2
+                  args      : ArgDecl*, -- inclusive of scanargs
+                  filter    : Block,            
                   doblock : Block,            srcinfo : SrcInfo }
 
   -- Shared Structural Components
@@ -70,6 +71,9 @@ local ADT A
           WhereFilter { expr      : Expr }
         | EmitStmt    { record    : RecordExpr,
                         dst       : Type }
+        | MergeStmt   { name      : Symbol,
+                        dst       : Type,
+                        body      : Block,    else_emit : EmitStmt? }
         | ReturnStmt  { expr      : Expr }
         | BuiltInStmt { builtin   : BuiltIn,  args      : Expr* }
     -- Binding & Assignment
@@ -150,6 +154,7 @@ local function NewContext()
     env       = terralib.newenvironment(nil),
     diag      = terralib.newdiagnostics(),
     _rettype  = T.error,
+    _joinargs = newlist(),
   }, Context)
   return ctxt
 end
@@ -210,6 +215,13 @@ function Context:add_return(typ, ast)
   else
     self._rettype = typ
   end
+end
+
+function Context:setjoinargs(a1,a2)
+  self._joinargs  = newlist{a1,a2}
+end
+function Context:getjoinargs()
+  return unpack(self._joinargs)
 end
 
 
@@ -344,12 +356,33 @@ function AST.Join:typecheck(ctxt)
   if #args >= 2 and not argtypes[2]:is_row() then
     ctxt:error(self, "expected second argument to be a table row") end
 
+  -- indirection on arguments
+  local a1, a2  = args[1], args[2]
+  local n1, n2  = a1.name:UniqueCopy(), a2.name:UniqueCopy()
+  local d1      = A.DeclStmt(a1.name, a1.type,
+                             A.Var(n1, a1.type, a1.srcinfo), a1.srcinfo)
+  local d2      = A.DeclStmt(a2.name, a2.type,
+                             A.Var(n2, a2.type, a2.srcinfo), a2.srcinfo)
+  args[1], args[2]  = A.ArgDecl(n1, a1.type, a1.srcinfo),
+                      A.ArgDecl(n2, a2.type, a2.srcinfo)
+  ctxt:settype(n1, a1.type)
+  ctxt:settype(n2, a2.type)
+  ctxt:setjoinargs(n1,n2)
+
+  local scanargs  = newlist{ args[1], args[2] }
+  local scantypes = newlist{ argtypes[1], argtypes[2] }
+
   local filter    = self.filter:typecheck(ctxt)
   local doblock   = self.doblock:typecheck(ctxt)
-  local ast       = A.Join(args, filter, doblock, self.srcinfo)
 
-  return Functions.NewJoin{
+  local stmts     = newlist{d1,d2}
+  stmts:insertall(  filter.stmts  )
+  filter          = A.Block( stmts, filter.srcinfo )
+  local ast       = A.Join(scanargs, args, filter, doblock, self.srcinfo)
+
+  return Functions.NewJoin {
     name        = self.name,
+    scantypes   = scantypes,
     argtypes    = argtypes,
     ast         = ast,
   }
@@ -390,6 +423,7 @@ function AST.EmitStmt:typecheck(ctxt)
   local rec       = self.record:typecheck(ctxt)
   assert(self.dst:is_row(), 'INTERNAL: expect row type')
   local dsttyp    = self.dst:record_type()
+  local dsttbl    = self.dst:table()
   local rectyp    = rec.type
 
   -- build association mapping
@@ -400,6 +434,38 @@ function AST.EmitStmt:typecheck(ctxt)
       expr        = rec.exprs[i],
     }
   end
+  if #dsttbl:primary_key() > 0 then
+    assert(#dsttbl:primary_key() == 2,
+           "INTERNAL: expect all primary keys of length 2")
+    local n1,n2   = ctxt:getjoinargs()
+    local f1,f2   = unpack(dsttbl:primary_key())
+    local err     = false
+    if f1:type() ~= ctxt:gettype(n1) then
+      ctxt:error("expected first join argument to match "..
+                 "primary key 1 type: "..tostring(f1:type())) end
+    if f2:type() ~= ctxt:gettype(n2) then
+      ctxt:error("expected first join argument to match "..
+                 "primary key 1 type: "..tostring(f2:type())) end
+    if mapping[f1:name()] then
+      ctxt:error(self, "primary key field "..f1:fullname()..
+                 " is automatically supplied, and may not be specified.")
+      err = true end
+    if mapping[f2:name()] then
+      ctxt:error(self, "primary key field "..f2:fullname()..
+                 " is automatically supplied, and may not be specified.")
+      err = true end
+    if err then return A.EmitStmt(rec, self.dst, self.srcinfo) end
+
+    mapping[f1:name()] = {
+      rec         = {type = f1:type()},
+      expr        = A.Var(n1, f1:type(), self.srcinfo),
+    }
+    mapping[f2:name()] = {
+      rec         = {type = f2:type()},
+      expr        = A.Var(n2, f2:type(), self.srcinfo),
+    }
+  end
+
   local exprs     = newlist()
   for i,df in ipairs(dsttyp.fields) do
     local lookup      = mapping[df.name] or {}
@@ -429,6 +495,29 @@ function AST.EmitStmt:typecheck(ctxt)
   -- build a record expression in the correct field order
   rec             = A.RecordExpr(exprs, dsttyp, rec.srcinfo)
   return A.EmitStmt(rec, self.dst, self.srcinfo)
+end
+
+function AST.MergeStmt:typecheck(ctxt)
+  assert(self.dst:is_row(), 'INTERNAL: expect row type')
+
+  -- typecheck subexpressions
+  ctxt:enterblock()
+  ctxt:settype(self.name, self.dst)
+  local body      = self.body:typecheck(ctxt)
+  ctxt:leaveblock()
+
+  -- possible emit
+  local else_emit = nil
+  if self.else_emit then
+    else_emit     = self.else_emit:typecheck(ctxt)
+    if self.dst ~= else_emit.dst then
+      ctxt:error(else_emit, "expected else-emit statement to emit into "..
+        "the merge table '"..self.dst:table():name().."' not into table "..
+        "'"..else_emit.dst:table():name().."'")
+    end
+  end
+
+  return A.MergeStmt(self.name, self.dst, body, else_emit, self.srcinfo)
 end
 
 function AST.ExprStmt:typecheck(ctxt)

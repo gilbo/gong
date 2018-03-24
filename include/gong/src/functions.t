@@ -62,11 +62,12 @@ Join.__index      = Join
 local function NewJoin(params)
   assert(type(params) == 'table')
   local j = setmetatable({
-    _name     = assert(params.name),
-    _argtypes = assert(params.argtypes),
-    _ast      = assert(params.ast),
-    _subfuncs = newlist(),
-    _effects  = newlist(),
+    _name       = assert(params.name),
+    _scantypes  = assert(params.scantypes),
+    _argtypes   = assert(params.argtypes),
+    _ast        = assert(params.ast),
+    _subfuncs   = newlist(),
+    _effects    = newlist(),
   }, Join)
   return j
 end
@@ -83,6 +84,7 @@ function Join:setname(nm)
 end
 
 function Join:argtypes()    return self._argtypes:copy()  end
+function Join:scantypes()   return self._scantypes:copy() end
 
 function Join:_INTERNAL_getast()
   return self._ast

@@ -81,6 +81,7 @@ local gong_language = {
     'let',
     'where',
     'emit',
+    'merge',
   },
 
   expression      = handleExpression,

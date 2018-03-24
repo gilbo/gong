@@ -21,6 +21,9 @@ local Functions   = require 'gong.src.functions'
 local is_function = Functions.is_function
 local is_builtin  = Functions.is_builtin
 local is_emit     = Effects.Effects.Emit.check
+local is_merge    = Effects.Effects.Merge.check
+
+local C           = require 'gong.src.c'
 
 local newlist   = terralib.newlist
 
@@ -36,11 +39,21 @@ local function NewContext(effects, StoreWrap)
     env           = terralib.newenvironment(nil),
     _W            = StoreWrap,
     effects       = effects,
+    _scan_args    = nil,
   }, Context)
   return ctxt
 end
 function Context:localenv()
   return self.env:localenv()
+end
+
+function Context:SetScanArgs(a1,a2)
+  self._scan_args = newlist{a1,a2}
+end
+function Context:GetScanArgs()
+  if self._scan_args then
+    return unpack(self._scan_args)
+  end
 end
 
 function Context:GetTerraFunction(obj)
@@ -94,6 +107,19 @@ end
 
 function Context:Insert(dsttype, vals)
   return self._W:Insert(self:StorePtr(), dsttype, vals)
+end
+
+function Context:PreMerge(dsttype)
+  return self._W:PreMerge(self:StorePtr(), dsttype)
+end
+
+function Context:PostMerge(dsttype)
+  return self._W:PostMerge(self:StorePtr(), dsttype)
+end
+
+function Context:MergeLookup(dsttype, row, key0, key1, body, else_vals)
+  return self._W:MergeLookup(self:StorePtr(), dsttype, row, key0, key1,
+                                                            body, else_vals)
 end
 
 -------------------------------------------------------------------------------
@@ -251,12 +277,16 @@ function AST.Join:codegen(ctxt)
   local outerargs       = newlist{ ctxt:StorePtr() }
   outerargs:insertall(fargs)
 
+  ctxt:SetScanArgs(rowA,rowB)
+
   local filter          = self.filter:codegen(ctxt)
   local doblock         = self.doblock:codegen(ctxt)
 
   local emittbls        = {}
+  local mergetbls       = {}
   for i,e in ipairs(ctxt.effects) do
-    if is_emit(e) then emittbls[e.dst] = true end
+    if is_emit(e)   then emittbls[e.dst] = true   end
+    if is_merge(e)  then mergetbls[e.dst] = true  end
   end
 
   local innerloop = terra( [innerargs] ) : bool
@@ -267,7 +297,9 @@ function AST.Join:codegen(ctxt)
   local outerloop = terra( [outerargs] ) escape
     -- clear out tables we're going to emit into
     for dst,_ in pairs(emittbls) do emit( ctxt:Clear(dst) ) end
-    -- reset any result tables...
+    -- prepare any merge tables
+    for dst,_ in pairs(mergetbls) do emit( ctxt:PreMerge(dst) ) end
+    -- then do the main loops of the join
     if typA == typB then -- self-join
       emit( ctxt:DoubleScan(typA, rowA, rowB, quote
               innerloop( [innerargs] )
@@ -278,6 +310,8 @@ function AST.Join:codegen(ctxt)
                 innerloop( [innerargs] )
               end)))
     end
+    -- cleanup any merge tables
+    for dst,_ in pairs(mergetbls) do emit( ctxt:PostMerge(dst) ) end
   end end
   return outerloop, newlist{ innerloop }
 end
@@ -309,6 +343,16 @@ function AST.EmitStmt:codegen(ctxt)
   local exprs     = codegen_all(self.record.exprs, ctxt)
   local dst       = self.dst
   return ctxt:Insert(dst, exprs)
+end
+function AST.MergeStmt:codegen(ctxt)
+  local rowvar    = ctxt:NewSym(self.name, self.dst)
+  local k0, k1    = ctxt:GetScanArgs()
+  local body      = self.body:codegen(ctxt)
+  local else_vals = nil
+  if self.else_emit then
+    else_vals     = codegen_all(self.else_emit.record.exprs, ctxt)
+  end
+  return ctxt:MergeLookup(self.dst, rowvar, k0, k1, body, else_vals)
 end
 function AST.ReturnStmt:codegen(ctxt)
   local expr      = self.expr:codegen(ctxt)

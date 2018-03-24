@@ -97,6 +97,9 @@ local ADT A
           WhereFilter { expr      : Expr }
         | EmitStmt    { record    : RecordExpr,
                         dst_table : LuaTable }
+        | MergeStmt   { name      : id_str,
+                        dst_table : LuaTable,
+                        body      : Block,    else_emit : EmitStmt? }
         | ExprStmt    { expr      : Expr }
         | ReturnStmt  { exprs     : Expr* }
     -- Basic Structural Statements
@@ -462,6 +465,31 @@ function lang.stmt(P, is_join_filter)
                       P:expect('in')
     local dst_table = P:luaexpr()
     return A.EmitStmt(recexpr, dst_table, info)
+
+  elseif  P:nextif('merge') then
+    local name      = P:id_str()
+                      P:expect('in')
+    local dst_table = P:luaexpr()
+    local doinfo    = P:srcinfo()
+                      P:expect('do')
+    local body      = P:block()
+    local else_emit = nil
+    if P:matches('else') then
+      local elseinfo  = P:srcinfo()
+                        P:expect('else')
+      local emitinfo  = P:srcinfo()
+                        P:expect('emit')
+      local openinfo  = P:srcinfo()
+                        P:expect('{')
+      local recexpr   = P:record_expr(openinfo)
+                        P:expect('in')
+      local edst      = P:luaexpr()
+                        P:expectmatch('end','else',elseinfo.linenumber)
+      else_emit = A.EmitStmt(recexpr, edst, emitinfo)
+    else
+                        P:expectmatch('end','do',doinfo.linenumber)
+    end
+    return A.MergeStmt(name, dst_table, body, else_emit, info)
 
   elseif  P:nextif('if') then
     -- parse the first if and any number of elseif-cases

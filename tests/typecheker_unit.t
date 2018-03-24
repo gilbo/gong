@@ -476,9 +476,13 @@ do
 end
 test_ast_match( aboff,
 {
-  args = { { name = SYM('a'), type = G.row(A) },
-           { name = SYM('b'), type = G.row(B) } },
+  scanargs = { { name = SYM('a'), type = G.row(A) },
+               { name = SYM('b'), type = G.row(B) } },
+  args     = { { name = SYM('a'), type = G.row(A) },
+               { name = SYM('b'), type = G.row(B) } },
   filter = { stmts = {
+    { name = SYM('a'), type = G.row(A), rval = VAR('a',G.row(A)) },
+    { name = SYM('b'), type = G.row(B), rval = VAR('b',G.row(B)) },
     { expr = { op   = '==',
                lhs  = { op    = '+',
                         lhs   = { base = VAR('a',G.row(A)),
