@@ -42,6 +42,9 @@ end
 function Function:argtypes()    return self._argtypes:copy()  end
 function Function:rettype()     return self._rettype          end
 
+function Function:_INTERNAL_getast()
+  return self._ast
+end
 function Function:_INTERNAL_getsubfuncs()
   return self._subfuncs:copy()
 end
@@ -59,11 +62,12 @@ Join.__index      = Join
 local function NewJoin(params)
   assert(type(params) == 'table')
   local j = setmetatable({
-    _name     = assert(params.name),
-    _argtypes = assert(params.argtypes),
-    _ast      = assert(params.ast),
-    _subfuncs = newlist(),
-    _effects  = newlist(),
+    _name       = assert(params.name),
+    _scantypes  = assert(params.scantypes),
+    _argtypes   = assert(params.argtypes),
+    _ast        = assert(params.ast),
+    _subfuncs   = newlist(),
+    _effects    = newlist(),
   }, Join)
   return j
 end
@@ -80,7 +84,11 @@ function Join:setname(nm)
 end
 
 function Join:argtypes()    return self._argtypes:copy()  end
+function Join:scantypes()   return self._scantypes:copy() end
 
+function Join:_INTERNAL_getast()
+  return self._ast
+end
 function Join:_INTERNAL_getsubfuncs()
   return self._subfuncs:copy()
 end
@@ -97,8 +105,11 @@ BuiltIn.__index   = BuiltIn
 
 local function NewBuiltIn(params)
   assert(type(params) == 'table')
+  local luafunc = params.luafunc or
+                  function() error("Cannot call from Lua code", 3) end
   local b = setmetatable({
     _name         = assert(params.name),
+    _luafunc      = luafunc,
     _typecheck    = assert(params.typecheck),
     _effectcheck  = assert(params.effectcheck),
     _codegen      = assert(params.codegen),
@@ -109,6 +120,10 @@ Exports.NewBuiltIn = NewBuiltIn
 
 local function is_builtin(obj) return getmetatable(obj) == BuiltIn end
 Exports.is_builtin  = is_builtin
+
+function BuiltIn:__call(...)
+  return self._luafunc(...)
+end
 
 function BuiltIn:getname()
   return self._name

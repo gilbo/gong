@@ -8,6 +8,11 @@ local C = terralib.includecstring [[
 #include <stdio.h>
 #include <string.h>
 
+//#include <float.h>
+//#include <limits.h>
+#include <math.h>
+//#include <time.h>
+
 FILE * __get_seam_c__stdout() { return stdout; }
 FILE * __get_seam_c__stdin()  { return stdin; }
 FILE * __get_seam_c__stderr() { return stderr; }

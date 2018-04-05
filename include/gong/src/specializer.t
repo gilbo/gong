@@ -73,6 +73,9 @@ local ADT A
           WhereFilter { expr      : Expr }
         | EmitStmt    { record    : RecordExpr,
                         dst       : Type }
+        | MergeStmt   { name      : Symbol,
+                        dst       : Type,
+                        body      : Block,    else_emit : EmitStmt? }
         | ExprStmt    { expr      : Expr }
         | ReturnStmt  { exprs     : Expr* }
     -- Basic Structural Statements
@@ -307,6 +310,25 @@ function AST.EmitStmt:specialize(ctxt)
   return A.EmitStmt(record, dst, self.srcinfo)
 end
 
+function AST.MergeStmt:specialize(ctxt)
+  local dst       = luaeval(self.dst_table, self, ctxt)
+  if not Schemata.is_table(dst) then
+    ctxt:error(self, "expected a Gong Table to emit into")
+    dst           = T.error
+  else
+    dst           = T.row(dst)
+  end
+
+  ctxt:enterblock()
+  local name      = introsym(self.name, ctxt)
+  local body      = self.body:specialize(ctxt)
+  ctxt:leaveblock()
+
+  local else_emit = (self.else_emit and self.else_emit:specialize(ctxt))
+                                     or nil
+  return A.MergeStmt(name, dst, body, else_emit, self.srcinfo)
+end
+
 function AST.ExprStmt:specialize(ctxt)
   local expr      = self.expr:specialize(ctxt)
   return A.ExprStmt(expr, self.srcinfo)
@@ -435,7 +457,7 @@ end
 
 local function luaval_to_ast(luav, anchor)
   if is_constant(luav) then
-    return constant_to_ast(luav:get(), luav:type(), anchor)
+    return constant_to_ast(luav:getvalue(), luav:type(), anchor)
 
   -- default table case
   elseif type(luav) == 'table' or type(luav) == 'string' then

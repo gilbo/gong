@@ -33,7 +33,7 @@ Exports.NewConstant = NewConstant
 local function is_constant(obj) return getmetatable(obj) == Constant end
 Exports.is_constant = is_constant
 
-function Constant:get()
+function Constant:getvalue()
   return self._luaval
 end
 

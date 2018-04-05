@@ -34,11 +34,13 @@ local ADT E
   Effect = Scan     { src  : Type }
          | Filter   {}
          | Emit     { dst  : Type } -- destination table
+         | Merge    { dst  : Type }
          | Return   { type : Type }
          | Write    { dst  : Type,        path : PathToken* }
          | Reduce   { op   : redop,
                       dst  : Type,        path : PathToken* }
          | Read     { src  : Type,        path : PathToken* }
+         | Print    {}
         attributes {                                    srcinfo : SrcInfo }
 
   PathToken = FieldToken { name : id_str }
@@ -78,25 +80,19 @@ Context.__index = Context
 
 local function NewContext()
   local ctxt = setmetatable({
-    env           = terralib.newenvironment(nil),
     diag          = terralib.newdiagnostics(),
     _let_depth    = 0,
+    _loop_depth   = 0,
+    _vardefstack  = newlist(),
+    _vardefs      = terralib.newenvironment(nil),
     _mode         = nil,
     _permissions  = {},
+    _emit_tables  = {},
     _scan_tables  = {},
     _all_effects  = newlist(),
     _all_subfuncs = {},
   }, Context)
   return ctxt
-end
-function Context:localenv()
-  return self.env:localenv()
-end
-function Context:enterblock()
-  self.env:enterblock()
-end
-function Context:leaveblock()
-  self.env:leaveblock()
 end
 function Context:error(ast, ...)
   self.diag:reporterror(ast.srcinfo, ...)
@@ -121,8 +117,48 @@ function Context:subfunclist()
   return fs
 end
 
-function Context:enter_letblock()   self._let_depth = self._let_depth+1   end
-function Context:leave_letblock()   self._let_depth = self._let_depth-1   end
+function Context:enter_noassign()
+  self._vardefstack:insert(self._vardefs)
+  self._vardefs = terralib.newenvironment(nil)
+end
+function Context:leave_noassign()
+  self._vardefs = self._vardefstack:remove()
+end
+function Context:definevar(v)
+  self._vardefs:localenv()[v] = true
+end
+function Context:is_definedvar(v)
+  return self._vardefs:localenv()[v]
+end
+function Context:in_noassign()
+  return #self._vardefstack > 0
+end
+
+function Context:enterloop()      self._loop_depth = self._loop_depth+1   end
+function Context:leaveloop()      self._loop_depth = self._loop_depth-1   end
+function Context:in_loop()    return self._loop_depth > 0               end
+
+function Context:enter_letblock()
+  self._let_depth = self._let_depth+1
+  self:enter_noassign()
+end
+function Context:leave_letblock()
+  self:leave_noassign()
+  self._let_depth = self._let_depth-1
+end
+function Context:enter_mergeblock(varname, tbl)
+  self._merge_var     = varname
+  self._merge_tbl     = tbl
+  self._in_merge_flag = true
+  self:enter_noassign()
+  self:definevar(varname)
+end
+function Context:leave_mergeblock()
+  self:leave_noassign()
+  self._in_merge_flag = nil
+  self._merge_var     = nil
+  self._merge_tbl     = nil
+end
 function Context:enter_function()   self._mode      = 'function'          end
 function Context:leave_function()   self._mode      = nil                 end
 function Context:enter_joinfilter() self._mode      = 'filter'            end
@@ -130,21 +166,61 @@ function Context:leave_joinfilter() self._mode      = nil                 end
 function Context:enter_joindo()     self._mode      = 'do'                end
 function Context:leave_joindo()     self._mode      = nil                 end
 
-function Context:in_letblock()      return self._let_depth > 0      end
+function Context:in_letblock()
+  return self._let_depth > 0
+end
+function Context:in_mergeblock()    return self._in_merge_flag      end
 function Context:in_function()      return self._mode == 'function' end
 function Context:in_joinfilter()    return self._mode == 'filter'   end
 function Context:in_joindo()        return self._mode == 'do'       end
 
-function Context:add_effect(eff)
+function Context:get_mergevar()     return self._merge_var          end
+function Context:get_mergetable()   return self._merge_tbl          end
+
+function Context:add_effect(eff, opt)
   local err         = false
+  opt               = opt or {}
   if E.Read.check(eff) then -- pretty generic
     if not self:try_read(eff, eff.src:table(), eff.path) then
       err = true end
+
+  elseif E.Print.check(eff) then
+    -- always fine
 
   elseif self:in_letblock() then
     err = true
     self:error(eff, "no effects are allowed inside of let-expression "..
                     "statement blocks")
+
+  elseif self:in_mergeblock() then
+    if E.Write.check(eff) or E.Reduce.check(eff) then
+      -- check that the mergevar matches
+      local e   = opt.mergeexpr
+      if not AST.Var.check(e) or e.name ~= self:get_mergevar() then
+        err = true
+        self:error(eff,
+          "Writing and reducing inside a merge-statement is only allowed "..
+          "for the merge variable '"..tostring(self:get_mergevar()).."'")
+      else
+      -- check that the a merge-write field is not a primary-key
+        assert(#eff.dst:table():primary_key() == 2,
+               'INTERNAL: expect 2 primary keys')
+        local kf1, kf2  = unpack(eff.dst:table():primary_key())
+        if #eff.path == 1 and
+           E.FieldToken.check(eff[1])
+        then
+          if (eff[1].name == kf1:name() or eff[1].name == kf2:name()) then
+            err = true
+            self:error(eff,
+              "Cannot write to primary key fields inside a merge")
+          end
+        end
+      end
+    else
+      err = true
+      self:error("no effects beside writing and reducing "..
+                 "the merge variable are allowed inside a merge-statement")
+    end
 
   elseif E.Filter.check(eff) then
     if not self:in_joinfilter() then
@@ -169,9 +245,35 @@ function Context:add_effect(eff)
       self:error(eff,
         "joins must emit into a different table than the operands "..
         "of the join.")
+    elseif #eff.dst:table():primary_key() > 0 and
+           self._emit_tables[eff.dst]
+    then
+      self:error(eff,
+        "cannot emit or merge more than once into a table with "..
+        "a primary key, because this may result in duplicates")
     else
-      if not self:try_write(eff, eff.dst:table(), newlist()) then
+      if not self:try_emit(eff, eff.dst:table()) then
         err = true end
+      self._emit_tables[eff.dst] = eff
+    end
+
+  elseif E.Merge.check(eff) then
+    if not self:in_joindo() then
+      err = true
+      self:error(eff,
+        "merge statements are only allowed inside join do blocks")
+    elseif self._scan_tables[eff.dst] then
+      self:error(eff,
+        "joins must merge into a different table than the operands "..
+        "of the join.")
+    elseif self._emit_tables[eff.dst] then
+      self:error(eff,
+        "cannot emit or merge more than once into a table with "..
+        "a primary key, because this may result in duplicates")
+    else
+      if not self:try_merge(eff, eff.dst:table()) then
+        err = true end
+      self._emit_tables[eff.dst] = eff
     end
 
   elseif E.Reduce.check(eff) then
@@ -187,7 +289,7 @@ function Context:add_effect(eff)
   elseif E.Write.check(eff) then
     err = true
     self:error(eff,
-      "writing to table fields is not allowed in gong")
+      "writing to table fields is not allowed in gong outside merges")
 
   elseif E.Scan.check(eff) then
     self._scan_tables[eff.src] = true
@@ -270,7 +372,16 @@ local function access_template(self,eff,tbl,path, new_mode)
                     "without conflicting with "..msg)
   end
   for _,f in ipairs(fs) do
-    if f.mode and f.mode ~= new_mode then
+    if f.mode and f.mode == 'merge' then
+      if not self:in_mergeblock() or not self:get_mergetable() == tbl then
+        err("merge at "..tostring(f.eff.srcinfo))
+      elseif new_mode == 'read' or new_mode:sub(1,6)=='reduce' or
+             new_mode == 'write'
+      then -- all-good, leave as merge
+      else
+        err("merge at "..tostring(f.eff.srcinfo))
+      end
+    elseif f.mode and f.mode ~= new_mode then
       err(f.mode.." at "..tostring(f.eff.srcinfo))
     else
       f.mode = new_mode; f.eff = eff
@@ -288,6 +399,12 @@ end
 function Context:try_write(eff, tbl, path)
   return access_template(self, eff, tbl, path, 'write')
 end
+function Context:try_emit(eff, tbl)
+  return access_template(self, eff, tbl, newlist(), 'emit')
+end
+function Context:try_merge(eff, tbl)
+  return access_template(self, eff, tbl, newlist(), 'merge')
+end
 
 
 -------------------------------------------------------------------------------
@@ -297,9 +414,7 @@ end
 function Exports.effectcheck(input_ast)
   local ctxt        = NewContext()
 
-  ctxt:enterblock()
   local effects     = input_ast:effectcheck(ctxt)
-  ctxt:leaveblock()
   local subfuncs    = ctxt:subfunclist()
   ctxt:finishandabortiferrors(3)
 
@@ -353,7 +468,7 @@ function AST.Join:effectcheck(ctxt)
 end
 
 function AST.ArgDecl:effectcheck(ctxt)
-  -- nada
+  ctxt:definevar(self.name)
 end
 
 
@@ -378,6 +493,12 @@ function AST.WhereFilter:effectcheck(ctxt)
   ctxt:add_effect(  E.Filter(self.srcinfo) )
 end
 function AST.EmitStmt:effectcheck(ctxt)
+  if #self.dst:table():primary_key() > 0 and ctxt:in_loop() then
+    ctxt:error(self,
+      "cannot emit into table with primary-key multiple times, "..
+      "but emit statement was inside of a loop")
+  end
+
   self.record:effectcheck(ctxt)
   ctxt:add_effect(  E.Emit(self.dst, self.srcinfo) )
 end
@@ -385,6 +506,26 @@ function AST.ReturnStmt:effectcheck(ctxt)
   self.expr:effectcheck(ctxt)
   ctxt.return_flag  = true
   ctxt:add_effect(  E.Return(self.expr.type, self.srcinfo) )
+end
+
+function AST.MergeStmt:effectcheck(ctxt)
+  if ctxt:in_mergeblock() then
+    ctxt:error(self, "cannot merge inside of another merge")
+  elseif ctxt:in_loop() then
+    ctxt:error(self, "cannot merge multiple times, but merge statement "..
+                     "was inside a loop")
+  else
+    -- effect
+    ctxt:add_effect( E.Merge(self.dst, self.srcinfo) )
+
+    -- set guard flags and process the merge body
+    ctxt:enter_mergeblock( self.name, self.dst )
+      self.body:effectcheck(ctxt)
+    ctxt:leave_mergeblock()
+    if self.else_emit then
+      self.else_emit.record:effectcheck(ctxt)
+    end
+  end
 end
 
 local function get_readwrite_path(lval, ctxt)
@@ -407,12 +548,30 @@ function AST.Assignment:effectcheck(ctxt)
   if AST.TableWrite.check(lval) then
     local path      = get_readwrite_path(lval, ctxt)
     lval            = lval.base
-    ctxt:add_effect(  E.Write( lval.type, path, self.srcinfo ) )
+    ctxt:add_effect(  E.Write( lval.type, path, self.srcinfo ),
+                      { mergeexpr = lval } )
+  elseif ctxt:in_noassign() then
+    -- check that we're not trying to assign to a variable defined
+    -- outside the no-assignment scope
+    while not AST.Var.check(lval) do
+      if AST.TensorIndex.check(lval) then
+        lval = lval.base
+      elseif AST.RecordRead.check(lval) then
+        lval = lval.base
+      else INTERNAL_ERR("unexpected lvalue: "..tostring(lval)) end
+    end
+    if not ctxt:is_definedvar(lval.name) then
+      ctxt:error(lval, "Cannot assign to '"..tostring(lval.name).."' "..
+                       "because it was defined outside of this "..
+                       "'no-assignment block' (either a "..
+                       "let-expression or a merge-statement)")
+    end
   end
   lval:effectcheck(ctxt)
   self.rval:effectcheck(ctxt)
 end
 function AST.DeclStmt:effectcheck(ctxt)
+  ctxt:definevar(self.name)
   self.rval:effectcheck(ctxt)
 end
 function AST.Reduction:effectcheck(ctxt)
@@ -421,7 +580,24 @@ function AST.Reduction:effectcheck(ctxt)
   if AST.TableWrite.check(lval) then
     local path      = get_readwrite_path(lval, ctxt)
     lval            = lval.base
-    ctxt:add_effect(  E.Reduce( self.op, lval.type, path, self.srcinfo ) )
+    ctxt:add_effect(  E.Reduce( self.op, lval.type, path, self.srcinfo ),
+                      { mergeexpr = lval } )
+  elseif ctxt:in_noassign() then
+    -- check that we're not trying to reduce to a variable defined
+    -- outside the no-assignment scope
+    while not AST.Var.check(lval) do
+      if AST.TensorIndex.check(lval) then
+        lval = lval.base
+      elseif AST.RecordRead.check(lval) then
+        lval = lval.base
+      else INTERNAL_ERR("unexpected lvalue: "..tostring(lval)) end
+    end
+    if not ctxt:is_definedvar(lval.name) then
+      ctxt:error(lval, "Cannot reduce into '"..tostring(lval.name).."' "..
+                       "because it was defined outside of this "..
+                       "'no-assignment block' (either a "..
+                       "let-expression or a merge-statement)")
+    end
   end
   lval:effectcheck(ctxt)
   self.rval:effectcheck(ctxt)
@@ -448,12 +624,15 @@ function AST.IfCase:effectcheck(ctxt)
   self.body:effectcheck(ctxt)
 end
 function AST.ForLoop:effectcheck(ctxt)
+  ctxt:definevar(self.itername)
   self.lo:effectcheck(ctxt)
   self.hi:effectcheck(ctxt)
   if self.stride then
     self.stride:effectcheck(ctxt)
   end
+  ctxt:enterloop()
   self.body:effectcheck(ctxt)
+  ctxt:leaveloop()
   ctxt.return_flag  = false
 end
 
@@ -524,9 +703,16 @@ end
 function AST.Cast:effectcheck(ctxt)
   self.arg:effectcheck(ctxt)
 end
+function AST.BuiltInStmt:effectcheck(ctxt)
+  effectcheck_all(self.args, ctxt)
+  local effects     = self.builtin._effectcheck(self.args, self, ctxt)
+  for _,eff in ipairs(effects) do
+    ctxt:add_effect(eff)
+  end
+end
 function AST.BuiltInCall:effectcheck(ctxt)
   effectcheck_all(self.args, ctxt)
-  local effects     = self.builtin._effectcheck(unpack(self.args))
+  local effects     = self.builtin._effectcheck(self.args, self, ctxt)
   for _,eff in ipairs(effects) do
     ctxt:add_effect(eff)
   end
@@ -542,9 +728,11 @@ function AST.FuncCall:effectcheck(ctxt)
   ctxt:add_func(self.func)
 end
 function AST.TensorMap:effectcheck(ctxt)
+  for _,nm in ipairs(self.names) do ctxt:definevar(nm) end
   self.expr:effectcheck(ctxt)
 end
 function AST.TensorFold:effectcheck(ctxt)
+  for _,nm in ipairs(self.names) do ctxt:definevar(nm) end
   self.expr:effectcheck(ctxt)
 end
 

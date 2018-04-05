@@ -16,10 +16,14 @@ local AST         = Typechecker.AST
 local INTERNAL_ERR  = Util.INTERNAL_ERR
 
 local Schemata    = require 'gong.src.schemata'
---local Global      = require 'gong.src.global'
+local Effects     = require 'gong.src.effectcheck'
 local Functions   = require 'gong.src.functions'
 local is_function = Functions.is_function
 local is_builtin  = Functions.is_builtin
+local is_emit     = Effects.Effects.Emit.check
+local is_merge    = Effects.Effects.Merge.check
+
+local C           = require 'gong.src.c'
 
 local newlist   = terralib.newlist
 
@@ -30,15 +34,26 @@ local newlist   = terralib.newlist
 local Context = {}
 Context.__index = Context
 
-local function NewContext(StoreWrap)
+local function NewContext(effects, StoreWrap)
   local ctxt = setmetatable({
     env           = terralib.newenvironment(nil),
     _W            = StoreWrap,
+    effects       = effects,
+    _scan_args    = nil,
   }, Context)
   return ctxt
 end
 function Context:localenv()
   return self.env:localenv()
+end
+
+function Context:SetScanArgs(a1,a2)
+  self._scan_args = newlist{a1,a2}
+end
+function Context:GetScanArgs()
+  if self._scan_args then
+    return unpack(self._scan_args)
+  end
 end
 
 function Context:GetTerraFunction(obj)
@@ -74,6 +89,10 @@ function Context:DoubleScan(srctype, rowA, rowB, code)
   return self._W:DoubleScan(self:StorePtr(), srctype, rowA, rowB, code)
 end
 
+function Context:Clear(dsttype)
+  return self._W:Clear(self:StorePtr(), dsttype)
+end
+
 function Context:Read(srctype, row, path)
   return self._W:Read(self:StorePtr(), srctype, row, path)
 end
@@ -88,6 +107,19 @@ end
 
 function Context:Insert(dsttype, vals)
   return self._W:Insert(self:StorePtr(), dsttype, vals)
+end
+
+function Context:PreMerge(dsttype)
+  return self._W:PreMerge(self:StorePtr(), dsttype)
+end
+
+function Context:PostMerge(dsttype)
+  return self._W:PostMerge(self:StorePtr(), dsttype)
+end
+
+function Context:MergeLookup(dsttype, row, key0, key1, body, else_vals)
+  return self._W:MergeLookup(self:StorePtr(), dsttype, row, key0, key1,
+                                                            body, else_vals)
 end
 
 -------------------------------------------------------------------------------
@@ -204,8 +236,8 @@ Exports.UNARY_OP      = UNARY_OP
 --[[                              Entry Point                              ]]--
 -------------------------------------------------------------------------------
 
-function Exports.codegen(name, ast, StoreWrap)
-  local ctxt        = NewContext(StoreWrap)
+function Exports.codegen(name, ast, effects, StoreWrap)
+  local ctxt        = NewContext(effects, StoreWrap)
   local func        = ast:codegen(ctxt)
   func:setname(name)
   return func
@@ -245,8 +277,17 @@ function AST.Join:codegen(ctxt)
   local outerargs       = newlist{ ctxt:StorePtr() }
   outerargs:insertall(fargs)
 
+  ctxt:SetScanArgs(rowA,rowB)
+
   local filter          = self.filter:codegen(ctxt)
   local doblock         = self.doblock:codegen(ctxt)
+
+  local emittbls        = {}
+  local mergetbls       = {}
+  for i,e in ipairs(ctxt.effects) do
+    if is_emit(e)   then emittbls[e.dst] = true   end
+    if is_merge(e)  then mergetbls[e.dst] = true  end
+  end
 
   local innerloop = terra( [innerargs] ) : bool
     [filter]
@@ -254,6 +295,11 @@ function AST.Join:codegen(ctxt)
     return true
   end
   local outerloop = terra( [outerargs] ) escape
+    -- clear out tables we're going to emit into
+    for dst,_ in pairs(emittbls) do emit( ctxt:Clear(dst) ) end
+    -- prepare any merge tables
+    for dst,_ in pairs(mergetbls) do emit( ctxt:PreMerge(dst) ) end
+    -- then do the main loops of the join
     if typA == typB then -- self-join
       emit( ctxt:DoubleScan(typA, rowA, rowB, quote
               innerloop( [innerargs] )
@@ -264,6 +310,8 @@ function AST.Join:codegen(ctxt)
                 innerloop( [innerargs] )
               end)))
     end
+    -- cleanup any merge tables
+    for dst,_ in pairs(mergetbls) do emit( ctxt:PostMerge(dst) ) end
   end end
   return outerloop, newlist{ innerloop }
 end
@@ -296,13 +344,27 @@ function AST.EmitStmt:codegen(ctxt)
   local dst       = self.dst
   return ctxt:Insert(dst, exprs)
 end
+function AST.MergeStmt:codegen(ctxt)
+  local rowvar    = ctxt:NewSym(self.name, self.dst)
+  local k0, k1    = ctxt:GetScanArgs()
+  local body      = self.body:codegen(ctxt)
+  local else_vals = nil
+  if self.else_emit then
+    else_vals     = codegen_all(self.else_emit.record.exprs, ctxt)
+  end
+  return ctxt:MergeLookup(self.dst, rowvar, k0, k1, body, else_vals)
+end
 function AST.ReturnStmt:codegen(ctxt)
   local expr      = self.expr:codegen(ctxt)
   return quote
     return [expr]
   end
 end
-
+function AST.BuiltInStmt:codegen(ctxt)
+  local args      = codegen_all(self.args, ctxt)
+  local call      = self.builtin._codegen(args, self, ctxt)
+  return call
+end
 
 function AST.PathField:codegen(ctxt)
   return self.name
@@ -359,13 +421,17 @@ function AST.Reduction:codegen(ctxt)
     local lval, stmts   = reduction_lval_unwind(self.lval, ctxt)
     local op            = self.op
     local typ           = self.lval.type
+    local rtyp          = self.rval.type
     if typ:is_tensor() then
       local btyp        = typ:basetype()
       local Nd          = typ._n_entries
       return quote
         [stmts]
         var rhs = [rval]
-        for k=0,Nd do REDUCE_OP(op, lval.d[k], rhs.d[k]) end
+        for k=0,Nd do
+          REDUCE_OP(op, lval.d[k], [ (rtyp:is_tensor() and `rhs.d[k])
+                                                        or `rhs ])
+        end
       end
     else
       return quote
@@ -412,7 +478,12 @@ function AST.Var:codegen(ctxt)
   return symname
 end
 function AST.LuaObj:codegen(ctxt)
-  INTERNAL_ERR("Should not have LuaObjects left at Codegen")
+  local val = self.type:is_internal() and self.type.value
+  if val and type(val) == 'string' then
+    return val
+  else
+    INTERNAL_ERR("Should not have LuaObjects left at Codegen")
+  end
 end
 function AST.NumLiteral:codegen(ctxt)
   local ttype         = self.type:terratype()
@@ -486,7 +557,9 @@ function AST.BinaryOp:codegen(ctxt)
   local op            = self.op
   local lhs           = self.lhs:codegen(ctxt)
   local rhs           = self.rhs:codegen(ctxt)
-  if ltyp:is_primitive() and rtyp:is_primitive() then
+  if ltyp:is_row() and rtyp:is_row() then
+    return `BINARY_OP(op,lhs,rhs)
+  elseif ltyp:is_primitive() and rtyp:is_primitive() then
     return `BINARY_OP(op,lhs,rhs)
   elseif op == '==' or op == '~=' then
     local btyp        = ltyp:basetype()
@@ -532,7 +605,7 @@ function AST.UnaryOp:codegen(ctxt)
       var res : ttype
       var e = [expr]
       for i=0,Nd do res.d[i] = UNARY_OP(op, e.d[i]) end
-    end
+    in res end
   end
 end
 
@@ -567,7 +640,7 @@ function AST.Cast:codegen(ctxt)
 end
 function AST.BuiltInCall:codegen(ctxt)
   local args          = codegen_all(self.args, ctxt)
-  local call          = self.builtin._codegen(ctxt, args, self.args)
+  local call          = self.builtin._codegen(args, self, ctxt)
   return call
 end
 function AST.FuncCall:codegen(ctxt)

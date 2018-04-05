@@ -1,4 +1,5 @@
 import 'gong'
+local test  = require 'tests.test'
 local G = gong.stdlib
 
 --local keyT            = G.uint32
@@ -14,11 +15,7 @@ local Edges           = G.NewTable('Edges')
 local Tris            = G.NewTable('Tris')
   Tris:NewField(  'v',        G.vector(Verts, 3) )
 
-local ETcontacts      = G.NewTable('ETcontacts', {
-                          join_policy = 'rebuild',
-                          -- i.e. destroy and rebuild the table
-                          -- every time a join emits into it.
-                        })
+local ETcontacts      = G.NewTable('ETcontacts')
 ETcontacts:NewField( 'edge',  Edges   )
 ETcontacts:NewField( 'tri',   Tris    )
 ETcontacts:NewField( 'pos',   G.vec3f )
@@ -177,9 +174,10 @@ local terra exec()
   end
 
   store:destroy()
+  return 0
 end
 
-exec()
+test.eq(exec(), 0)
 
 
 ------------------------------------------------------------------------------

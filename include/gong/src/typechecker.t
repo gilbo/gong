@@ -53,8 +53,9 @@ local ADT A
   Function    = { args    : ArgDecl*,
                   rettype : Type,
                   body    : Block,            srcinfo : SrcInfo }
-  Join        = { args    : ArgDecl*,
-                  filter  : Block,            
+  Join        = { scanargs  : ArgDecl*, -- exactly 2
+                  args      : ArgDecl*, -- inclusive of scanargs
+                  filter    : Block,            
                   doblock : Block,            srcinfo : SrcInfo }
 
   -- Shared Structural Components
@@ -70,7 +71,11 @@ local ADT A
           WhereFilter { expr      : Expr }
         | EmitStmt    { record    : RecordExpr,
                         dst       : Type }
+        | MergeStmt   { name      : Symbol,
+                        dst       : Type,
+                        body      : Block,    else_emit : EmitStmt? }
         | ReturnStmt  { expr      : Expr }
+        | BuiltInStmt { builtin   : BuiltIn,  args      : Expr* }
     -- Binding & Assignment
         | Assignment  { lval      : Expr,     rval      : Expr  }
         | DeclStmt    { name      : Symbol,   type      : Type,
@@ -149,6 +154,7 @@ local function NewContext()
     env       = terralib.newenvironment(nil),
     diag      = terralib.newdiagnostics(),
     _rettype  = T.error,
+    _joinargs = newlist(),
   }, Context)
   return ctxt
 end
@@ -209,6 +215,13 @@ function Context:add_return(typ, ast)
   else
     self._rettype = typ
   end
+end
+
+function Context:setjoinargs(a1,a2)
+  self._joinargs  = newlist{a1,a2}
+end
+function Context:getjoinargs()
+  return unpack(self._joinargs)
 end
 
 
@@ -343,12 +356,33 @@ function AST.Join:typecheck(ctxt)
   if #args >= 2 and not argtypes[2]:is_row() then
     ctxt:error(self, "expected second argument to be a table row") end
 
+  -- indirection on arguments
+  local a1, a2  = args[1], args[2]
+  local n1, n2  = a1.name:UniqueCopy(), a2.name:UniqueCopy()
+  local d1      = A.DeclStmt(a1.name, a1.type,
+                             A.Var(n1, a1.type, a1.srcinfo), a1.srcinfo)
+  local d2      = A.DeclStmt(a2.name, a2.type,
+                             A.Var(n2, a2.type, a2.srcinfo), a2.srcinfo)
+  args[1], args[2]  = A.ArgDecl(n1, a1.type, a1.srcinfo),
+                      A.ArgDecl(n2, a2.type, a2.srcinfo)
+  ctxt:settype(n1, a1.type)
+  ctxt:settype(n2, a2.type)
+  ctxt:setjoinargs(n1,n2)
+
+  local scanargs  = newlist{ args[1], args[2] }
+  local scantypes = newlist{ argtypes[1], argtypes[2] }
+
   local filter    = self.filter:typecheck(ctxt)
   local doblock   = self.doblock:typecheck(ctxt)
-  local ast       = A.Join(args, filter, doblock, self.srcinfo)
 
-  return Functions.NewJoin{
+  local stmts     = newlist{d1,d2}
+  stmts:insertall(  filter.stmts  )
+  filter          = A.Block( stmts, filter.srcinfo )
+  local ast       = A.Join(scanargs, args, filter, doblock, self.srcinfo)
+
+  return Functions.NewJoin {
     name        = self.name,
+    scantypes   = scantypes,
     argtypes    = argtypes,
     ast         = ast,
   }
@@ -389,6 +423,7 @@ function AST.EmitStmt:typecheck(ctxt)
   local rec       = self.record:typecheck(ctxt)
   assert(self.dst:is_row(), 'INTERNAL: expect row type')
   local dsttyp    = self.dst:record_type()
+  local dsttbl    = self.dst:table()
   local rectyp    = rec.type
 
   -- build association mapping
@@ -399,6 +434,38 @@ function AST.EmitStmt:typecheck(ctxt)
       expr        = rec.exprs[i],
     }
   end
+  if #dsttbl:primary_key() > 0 then
+    assert(#dsttbl:primary_key() == 2,
+           "INTERNAL: expect all primary keys of length 2")
+    local n1,n2   = ctxt:getjoinargs()
+    local f1,f2   = unpack(dsttbl:primary_key())
+    local err     = false
+    if f1:type() ~= ctxt:gettype(n1) then
+      ctxt:error("expected first join argument to match "..
+                 "primary key 1 type: "..tostring(f1:type())) end
+    if f2:type() ~= ctxt:gettype(n2) then
+      ctxt:error("expected first join argument to match "..
+                 "primary key 1 type: "..tostring(f2:type())) end
+    if mapping[f1:name()] then
+      ctxt:error(self, "primary key field "..f1:fullname()..
+                 " is automatically supplied, and may not be specified.")
+      err = true end
+    if mapping[f2:name()] then
+      ctxt:error(self, "primary key field "..f2:fullname()..
+                 " is automatically supplied, and may not be specified.")
+      err = true end
+    if err then return A.EmitStmt(rec, self.dst, self.srcinfo) end
+
+    mapping[f1:name()] = {
+      rec         = {type = f1:type()},
+      expr        = A.Var(n1, f1:type(), self.srcinfo),
+    }
+    mapping[f2:name()] = {
+      rec         = {type = f2:type()},
+      expr        = A.Var(n2, f2:type(), self.srcinfo),
+    }
+  end
+
   local exprs     = newlist()
   for i,df in ipairs(dsttyp.fields) do
     local lookup      = mapping[df.name] or {}
@@ -428,6 +495,29 @@ function AST.EmitStmt:typecheck(ctxt)
   -- build a record expression in the correct field order
   rec             = A.RecordExpr(exprs, dsttyp, rec.srcinfo)
   return A.EmitStmt(rec, self.dst, self.srcinfo)
+end
+
+function AST.MergeStmt:typecheck(ctxt)
+  assert(self.dst:is_row(), 'INTERNAL: expect row type')
+
+  -- typecheck subexpressions
+  ctxt:enterblock()
+  ctxt:settype(self.name, self.dst)
+  local body      = self.body:typecheck(ctxt)
+  ctxt:leaveblock()
+
+  -- possible emit
+  local else_emit = nil
+  if self.else_emit then
+    else_emit     = self.else_emit:typecheck(ctxt)
+    if self.dst ~= else_emit.dst then
+      ctxt:error(else_emit, "expected else-emit statement to emit into "..
+        "the merge table '"..self.dst:table():name().."' not into table "..
+        "'"..else_emit.dst:table():name().."'")
+    end
+  end
+
+  return A.MergeStmt(self.name, self.dst, body, else_emit, self.srcinfo)
 end
 
 function AST.ExprStmt:typecheck(ctxt)
@@ -969,9 +1059,13 @@ function AST.Call:typecheck(ctxt)
 
     -- Built-In Typechecking
     elseif is_builtin(obj) then
-      local typ, errs   = obj._typecheck(unpack(args))
-      if typ == T.error and #errs > 0 then
-        for _,e in ipairs(errs) do ctxt:error(self, e) end
+      local typ       = obj._typecheck(args,self,ctxt)
+      if typ == T.error then
+      elseif typ == nil then
+        local bi    = A.BuiltInStmt(obj, args, self.srcinfo)
+        local block = A.Block( newlist{ bi }, self.srcinfo )
+        local q     = Macro.NewQuote(block, self.srcinfo, true)
+        return A.LuaObj(T.internal(q), self.srcinfo)
       else
         return A.BuiltInCall(obj, args, typ, self.srcinfo)
       end
@@ -1061,14 +1155,12 @@ end
 function AST.Lookup:typecheck(ctxt)
   local base      = self.base:typecheck(ctxt)
   local args      = typecheck_all( self.args, ctxt )
-  local errtyp    = T.error
 
   if base.type == T.error then -- no-op
 
   -- Tensor Indexing
   elseif base.type:is_tensor() then
     local dims    = base.type.dims
-    errtyp        = base.type:basetype()
     if #args ~= #dims then
       ctxt:error(self, "expected "..(#dims).." arguments, but got "..(#args))
     else
@@ -1089,7 +1181,8 @@ function AST.Lookup:typecheck(ctxt)
           end
         elseif at:is_integral() and at:is_primitive() then -- all-good
         else
-          ctxt:error("cannot index with expression of type: "..tostring(at))
+          ctxt:error(self, "cannot index "..tostring(base.type)..
+                           " with expression of type "..tostring(at))
           has_err = true
         end
       end
@@ -1148,11 +1241,11 @@ function AST.Lookup:typecheck(ctxt)
     end
 
   else
-    ctxt:error(base, "cannot index an expression of this type: "..
+    ctxt:error(self, "cannot index an expression of this type: "..
                      tostring(base.type))
   end
 
-  return A.Var( NewSymbol(), errtyp, self.srcinfo )
+  return A.Var( NewSymbol(), T.error, self.srcinfo )
 end
 
 ---------------------------------------
@@ -1224,6 +1317,15 @@ end
 ---------------------------------------
 
 local function do_bin_coercion(self, lhs, rhs, ctxt, booloverride)
+  -- try convenience coercions of literals
+  if A.NumLiteral.check(lhs) then
+    local ltry = special_coercions(lhs, rhs.type, ctxt)
+    if ltry then lhs = ltry end
+  elseif A.NumLiteral.check(rhs) then
+    local rtry = special_coercions(rhs, lhs.type, ctxt)
+    if rtry then rhs = rtry end
+  end
+
   local typ       = lhs.type:join(rhs.type)
   if typ == T.error then
     ctxt:error(self, "could not find common type to coerce operands to; "..
@@ -1242,6 +1344,16 @@ end
 
 local function do_scalartensor_bin_coercion(self, lhs, rhs, ctxt)
   assert(lhs.type:is_tensor() ~= rhs.type:is_tensor())
+
+  -- try convenience coercions of literals
+  if A.NumLiteral.check(lhs) then
+    local ltry = special_coercions(lhs, rhs.type:basetype(), ctxt)
+    if ltry then lhs = ltry end
+  elseif A.NumLiteral.check(rhs) then
+    local rtry = special_coercions(rhs, lhs.type:basetype(), ctxt)
+    if rtry then rhs = rtry end
+  end
+
   local lbtyp     = (lhs.type:is_tensor() and lhs.type:basetype()) or lhs.type
   local rbtyp     = (rhs.type:is_tensor() and rhs.type:basetype()) or rhs.type
   local btyp      = lbtyp:join(rbtyp)
@@ -1302,7 +1414,9 @@ function AST.BinaryOp:typecheck(ctxt)
     end
 
   elseif op == '==' or op == '~=' then
-    if not lhs.type:dims_match(rhs.type) then
+    if lhs.type == rhs.type then -- exit rows early/safely
+      return A.BinaryOp(op, lhs, rhs, T.bool, self.srcinfo)
+    elseif not lhs.type:dims_match(rhs.type) then
       return err("dimensions don't match")
     else
       return do_bin_coercion(self, lhs, rhs, ctxt, true) -- bool-override
