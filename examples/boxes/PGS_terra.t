@@ -26,10 +26,12 @@ local assert  = G.cassert
 local function GeneratePGSSolver(API, params)
   Prelude.API_Extend(API)
 
-  local vec3  = API.vec3:terratype()
-  local quat  = API.quat:terratype()
-  local mat3  = API.mat3:terratype()
-  local num   = API.num:terratype()
+  local vec3    = API.vec3:terratype()
+  local quat    = API.quat:terratype()
+  local mat3    = API.mat3:terratype()
+  local num     = API.num:terratype()
+  local numEPS  = Prelude.FLT_EPSILON
+  if num == double then numEPS = C.DBL_EPSILON end
 
   -- useful constructor function/macros
   local v3 = macro(function(x,y,z)
@@ -66,6 +68,7 @@ local function GeneratePGSSolver(API, params)
   -- This is called a Baumgarte parameter.
   local baumgarte         = params.baumgarte or 0.2
   local beta_penetration  = constant(num, baumgarte * inv_timestep:asvalue())
+  local split_pen_threshold   = constant(num, 0.04)
 
   local friction_coefficient  = params.friction_coefficient or 0.30
   local gravity_acc           = params.gravity_acc or 9.8
@@ -74,6 +77,7 @@ local function GeneratePGSSolver(API, params)
 
   local max_iters         = params.max_iters or 50
 
+  local SIMD_EPS          = constant(num, numEPS)
   local EPS               = constant(num, 1e-5)
 
   -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
@@ -86,6 +90,7 @@ local function GeneratePGSSolver(API, params)
     -- data sizes
     n_boxes         : int
     n_contacts      : int
+    n_c_alloc       : int
     -- Boxes-parallel data
     --tmp_linvel      : &vec3
     --tmp_angvel      : &vec3
@@ -112,6 +117,7 @@ local function GeneratePGSSolver(API, params)
     --
     l_mult          : &vec3
     -- Contact-parallel 1x data
+    is_live         : &bool
     b0              : &uint
     b1              : &uint
     n_pts           : &uint
@@ -121,15 +127,36 @@ local function GeneratePGSSolver(API, params)
     store           : API.Store
   }
 
+  local terra getAllocLimit( store : API.Store )
+    var cs              = store:PPContacts()
+    var n_alloc         = cs:get_n_alloc()
+    var n_rows          = cs:get_n_rows()
+    -- now figure out the upper bound
+    var is_live         = cs:is_live():read_lock()
+    var LIMIT           = 0
+    while LIMIT < n_alloc do
+      if is_live[LIMIT] then
+        n_rows  = n_rows - 1
+      end
+      LIMIT     = LIMIT + 1
+      if n_rows == 0 then
+        break
+      end
+    end
+    cs:is_live():read_unlock()
+    return LIMIT
+  end
+
   terra PGS_State:alloc( store : API.Store )
     self.store          = store
 
     var bs              = store:Planks()
     var cs              = store:PPContacts()
     var nB              = bs:getsize()
-    var nC              = cs:getsize()
     self.n_boxes        = nB
-    self.n_contacts     = nC
+    self.n_contacts     = cs:get_n_rows()
+    self.n_c_alloc      = getAllocLimit(store)
+    var nC              = self.n_c_alloc
 
     -- box parallel additional
     escape for _,data in ipairs{
@@ -163,6 +190,7 @@ local function GeneratePGSSolver(API, params)
     -- contact parallel from store
     self.b0             = cs:p0():readwrite_lock()
     self.b1             = cs:p1():readwrite_lock()
+    self.is_live        = cs:is_live():read_lock()
     escape for _,name in ipairs{
       'n_pts', 'pts', 'basis',
     } do emit quote
@@ -178,6 +206,7 @@ local function GeneratePGSSolver(API, params)
       bs:[name]():readwrite_unlock()
     end end end
 
+    cs:is_live():read_unlock()
     escape for _,name in ipairs{
       'n_pts', 'pts', 'basis', 'p0', 'p1', 'l_mult',
     } do emit quote
@@ -188,10 +217,11 @@ local function GeneratePGSSolver(API, params)
     var bs              = self.store:Planks()
     assert( self.n_boxes == bs:getsize() )
     var cs              = self.store:PPContacts()
-    var newsize         = cs:getsize()
+    self.n_contacts     = cs:get_n_rows()
+    var newsize         = getAllocLimit(self.store)
     var oldsize         = self.n_contacts
-    self.n_contacts     = newsize
-    C.printf("    Found %d contacts\n", newsize)
+    self.n_c_alloc      = newsize
+    C.printf("    Found %d contacts (alloc %d)\n", self.n_contacts, newsize)
 
     -- box parallel from store
     escape for _,name in ipairs{
@@ -214,6 +244,7 @@ local function GeneratePGSSolver(API, params)
     -- contact parallel from store
     self.b0         = cs:p0():readwrite_lock()
     self.b1         = cs:p1():readwrite_lock()
+    self.is_live    = cs:is_live():read_lock()
     escape for _,name in ipairs{
       'n_pts', 'pts', 'basis',
     } do emit quote
@@ -252,6 +283,7 @@ local function GeneratePGSSolver(API, params)
     -- contact parallel from store
     cs:p0():readwrite_unlock()
     cs:p1():readwrite_unlock()
+    cs:is_live():read_unlock()
     escape for _,name in ipairs{
       'n_pts', 'pts', 'basis', 'l_mult',
     } do emit quote
@@ -281,7 +313,7 @@ local function GeneratePGSSolver(API, params)
     --C.printf("              invdiag -       -       ; -       -       -\n")
     --C.printf("              -       -       -       ; depth   -       \n")
     --C.printf("              force   -       -       ; torque  -       \n")
-    for c=0,self.n_contacts do
+    for c=0,self.n_c_alloc do if self.is_live[c] then
     C.printf("    %4d: (%d)  %4d, %4d\n", c, self.n_pts[c],
                                           self.b0[c], self.b1[c])
       for k=0,self.n_pts[c] do
@@ -295,7 +327,7 @@ local function GeneratePGSSolver(API, params)
     --C.printf("          %d : %7.3f %7.3f %7.3f ; %7.3f %7.3f %7.3f\n",
     --         k, 0,0,0, d(0), d(1), d(2))
       end
-    end
+    end end
   end
 
   -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
@@ -456,6 +488,7 @@ local function GeneratePGSSolver(API, params)
       for b=0,pgs.n_boxes do
         var v         = linvel[b] + dt * pgs.inv_mass[b]    * force[b]
         var w         = angvel[b] + dt * pgs.inv_inertia[b] * torque[b]
+        -- TODO: Add a Gyroscopic force
         linvel[b]     = v
         angvel[b]     = w
         pos[b]        = pos[b] + dt * v
@@ -537,7 +570,7 @@ local function GeneratePGSSolver(API, params)
       pgs.torque[b]       = inv_timestep * pgs.angvel[b] - angacc
     end
     -- form: Z/dt - J ( V0/dt - M^ F )          in rhs
-    for c=0,pgs.n_contacts do
+    for c=0,pgs.n_c_alloc do if self.is_live[c] then
       var J               = pgs:JACOBIAN(c, pgs.force, pgs.torque)
       for k=0,pgs.n_pts[c] do
         var rhs           = -J[k]
@@ -545,12 +578,12 @@ local function GeneratePGSSolver(API, params)
         rhs(0)            = rhs(0) + inv_timestep * beta_penetration * depth
         pgs.rhs[4*c+k]    = rhs
       end
-    end
+    end end
 
     -- F = (M^ J')L
     -- also set inv_diag & friction_limit
     pgs:zero_forcetorque()
-    for c=0,pgs.n_contacts do
+    for c=0,pgs.n_c_alloc do if self.is_live[c] then
       var b0,b1       = pgs.b0[c], pgs.b1[c]
       var LM          = pgs.l_mult + 4*c
       var v0,w0,v1,w1 = pgs:JACOBIAN_T( c, LM )
@@ -567,7 +600,7 @@ local function GeneratePGSSolver(API, params)
                     friction_coefficient * gravity_acc * f_mass * DIAG[k]
         pgs.inv_diag[4*c+k] = INV[k]
       end
-    end
+    end end
 
     --C.printf("START PGS\n")
     --pgs:print()
@@ -576,7 +609,7 @@ local function GeneratePGSSolver(API, params)
     var max_err = num(0)
     while true do
       max_err = num(0)
-      for c=0,pgs.n_contacts do
+      for c=0,pgs.n_c_alloc do if self.is_live[c] then
         var b0,b1       = pgs.b0[c], pgs.b1[c]
 
         -- L0   = L[c]
@@ -616,11 +649,11 @@ local function GeneratePGSSolver(API, params)
         --  C.printf("====END PGS ITER %d c=%d\n", iter, c)
         --  pgs:print()
         --end
-      end
+      end end
 
       -- Experimental reset force/torque
       --pgs:zero_forcetorque()
-      --for c=0,pgs.n_contacts do
+      --for c=0,pgs.n_c_alloc do if self.is_live[c] then
       --  var b0,b1       = pgs.b0[c], pgs.b1[c]
       --  var LM          = pgs.l_mult + 4*c
       --  var v0,w0,v1,w1 = pgs:JACOBIAN_T( c, LM )
@@ -628,7 +661,7 @@ local function GeneratePGSSolver(API, params)
       --  pgs.torque[b0]  = pgs.torque[b0] + pgs.inv_inertia[b0] * w0
       --  pgs.force[b1]   = pgs.force[b1]  + pgs.inv_mass[b1]    * v1
       --  pgs.torque[b1]  = pgs.torque[b1] + pgs.inv_inertia[b1] * w1
-      --end
+      --end end
 
       iter = iter + 1
       if max_err < EPS*EPS then break end
@@ -637,7 +670,7 @@ local function GeneratePGSSolver(API, params)
 
     -- independent error measurement
     --pgs:zero_forcetorque()
-    --for c=0,pgs.n_contacts do
+    --for c=0,pgs.n_c_alloc do if self.is_live[c] then
     --  var b0,b1       = pgs.b0[c], pgs.b1[c]
     --  var LM          = pgs.l_mult + 4*c
     --  var v0,w0,v1,w1 = pgs:JACOBIAN_T( c, LM )
@@ -645,9 +678,9 @@ local function GeneratePGSSolver(API, params)
     --  pgs.torque[b0]  = pgs.torque[b0] + pgs.inv_inertia[b0] * w0
     --  pgs.force[b1]   = pgs.force[b1]  + pgs.inv_mass[b1]    * v1
     --  pgs.torque[b1]  = pgs.torque[b1] + pgs.inv_inertia[b1] * w1
-    --end
+    --end end
     --var max_err2, norm_err = num(0), num(0)
-    --for c=0,pgs.n_contacts do
+    --for c=0,pgs.n_c_alloc do if self.is_live[c] then
     --  var J           = pgs:JACOBIAN(c, pgs.force, pgs.torque)
     --  for k=0,pgs.n_pts[c] do
     --    var derr      = J[k] - pgs.rhs[4*c+k]
@@ -655,7 +688,7 @@ local function GeneratePGSSolver(API, params)
     --    max_err2      = maxf(max_err2, err)
     --    norm_err      = norm_err + err
     --  end
-    --end
+    --end end
 
     --pgs:print()
     C.printf("    solver iters:  %d\n", iter)
@@ -664,7 +697,7 @@ local function GeneratePGSSolver(API, params)
     --C.printf("    norm_err: %20.10f\n", norm_err)
   end
 
-  terra PGS_State:do_timestep()
+  terra PGS_State:do_timestep( sfunc : API.Store->{} )
     var pgs         = self -- MUST REMAIN A POINTER
                            -- because of unlock/relock store calls
     var starttime   = taketime()
@@ -688,10 +721,15 @@ local function GeneratePGSSolver(API, params)
                           pgs.force,  pgs.torque )
 
     -- DO COLLISION DETECTION!
+    C.printf("  start collision\n")
     pgs:unlock_store()
+    C.printf("    unlocked\n")
     pgs.store:find_plank_iscts()
+    C.printf("    locking\n")
     pgs:relock_store() -- resize constraint-value arrays
     var midtime     = taketime()
+    C.printf("  end collision\n")
+    sfunc(pgs.store)
 
     -- Do the collision solve
     pgs:runPGS()
@@ -708,15 +746,19 @@ local function GeneratePGSSolver(API, params)
       pgs.torque[b]       = v3(0,0,0)
     end
     -- accumulate the constraint forces
-    for c=0,pgs.n_contacts do
+    for c=0,pgs.n_c_alloc do if self.is_live[c] then
       var b0,b1           = pgs.b0[c], pgs.b1[c]
       var LM              = pgs.l_mult + 4*c
       var v0,w0,v1,w1     = pgs:JACOBIAN_T(c,LM)
+      --pgs.linvel[b0]      = pgs.linvel[b0] + v0
+      --pgs.angvel[b0]      = pgs.angvel[b0] + w0
+      --pgs.linvel[b1]      = pgs.linvel[b1] + v1
+      --pgs.angvel[b1]      = pgs.angvel[b1] + w1
       pgs.force[b0]       = pgs.force[b0]  + v0
       pgs.torque[b0]      = pgs.torque[b0] + w0
       pgs.force[b1]       = pgs.force[b1]  + v1
       pgs.torque[b1]      = pgs.torque[b1] + w1
-    end
+    end end
 
     --pgs:print()
 
