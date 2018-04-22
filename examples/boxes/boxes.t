@@ -153,8 +153,8 @@ local ContactT = G.record {
 }
 local ContactBase = G.record {
   { 'norm',               vec3 },
-  { 'friction_0',         vec3 },
-  { 'friction_1',         vec3 },
+  --{ 'friction_0',         vec3 },
+  --{ 'friction_1',         vec3 },
 }
 
 local PPContacts      = G.NewTable('PPContacts', {
@@ -165,13 +165,14 @@ local PPContacts      = G.NewTable('PPContacts', {
                          :NewField('n_pts',       G.uint32)
                          :NewField('basis',       ContactBase)
                          :NewField('pts',         ContactT[4])
-                         :NewField('l_mult',      vec3[4])
+                         :NewField('l_mult',      num[4])
+                         :NewField('fric_mult',   num[4])
 
 local z3 = G.Constant(vec3, {0,0,0})
 
 
 local gong function l_mult_zero()
-  return { z3, z3, z3, z3 }
+  return { num(0), num(0), num(0), num(0) }
 end
 
 local gong function NullContacts() : ContactT[4]
@@ -185,9 +186,9 @@ end
 
 local gong function NullBasis() : ContactBase
   return {
-    norm        = z3,
-    friction_0  = z3,
-    friction_1  = z3
+    norm        = z3--,
+    --friction_0  = z3--,
+    --friction_1  = z3
   }
 end
 
@@ -756,7 +757,8 @@ local gong function refreshPoints( c : PPContacts )
   var n_out     = G.uint32(0)
   var pt_out    = NullContacts()
   var LM_out    = l_mult_zero()
-  G.print('refresh ', c.p0, c.p1)
+  var FM_out    = l_mult_zero()
+  --G.print('refresh ', c.p0, c.p1)
   for k=0,N do
     var p0, p1  = c.p0, c.p1
     var pt0     = qRot( p0.rot, c.pts[k].local0 ) + p0.pos
@@ -764,7 +766,7 @@ local gong function refreshPoints( c : PPContacts )
     var diff    = pt1-pt0
     var norm    = c.basis.norm
     var dep     = -G.dot(diff, norm)
-    G.print(' ',k,':', dep, c.pts[k].depth )
+    --G.print(' ',k,':', dep, c.pts[k].depth )
 
     if dep > -COLLISION_MARGIN then
       var projPt    = pt0 - dep * norm
@@ -774,12 +776,13 @@ local gong function refreshPoints( c : PPContacts )
         pt_out[n_out]       = c.pts[k]
         pt_out[n_out].pt    = 0.5*(pt0 + pt1)
         pt_out[n_out].depth = dep
-        for i=0,3 do LM_out[i,n_out]  = c.l_mult[i,k] end
+        LM_out[n_out]       = c.l_mult[k]
+        FM_out[n_out]       = c.fric_mult[k]
         n_out               = n_out + 1
       end
     end
   end
-  return n_out, pt_out, LM_out
+  return n_out, pt_out, LM_out, FM_out
 end
 
 local gong function compute_friction(norm : vec3)
@@ -787,7 +790,7 @@ local gong function compute_friction(norm : vec3)
   e[ vMinAbsAxis(norm) ] = 1
   var f0    = normed( G.cross(norm,e) )
   var f1    = G.cross(norm, f0)
-  return f0,f1
+  return f0, f1
 end
 
 -- quick accelerating check
@@ -808,17 +811,16 @@ local gong join find_plank_iscts ( p0 : Planks, p1 : Planks )
   var n_pts, norm, contacts = obb_isct(p0, p1)
   where n_pts > 0
 do
-  var f0,f1   = compute_friction(norm)
+  --var f0, f1 = compute_friction(norm)
 
   merge c in PPContacts do
-    c.basis             = { norm        = norm,
-                            friction_0  = f0,
-                            friction_1  = f1 }
+    c.basis             = { norm        = norm }
     -- sort out point-to-point correspondence
     if false then --n_pts == 1 or c.n_pts == 1 then -- just overwrite in simple case
       c.n_pts           = G.uint32(n_pts)
       c.pts             = contacts
       c.l_mult          = l_mult_zero()
+      c.fric_mult       = l_mult_zero()
     else
       --c.n_pts = 0
       -- for each new point,
@@ -827,35 +829,37 @@ do
       for k=0,n_pts do
         var id  = cacheLookup( c, contacts[k].local0 )
         if id >= 0 then
-          c.pts[id]     = contacts[k]
+          c.pts[id]       = contacts[k]
         elseif c.n_pts < 4 then
-          var id        = c.n_pts
-          c.n_pts       = id+1
-          c.pts[id]     = contacts[k]
-          for i=0,3 do c.l_mult[i,id] = num(0) end
+          var id          = c.n_pts
+          c.n_pts         = id+1
+          c.pts[id]       = contacts[k]
+          c.l_mult[id]    = num(0)
+          c.fric_mult[id] = num(0)
         else
-          id            = replacePoint( c, norm, contacts[k].pt,
-                                                 contacts[k].depth )
-          c.pts[id]     = contacts[k]
-          for i=0,3 do c.l_mult[i,id] = num(0) end
+          id              = replacePoint( c, norm, contacts[k].pt,
+                                                   contacts[k].depth )
+          c.pts[id]       = contacts[k]
+          c.l_mult[id]    = num(0)
+          c.fric_mult[id] = num(0)
         end
       end
       -- Then, update all the points, potentially discarding some
-      var N, PTS, LM = refreshPoints( c )
-      G.print('discard from-to...',c.n_pts,'-/->',N)
-      c.n_pts   = N
-      c.pts     = PTS
-      c.l_mult  = LM
+      var N, PTS, LM, FM = refreshPoints( c )
+      --G.print('discard from-to...',c.n_pts,'-/->',N)
+      c.n_pts     = N
+      c.pts       = PTS
+      c.l_mult    = LM
+      c.fric_mult = FM
     end
   else
     emit  { n_pts       = G.uint32(n_pts),
             basis       = {
-              norm        = norm,
-              friction_0  = f0,
-              friction_1  = f1
+              norm = norm
             },
             pts         = contacts,
-            l_mult      = l_mult_zero()
+            l_mult      = l_mult_zero(),
+            fric_mult   = l_mult_zero()
     } in PPContacts
   end
 end

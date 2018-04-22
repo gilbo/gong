@@ -285,17 +285,21 @@ end
 local terra print_boxes( store : API.Store )
   var n_box = store:Planks():getsize()
   var pos   = store:Planks():pos():readwrite_lock()
+  var vel   = store:Planks():linvel():readwrite_lock()
   var rot   = store:Planks():rot():readwrite_lock()
   var dims  = store:Planks():dims():readwrite_lock()
 
   for b=0,n_box do
     -- compute the box frame vectors
     var p     = pos[b]
+    var v     = vel[b]
 
-    C.printf('  box #%d:  %f %f %f\n', b, p(0), p(1), p(2))
+    C.printf('  box #%d:  %f %f %f  ;  %f %f %f\n',
+              b, p(0), p(1), p(2), v(0), v(1), v(2) )
   end
 
   store:Planks():pos():readwrite_unlock()
+  store:Planks():linvel():readwrite_unlock()
   store:Planks():rot():readwrite_unlock()
   store:Planks():dims():readwrite_unlock()
 end
