@@ -30,6 +30,8 @@ local assert        = C.assert
 
 local newlist       = terralib.newlist
 
+local verbosity = require('gong.src.verbosity').get_verbosity()
+
 -------------------------------------------------------------------------------
 
 --[[
@@ -1166,6 +1168,7 @@ function Wrapper:GenExternCAPI(prefix, export_funcs)
   HIERARCHY.joins = {}
   for _,jf in ipairs(export_funcs) do
     local tfunc   = W:get_terra_function(jf)
+    if verbosity > 3 then tfunc:printpretty(false) end
     local args    = newlist()
     local params  = tfunc:gettype().parameters
     for i=2,#params do
