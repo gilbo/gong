@@ -148,6 +148,16 @@ local INIT_REDOP = macro(function(op, typ, arg)
   op = op:asvalue()
   assert(type(op) == 'string', 'INTERNAL: expect string operator')
 
+  local fullbitmask = {
+    [uint8] = `0xFF,
+    [uint16] = `0xFFFF,
+    [uint32] = `0xFFFFFFFF,
+    [uint64] = `0xFFFFFFFFFFFFFFFFULL,
+    [int8] = `0xFF,
+    [int16] = `0xFFFF,
+    [int32] = `0xFFFFFFFF,
+    [int64] = `0xFFFFFFFFFFFFFFFFLL,
+  }
   -- + and * will be handled by the type of arg
   if      op == '+'   then  return quote [arg] = 0 end
   elseif  op == '*'   then  return quote [arg] = 1 end
@@ -160,11 +170,7 @@ local INIT_REDOP = macro(function(op, typ, arg)
     elseif not typ:issigned() then
       if op == 'max' then return quote [arg] = 0 end
       else -- op == 'min'
-        if      ttype == uint8  then return quote [arg] = 0xFF       end
-        elseif  ttype == uint16 then return quote [arg] = 0xFFFF     end
-        elseif  ttype == uint32 then return quote [arg] = 0xFFFFFFFF end
-        elseif  ttype == uint64 then
-                          return quote [arg] = 0xFFFFFFFFFFFFFFFFULL end
+        if fullbitmask[ttype] then return quote [arg] = [fullbitmask[ttype]] end
         else INTERNAL_ERR() end
       end
     else
@@ -185,7 +191,18 @@ local INIT_REDOP = macro(function(op, typ, arg)
       end
     end
     return quote [arg] = [math.huge]  end
-
+  elseif  op == 'and'  or op == 'or' then
+    if typ:is_logical() then
+      if op == 'and' then     return quote [arg] = true end
+      elseif op == 'or' then  return quote [arg] = false end
+      else INTERNAL_ERR() end
+    else
+      if op == 'and' then 
+        if fullbitmask[ttype] then return quote [arg] = [fullbitmask[ttype]] end
+        else INTERNAL_ERR() end
+      elseif op == 'or' then  return quote [arg] = false end
+      else INTERNAL_ERR() end
+    end
   else INTERNAL_ERR('unexpected reduction op: '..tostring(op)) end
 end)
 
@@ -196,6 +213,8 @@ local REDUCE_OP = macro(function(op, lhs, rhs)
   elseif  op == '*'   then  return quote [lhs] = [lhs] * [rhs] end
   elseif  op == 'min' then  return quote [lhs] = minf([lhs], [rhs]) end
   elseif  op == 'max' then  return quote [lhs] = maxf([lhs], [rhs]) end
+  elseif  op == 'and' then  return quote [lhs] = [lhs] and [rhs] end
+  elseif  op == 'or'  then  return quote [lhs] = [lhs] or [rhs] end
   else INTERNAL_ERR('unexpected reduction op: '..tostring(op)) end
 end)
 

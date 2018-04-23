@@ -781,16 +781,22 @@ function AST.Reduction:typecheck(ctxt)
     lval          = lval:lvalcheck(ctxt)
   end
 
+  local logredop_token_set = {
+  ['and']  = true,
+  ['or']   = true,
+  -- xor
+  }
+  local is_logical = logredop_token_set[self.op]
+
   if lval.type ~= T.error and rval.type ~= T.error then
     if redop_token_set[self.op] then
       local has_err = false
-      if not lval.type:is_numeric() then
+      if not (lval.type:is_numeric() or (is_logical and lval.type:is_logical())) then
         has_err   = true
         ctxt:error(lval, "expected numeric lvalue") end
-      if not rval.type:is_numeric() then
+      if not (rval.type:is_numeric() or (is_logical and rval.type:is_logical())) then
         has_err   = true
         ctxt:error(rval, "expected numeric expression") end
-
       if not has_err then
         -- handle special case of tensor lvalue with scalar rvalue
         local ltyp  = lval.type
