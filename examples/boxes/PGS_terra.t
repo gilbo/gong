@@ -26,10 +26,12 @@ local assert  = G.cassert
 local function GeneratePGSSolver(API, params)
   Prelude.API_Extend(API)
 
-  local vec3  = API.vec3:terratype()
-  local quat  = API.quat:terratype()
-  local mat3  = API.mat3:terratype()
-  local num   = API.num:terratype()
+  local vec3    = API.vec3:terratype()
+  local quat    = API.quat:terratype()
+  local mat3    = API.mat3:terratype()
+  local num     = API.num:terratype()
+  local numEPS  = Prelude.FLT_EPSILON
+  if num == double then numEPS = C.DBL_EPSILON end
 
   -- useful constructor function/macros
   local v3 = macro(function(x,y,z)
@@ -64,8 +66,10 @@ local function GeneratePGSSolver(API, params)
 
   -- I believe 0.2 is accurate to Bullet's default setting...
   -- This is called a Baumgarte parameter.
-  local baumgarte         = params.baumgarte or 0.2
+  local baumgarte         = params.baumgarte or 0.8
   local beta_penetration  = constant(num, baumgarte * inv_timestep:asvalue())
+  local split_pen_threshold   = constant(num, 0.04)
+  local warmstart_factor  = constant(num, 0.85)
 
   local friction_coefficient  = params.friction_coefficient or 0.30
   local gravity_acc           = params.gravity_acc or 9.8
@@ -74,6 +78,7 @@ local function GeneratePGSSolver(API, params)
 
   local max_iters         = params.max_iters or 50
 
+  local SIMD_EPS          = constant(num, numEPS)
   local EPS               = constant(num, 1e-5)
 
   -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
@@ -86,6 +91,7 @@ local function GeneratePGSSolver(API, params)
     -- data sizes
     n_boxes         : int
     n_contacts      : int
+    n_c_alloc       : int
     -- Boxes-parallel data
     --tmp_linvel      : &vec3
     --tmp_angvel      : &vec3
@@ -97,6 +103,11 @@ local function GeneratePGSSolver(API, params)
     pos_prev        : &vec3
     rot_prev        : &quat
     --
+    d_linvel        : &vec3
+    d_angvel        : &vec3
+    push            : &vec3
+    turn            : &vec3
+    --
     pos             : &vec3
     rot             : &quat
     linvel          : &vec3
@@ -106,12 +117,20 @@ local function GeneratePGSSolver(API, params)
     mass            : &num
     dims            : &vec3
     -- Contact-parallel 4x data
-    rhs             : &vec3
-    friction_limit  : &vec3
-    inv_diag        : &mat3
+    rhs             : &num
+    rhs_fric        : &num
+    rhsPos          : &num
+    fric_limit      : &num
+    inv_J           : &num
+    inv_J_fric      : &num
     --
-    l_mult          : &vec3
+    l_mult          : &num
+    fric_mult       : &num
+    pos_mult        : &num
+    --
+    friction_dir    : &vec3
     -- Contact-parallel 1x data
+    is_live         : &bool
     b0              : &uint
     b1              : &uint
     n_pts           : &uint
@@ -121,20 +140,43 @@ local function GeneratePGSSolver(API, params)
     store           : API.Store
   }
 
+  local terra getAllocLimit( store : API.Store )
+    var cs              = store:PPContacts()
+    var n_alloc         = cs:get_n_alloc()
+    var n_rows          = cs:get_n_rows()
+    -- now figure out the upper bound
+    var is_live         = cs:is_live():read_lock()
+    var LIMIT           = 0
+    while LIMIT < n_alloc do
+      if is_live[LIMIT] then
+        n_rows  = n_rows - 1
+      end
+      LIMIT     = LIMIT + 1
+      if n_rows == 0 then
+        break
+      end
+    end
+    cs:is_live():read_unlock()
+    return LIMIT
+  end
+
   terra PGS_State:alloc( store : API.Store )
     self.store          = store
 
     var bs              = store:Planks()
     var cs              = store:PPContacts()
     var nB              = bs:getsize()
-    var nC              = cs:getsize()
     self.n_boxes        = nB
-    self.n_contacts     = nC
+    self.n_contacts     = cs:get_n_rows()
+    self.n_c_alloc      = getAllocLimit(store)
+    var nC              = self.n_c_alloc
 
     -- box parallel additional
     escape for _,data in ipairs{
       {'inv_mass',    num },  {'inv_inertia', mat3},
       {'linvel_prev', vec3},  {'angvel_prev', vec3},
+      {'d_linvel',    vec3},  {'d_angvel',    vec3},
+      {'push',        vec3},  {'turn',        vec3},
       {'pos_prev',    vec3},  {'rot_prev',    quat},
     } do
       local name, typ = unpack(data)
@@ -151,18 +193,22 @@ local function GeneratePGSSolver(API, params)
 
     -- contact parallel additional
     escape for _,name in ipairs{
-      'rhs', 'friction_limit',
+      'rhs', 'rhs_fric', 'rhsPos',
+      'fric_limit', 'inv_J', 'inv_J_fric',
+      'pos_mult'
     } do emit quote
-      self.[name]       = [&vec3](C.malloc( nC * 4 * sizeof(vec3) ))
+      self.[name]       = [&num](C.malloc( nC * 4 * sizeof(num) ))
     end end end
-    self.inv_diag       = [&mat3](C.malloc( nC * 4 * sizeof(mat3) ))
+    self.friction_dir   = [&vec3](C.malloc( nC * 4 * sizeof(vec3) ))
 
     -- contact-parallel 4x with cast from store
-    self.l_mult         = [&vec3]( cs:l_mult():readwrite_lock() )
+    self.l_mult         = [&num]( cs:l_mult():readwrite_lock() )
+    self.fric_mult      = [&num]( cs:fric_mult():readwrite_lock() )
 
     -- contact parallel from store
     self.b0             = cs:p0():readwrite_lock()
     self.b1             = cs:p1():readwrite_lock()
+    self.is_live        = cs:is_live():read_lock()
     escape for _,name in ipairs{
       'n_pts', 'pts', 'basis',
     } do emit quote
@@ -178,8 +224,9 @@ local function GeneratePGSSolver(API, params)
       bs:[name]():readwrite_unlock()
     end end end
 
+    cs:is_live():read_unlock()
     escape for _,name in ipairs{
-      'n_pts', 'pts', 'basis', 'p0', 'p1', 'l_mult',
+      'n_pts', 'pts', 'basis', 'p0', 'p1', 'l_mult', 'fric_mult'
     } do emit quote
       cs:[name]():readwrite_unlock()
     end end end
@@ -188,10 +235,11 @@ local function GeneratePGSSolver(API, params)
     var bs              = self.store:Planks()
     assert( self.n_boxes == bs:getsize() )
     var cs              = self.store:PPContacts()
-    var newsize         = cs:getsize()
+    self.n_contacts     = cs:get_n_rows()
+    var newsize         = getAllocLimit(self.store)
     var oldsize         = self.n_contacts
-    self.n_contacts     = newsize
-    C.printf("    Found %d contacts\n", newsize)
+    self.n_c_alloc      = newsize
+    C.printf("    Found %d contacts (alloc %d)\n", self.n_contacts, newsize)
 
     -- box parallel from store
     escape for _,name in ipairs{
@@ -202,18 +250,23 @@ local function GeneratePGSSolver(API, params)
 
     -- contact parallel additional
     escape for _,name in ipairs{
-      'rhs', 'friction_limit',
+      'rhs', 'rhs_fric', 'rhsPos',
+      'fric_limit', 'inv_J', 'inv_J_fric',
+      'pos_mult'
     } do emit quote
-      self.[name] = [&vec3](C.realloc( self.[name], newsize*4*sizeof(vec3) ))
+      self.[name] = [&num](C.realloc( self.[name], newsize*4*sizeof(num) ))
     end end end
-    self.inv_diag = [&mat3](C.realloc(self.inv_diag, newsize*4*sizeof(mat3)))
+    self.friction_dir = [&vec3](C.realloc( self.friction_dir,
+                                           newsize*4*sizeof(vec3) ))
 
     -- contact-parallel 4x with cast from store
-    self.l_mult     = [&vec3]( cs:l_mult():readwrite_lock() )
+    self.l_mult     = [&num]( cs:l_mult():readwrite_lock() )
+    self.fric_mult  = [&num]( cs:fric_mult():readwrite_lock() )
 
     -- contact parallel from store
     self.b0         = cs:p0():readwrite_lock()
     self.b1         = cs:p1():readwrite_lock()
+    self.is_live    = cs:is_live():read_lock()
     escape for _,name in ipairs{
       'n_pts', 'pts', 'basis',
     } do emit quote
@@ -227,6 +280,7 @@ local function GeneratePGSSolver(API, params)
     -- box parallel additional
     escape for _,name in ipairs{
       'inv_mass', 'inv_inertia',
+      'd_linvel',    'd_angvel',    'push',     'turn',
       'linvel_prev', 'angvel_prev', 'pos_prev', 'rot_prev',
     } do emit quote
       C.free(self.[name])
@@ -243,7 +297,10 @@ local function GeneratePGSSolver(API, params)
 
     -- contact parallel additional
     escape for _,name in ipairs{
-      'rhs', 'friction_limit', 'inv_diag',
+      'rhs', 'rhs_fric', 'rhsPos',
+      'fric_limit', 'inv_J', 'inv_J_fric',
+      'pos_mult',
+      'friction_dir'
     } do emit quote
       C.free(self.[name])
       self.[name] = nil
@@ -252,8 +309,9 @@ local function GeneratePGSSolver(API, params)
     -- contact parallel from store
     cs:p0():readwrite_unlock()
     cs:p1():readwrite_unlock()
+    cs:is_live():read_unlock()
     escape for _,name in ipairs{
-      'n_pts', 'pts', 'basis', 'l_mult',
+      'n_pts', 'pts', 'basis', 'l_mult', 'fric_mult'
     } do emit quote
       self.[name] = nil
       cs:[name]():readwrite_unlock()
@@ -265,6 +323,7 @@ local function GeneratePGSSolver(API, params)
   -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
 
   terra PGS_State:print()
+    --[[
     C.printf("  BOXES       #%d\n", self.n_boxes)
     C.printf("           pos     -       -       ; vel     -       -       \n")
     C.printf("           force   -       -       ; torque  -       -       \n")
@@ -281,7 +340,7 @@ local function GeneratePGSSolver(API, params)
     --C.printf("              invdiag -       -       ; -       -       -\n")
     --C.printf("              -       -       -       ; depth   -       \n")
     --C.printf("              force   -       -       ; torque  -       \n")
-    for c=0,self.n_contacts do
+    for c=0,self.n_c_alloc do if self.is_live[c] then
     C.printf("    %4d: (%d)  %4d, %4d\n", c, self.n_pts[c],
                                           self.b0[c], self.b1[c])
       for k=0,self.n_pts[c] do
@@ -295,7 +354,8 @@ local function GeneratePGSSolver(API, params)
     --C.printf("          %d : %7.3f %7.3f %7.3f ; %7.3f %7.3f %7.3f\n",
     --         k, 0,0,0, d(0), d(1), d(2))
       end
-    end
+    end end
+    --]]
   end
 
   -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
@@ -326,154 +386,165 @@ local function GeneratePGSSolver(API, params)
     end
   end
 
-  PGS_State.methods.JACOBIAN = macro(function(pgs, ci, k, b_lin, b_ang)
-    if not b_ang then k, b_lin, b_ang = nil, k, b_lin end
+  PGS_State.methods.ComputeFrictionDir = macro(function(pgs, ci, k)
+    return quote
+      var b0      = pgs.b0[ci]
+      var b1      = pgs.b1[ci]
+      var x0, x1  = pgs.pos[b0],  pgs.pos[b1]
+      var v0, v1  = pgs.linvel[b0], pgs.linvel[b1]
+      var w0, w1  = pgs.angvel[b0], pgs.angvel[b1]
+
+      var n       = pgs.basis[ci].norm
+      var pt      = pgs.pts[ci].d[k].pt
+      var r0      = pt - x0
+      var r1      = pt - x1
+
+      var vel     = v1 - v0 + w1:cross(r1) - w0:cross(r0)
+      var lat     = vel - n:dot(vel) * n
+      var fdir    = lat
+      if lat:dot(lat) > numEPS then
+        fdir      = (num(1)/lat:norm()) * lat
+      else
+        if n(2) > [1/math.sqrt(2)] then
+          var a   = n(1)*n(1) + n(2)*n(2)
+          fdir    = (num(1)/C.sqrt(a)) * v3(0,-n(2), n(1))
+        else
+          var a   = n(0)*n(0) + n(1)*n(1)
+          fdir    = (num(1)/C.sqrt(a)) * v3(-n(1), n(0), 0)
+        end
+      end
+    in fdir end
+  end)
+
+  PGS_State.methods.JACOBIAN_Norm = macro(function(pgs, ci, k, b_lin, b_ang)
     return quote
       var b0      = pgs.b0[ci]
       var b1      = pgs.b1[ci]
       var x0, x1  = pgs.pos[b0],  pgs.pos[b1]
       var v0, v1  = b_lin[b0],    b_lin[b1]
       var w0, w1  = b_ang[b0],    b_ang[b1]
-      
-      var n       = pgs.basis[ci].norm
-      var f0      = pgs.basis[ci].friction_0
-      var f1      = pgs.basis[ci].friction_1
 
-      var n_pts   = pgs.n_pts[ci]
-      var div     = num(1)--/n_pts
-      --if n_pts == 0 then 
-      var lm  : vec3[4]
-      var lmk : vec3
-      escape if k then emit quote
-        var pt    = pgs.pts[ci].d[k].pt
-        var r0    = pt-x0
-        var r1    = pt-x1
-        
-        var wr0   = w0:cross(r0)
-        var wr1   = w1:cross(r1)
-        var d_acc = v1 + wr1 - v0 - wr0
-        lmk       = div*v3(n:dot(d_acc), f0:dot(d_acc), f1:dot(d_acc))
-      end else emit quote
-        for k=0,n_pts do
-          var pt    = pgs.pts[ci].d[k].pt
-          var r0    = pt-x0
-          var r1    = pt-x1
-          
-          var wr0   = w0:cross(r0)
-          var wr1   = w1:cross(r1)
-          var d_acc = v1 + wr1 - v0 - wr0
-          lm[k]     = div*v3(n:dot(d_acc), f0:dot(d_acc), f1:dot(d_acc))
-        end
-      end end end
-    in [(k and `lmk) or `lm] end
+      var n       = pgs.basis[ci].norm
+      var pt      = pgs.pts[ci].d[k].pt
+      var r0      = pt - x0
+      var r1      = pt - x1
+
+      var nwr0    = n:dot( w0:cross(r0) )
+      var nwr1    = n:dot( w1:cross(r1) )
+      var LM      = n:dot(v1) + nwr1 - n:dot(v0) - nwr0
+    in LM end
   end)
 
-  PGS_State.methods.JACOBIAN_T = macro(function(pgs, ci, k, lm)
-    if not lm then k, lm = nil, k end
+  PGS_State.methods.JACOBIAN_Fric = macro(function(pgs, ci, k, b_lin, b_ang)
+    return quote
+      var b0      = pgs.b0[ci]
+      var b1      = pgs.b1[ci]
+      var x0, x1  = pgs.pos[b0],  pgs.pos[b1]
+      var v0, v1  = b_lin[b0],    b_lin[b1]
+      var w0, w1  = b_ang[b0],    b_ang[b1]
+
+      var f       = pgs.friction_dir[4*ci+k]
+      var pt      = pgs.pts[ci].d[k].pt
+      var r0      = pt - x0
+      var r1      = pt - x1
+
+      var fwr0    = f:dot( w0:cross(r0) )
+      var fwr1    = f:dot( w1:cross(r1) )
+      var LM      = f:dot(v1) + fwr1 - f:dot(v0) - fwr0
+    in LM end
+  end)
+
+  PGS_State.methods.JACOBIAN_T_Norm = macro(function(pgs, ci, k, lm)
     return quote
       var b0      = pgs.b0[ci]
       var b1      = pgs.b1[ci]
       var x0, x1  = pgs.pos[b0],  pgs.pos[b1]
 
       var n       = pgs.basis[ci].norm
-      var f0      = pgs.basis[ci].friction_0
-      var f1      = pgs.basis[ci].friction_1
+      var pt      = pgs.pts[ci].d[k].pt
+      var r0      = pt - x0
+      var r1      = pt - x1
 
-      var v0, v1  = v3(0,0,0), v3(0,0,0)
-      var w0, w1  = v3(0,0,0), v3(0,0,0)
-      var n_pts   = pgs.n_pts[ci]
-      var div     = num(1)--/n_pts
-      escape if k then emit quote
-        var pt    = pgs.pts[ci].d[k].pt
-        var y     = div*lm
-        var c_F   = y(0)*n + y(1)*f0 + y(2)*f1
-
-        var r0    = pt-x0
-        var r1    = pt-x1
-        v0, w0    = -c_F, -r0:cross(c_F)
-        v1, w1    = c_F, r1:cross(c_F)
-      end else emit quote
-        for k=0,n_pts do
-          var pt    = pgs.pts[ci].d[k].pt
-          var y     = div*lm[k]
-          var c_F   = y(0)*n + y(1)*f0 + y(2)*f1
-
-          var r0    = pt-x0
-          var r1    = pt-x1
-          v0, w0    = v0-c_F, w0-r0:cross(c_F)
-          v1, w1    = v1+c_F, w1+r1:cross(c_F)
-        end
-      end end end
+      var nLM     = lm * n
+      var v0, w0  = -nLM, -r0:cross(nLM)
+      var v1, w1  = nLM, r1:cross(nLM)
     in v0,w0,v1,w1 end
   end)
 
-  PGS_State.methods.CacheJMJBlockDiagonal = macro(function(pgs, ci)
+  PGS_State.methods.JACOBIAN_T_Fric = macro(function(pgs, ci, k, lm)
     return quote
-      var b0          = pgs.b0[ci]
-      var b1          = pgs.b1[ci]
-      var n           = pgs.basis[ci].norm
-      var f0          = pgs.basis[ci].friction_0
-      var f1          = pgs.basis[ci].friction_1
+      var b0      = pgs.b0[ci]
+      var b1      = pgs.b1[ci]
+      var x0, x1  = pgs.pos[b0],  pgs.pos[b1]
+      
+      var f       = pgs.friction_dir[4*ci+k]
+      var pt      = pgs.pts[ci].d[k].pt
+      var r0      = pt - x0
+      var r1      = pt - x1
 
-      var lin_diag    = pgs.inv_mass[b0] + pgs.inv_mass[b1]
-      -- REGULARIZATION
-      --lin_diag        = lin_diag + 100*EPS
-      var lin_mat     = m3(lin_diag, 0, 0,
-                           0, lin_diag, 0,
-                           0, 0, lin_diag)
+      var fLM     = lm * f
+      var v0, w0  = -fLM, -r0:cross(fLM)
+      var v1, w1  = fLM, r1:cross(fLM)
+    in v0,w0,v1,w1 end
+  end)
 
+  PGS_State.methods.CacheJMJDiagonal = macro(function(pgs, ci)
+    return quote
+      var b0, b1      = pgs.b0[ci],           pgs.b1[ci]
       var x0, x1      = pgs.pos[b0],          pgs.pos[b1]
       var I0, I1      = pgs.inv_inertia[b0],  pgs.inv_inertia[b1]
+      var n           = pgs.basis[ci].norm
+
+      var lin_diag    = pgs.inv_mass[b0] + pgs.inv_mass[b1]
+
       var n_pts       = pgs.n_pts[ci]
-      var div         = num(1)--/n_pts
-      var diag    : vec3[4]
-      var invdiag : mat3[4]
+      var d_n     : num[4]
+      var inv_d_n : num[4]
+      var d_f     : num[4]
+      var inv_d_f : num[4]
       for k=0,n_pts do
+        var f         = pgs.friction_dir[4*ci+k]
         var pt        = pgs.pts[ci].d[k].pt
         var r0, r1    = x0-pt, x1-pt
+
         var r0n, r1n  = r0:cross(n),  r1:cross(n)
-        var r0f0,r1f0 = r0:cross(f0), r1:cross(f0)
-        var r0f1,r1f1 = r0:cross(f1), r1:cross(f1)
-        var B0        = m3( r0n(0), r0f0(0), r0f1(0),
-                            r0n(1), r0f0(1), r0f1(1),
-                            r0n(2), r0f0(2), r0f1(2) )
-        var B1        = m3( r1n(0), r1f0(0), r1f1(0),
-                            r1n(1), r1f0(1), r1f1(1),
-                            r1n(2), r1f0(2), r1f1(2) )
-        var M0        = B0:transpose() * (I0 * B0)
-        var M1        = B1:transpose() * (I1 * B1)
-        var DM        = div*div*(M0 + M1 + lin_mat)
-        diag[k]       = v3( DM(0,0), DM(1,1), DM(2,2) )
-        invdiag[k]    = DM:invert()
+        var r0f, r1f  = r0:cross(f),  r1:cross(f)
+        var DN        = lin_diag + r0n:dot( I0 * r0n ) + r1n:dot( I1 * r1n )
+        var DF        = lin_diag + r0f:dot( I0 * r0f ) + r1f:dot( I1 * r1f )
+        d_n[k]        = DN
+        d_f[k]        = DF
+        if DN == num(0) then  inv_d_n[k] = 0
+                        else  inv_d_n[k] = num(1)/DN  end
+        if DF == num(0) then  inv_d_f[k] = 0
+                        else  inv_d_f[k] = num(1)/DF  end
       end
-    in diag, invdiag end
+    in d_n, inv_d_n, d_f, inv_d_f end
   end)
 
-  PGS_State.methods.integrateForward = macro(
-  function(pgs, pos, rot, linvel, angvel, force, torque)
+  PGS_State.methods.integrateVelocities = macro(
+  function(pgs, b, linvel, angvel, force, torque)
     return quote
-      var dt          = timestep
-      for b=0,pgs.n_boxes do
-        var v         = linvel[b] + dt * pgs.inv_mass[b]    * force[b]
-        var w         = angvel[b] + dt * pgs.inv_inertia[b] * torque[b]
-        linvel[b]     = v
-        angvel[b]     = w
-        pos[b]        = pos[b] + dt * v
-        rot[b]        = rot[b]:integrateByAngVel( num(0.5*dt)*w )
-      end
+      var v         = linvel[b] + timestep * pgs.inv_mass[b]    * force[b]
+      var w         = angvel[b] + timestep * pgs.inv_inertia[b] * torque[b]
+      -- TODO: Add a Gyroscopic force
+    in v,w end
+  end)
+  PGS_State.methods.integratePositions = macro(
+  function(pgs, b, pos, rot, v, w)
+    return quote
+      pos[b]        = pos[b] + timestep * v
+      rot[b]        = rot[b]:integrateByAngVel( num(0.5*timestep)*w )
     end
   end)
 
-  terra PGS_State:zero_forcetorque()
+  terra PGS_State:zero_push_delta()
     for b=0,self.n_boxes do
-      self.force[b]   = v3(0,0,0)
-      self.torque[b]  = v3(0,0,0)
+      self.push[b]      = v3(0,0,0)
+      self.turn[b]      = v3(0,0,0)
+      self.d_linvel[b]  = v3(0,0,0)
+      self.d_angvel[b]  = v3(0,0,0)
     end
   end
-
-  local v3_by_pt = macro(function(a,b)
-    return `v3( a(0)*b(0), a(1)*b(1), a(2)*b(2) )
-  end)
 
   --[[
   Notes on system to solve:
@@ -524,120 +595,167 @@ local function GeneratePGSSolver(API, params)
 
   --]]
 
-  terra PGS_State:runPGS()
-    var pgs         = @self
-    var iter        = 0
+  local pgs_loop = macro(function(
+    pgs,
+    JACOBIAN, JACOBIAN_T,
+    linvel, angvel, mult, rhs,
+    inv_diag, use_friction, in_push, max_err
+  )
+    use_friction  = use_friction:asvalue()
+    in_push       = in_push:asvalue()
+    JACOBIAN      = JACOBIAN:asvalue()
+    JACOBIAN_T    = JACOBIAN_T:asvalue()
+    assert(type(use_friction) == 'boolean')
+    assert(type(in_push) == 'boolean')
+    assert(type(JACOBIAN)     == 'string')
+    assert(type(JACOBIAN_T)   == 'string')
 
-    -- Init RHS
-    -- form: V0/dt - M^ F                       in tmp_vel
-    for b=0,pgs.n_boxes do
-      var linacc          = pgs.inv_mass[b]    * pgs.force[b]
-      var angacc          = pgs.inv_inertia[b] * pgs.torque[b]
-      pgs.force[b]        = inv_timestep * pgs.linvel[b] - linacc
-      pgs.torque[b]       = inv_timestep * pgs.angvel[b] - angacc
-    end
-    -- form: Z/dt - J ( V0/dt - M^ F )          in rhs
-    for c=0,pgs.n_contacts do
-      var J               = pgs:JACOBIAN(c, pgs.force, pgs.torque)
-      for k=0,pgs.n_pts[c] do
-        var rhs           = -J[k]
-        var depth         = pgs.pts[c].d[k].depth
-        rhs(0)            = rhs(0) + inv_timestep * beta_penetration * depth
-        pgs.rhs[4*c+k]    = rhs
-      end
-    end
-
-    -- F = (M^ J')L
-    -- also set inv_diag & friction_limit
-    pgs:zero_forcetorque()
-    for c=0,pgs.n_contacts do
-      var b0,b1       = pgs.b0[c], pgs.b1[c]
-      var LM          = pgs.l_mult + 4*c
-      var v0,w0,v1,w1 = pgs:JACOBIAN_T( c, LM )
-      pgs.force[b0]   = pgs.force[b0]  + pgs.inv_mass[b0]    * v0
-      pgs.torque[b0]  = pgs.torque[b0] + pgs.inv_inertia[b0] * w0
-      pgs.force[b1]   = pgs.force[b1]  + pgs.inv_mass[b1]    * v1
-      pgs.torque[b1]  = pgs.torque[b1] + pgs.inv_inertia[b1] * w1
-
-      var DIAG, INV   = pgs:CacheJMJBlockDiagonal(c)
-      var f_mass      = num(1) / num(pgs.n_pts[c])
-      for k=0,pgs.n_pts[c] do
-        -- set diagonal and limits
-        pgs.friction_limit[4*c+k] =
-                    friction_coefficient * gravity_acc * f_mass * DIAG[k]
-        pgs.inv_diag[4*c+k] = INV[k]
-      end
-    end
-
-    --C.printf("START PGS\n")
-    --pgs:print()
-
-    -- PGS Loop
-    var max_err = num(0)
-    while true do
-      max_err = num(0)
-      for c=0,pgs.n_contacts do
+    return quote
+      for c=0,pgs.n_c_alloc do if pgs.is_live[c] then
         var b0,b1       = pgs.b0[c], pgs.b1[c]
 
         -- L0   = L[c]
         -- L[c] = Proj( L0 + ((RHS - J F)[c] / D[c]) )
         -- dL   = L[c] - L0
-        for k=0,pgs.n_pts[c] do
-          var J             = pgs:JACOBIAN(c, k, pgs.force, pgs.torque)
-          -- REGULARIZATION
-          --J                 = J + 100*v3(EPS,EPS,EPS)
-          var tmp           = pgs.rhs[4*c+k] - J
-          var L0            = pgs.l_mult[4*c+k]
-          tmp               = L0 + pgs.inv_diag[4*c+k]*tmp
-      --C.printf("  J %15.10f %15.10f %15.10f\n", J[k](0), J[k](1), J[k](2))
-      --C.printf("  tmp %15.10f %15.10f %15.10f\n", tmp(0), tmp(1), tmp(2))
+        for k=0,pgs.n_pts[c] do if (not in_push) or rhs[4*c+k] ~= num(0) then
+          var J             = pgs:[JACOBIAN]( c, k, linvel, angvel )
+          var tmp           = rhs[4*c+k] - J
+          var L0            = mult[4*c+k]
+          tmp               = L0 + inv_diag[4*c+k]*tmp
           -- Project
-          var lim           = pgs.friction_limit[4*c+k]
-          tmp               = v3(   maxf( tmp(0), 0 ),
-                                  clampf( tmp(1), -lim(1), lim(1) ),
-                                  clampf( tmp(2), -lim(2), lim(2) ) )
-          pgs.l_mult[4*c+k] = tmp
+          escape if use_friction then emit quote
+            var lim         = pgs.fric_limit[4*c+k]
+            tmp             = clampf( tmp, -lim, lim )
+          end else emit quote
+            tmp             = maxf( tmp, 0 )
+          end end end
+          mult[4*c+k]       = tmp
           var dL            = tmp - L0
-          max_err           = maxf(max_err, dL:dot(dL))
+          max_err           = maxf(max_err, C.fabs(dL))
 
           -- F[b0] += dL * (M^ J')[c,b0]
           -- F[b1] += dL * (M^ J')[c,b1]
-          var v0,w0,v1,w1   = pgs:JACOBIAN_T( c, k, dL )
-          --C.printf(" b0 b1 %d %d\n", b0, b1)
-          --C.printf("  w0 %15.10f %15.10f %15.10f\n", w0(0), w0(1), w0(2))
-          --C.printf("  w1 %15.10f %15.10f %15.10f\n", w1(0), w1(1), w1(2))
-          pgs.force[b0]     = pgs.force[b0]  + pgs.inv_mass[b0]    * v0
-          pgs.torque[b0]    = pgs.torque[b0] + pgs.inv_inertia[b0] * w0
-          pgs.force[b1]     = pgs.force[b1]  + pgs.inv_mass[b1]    * v1
-          pgs.torque[b1]    = pgs.torque[b1] + pgs.inv_inertia[b1] * w1
-        end
+          var v0,w0,v1,w1   = pgs:[JACOBIAN_T]( c, k, dL )
+          linvel[b0]        = linvel[b0] + pgs.inv_mass[b0]    * v0
+          angvel[b0]        = angvel[b0] + pgs.inv_inertia[b0] * w0
+          linvel[b1]        = linvel[b1] + pgs.inv_mass[b1]    * v1
+          angvel[b1]        = angvel[b1] + pgs.inv_inertia[b1] * w1
+        end end
+      end end
+    end
+  end)
 
-        --if iter < 3 then
-        --  C.printf("====END PGS ITER %d c=%d\n", iter, c)
-        --  pgs:print()
-        --end
+  terra PGS_State:runPGS()
+    var pgs         = @self
+
+    -- form RHS and setup other values
+    pgs:zero_push_delta()
+    for c=0,pgs.n_c_alloc do if self.is_live[c] then
+      -- Set the Friction Directions
+      for k=0,pgs.n_pts[c] do
+        pgs.friction_dir[4*c+k] = pgs:ComputeFrictionDir(c, k)
       end
 
-      -- Experimental reset force/torque
-      --pgs:zero_forcetorque()
-      --for c=0,pgs.n_contacts do
-      --  var b0,b1       = pgs.b0[c], pgs.b1[c]
-      --  var LM          = pgs.l_mult + 4*c
-      --  var v0,w0,v1,w1 = pgs:JACOBIAN_T( c, LM )
-      --  pgs.force[b0]   = pgs.force[b0]  + pgs.inv_mass[b0]    * v0
-      --  pgs.torque[b0]  = pgs.torque[b0] + pgs.inv_inertia[b0] * w0
-      --  pgs.force[b1]   = pgs.force[b1]  + pgs.inv_mass[b1]    * v1
-      --  pgs.torque[b1]  = pgs.torque[b1] + pgs.inv_inertia[b1] * w1
-      --end
+      -- Cache Inverse Diagonal Data
+      var D_N, I_N, D_F, I_F  = pgs:CacheJMJDiagonal(c)
+      var f_mass              = num(1) / num(pgs.n_pts[c])
+      for k=0,pgs.n_pts[c] do
+        -- set diagonal and limits
+        pgs.fric_limit[4*c+k] = friction_coefficient * gravity_acc *
+                                f_mass * D_F[k] --* timestep
+        pgs.inv_J[4*c+k]      = I_N[k]
+        pgs.inv_J_fric[4*c+k] = I_F[k]
+      end
+
+      -- Compute the Right-Hand-Side and warmstart values...
+      for k=0,pgs.n_pts[c] do
+        var J             = pgs:JACOBIAN_Norm(c, k, pgs.linvel, pgs.angvel)
+        var Jf            = pgs:JACOBIAN_Fric(c, k, pgs.linvel, pgs.angvel)
+        -- velocity impulse is initialized to the goal of achieving 0 velocity
+        var velImpulse    = -J --* I_N[k]
+        var posImpulse    = num(0)
+        -- the required update to the position to resolve interpenetration
+        -- can be handled either by updating the velocity (which we do in
+        -- cases where the interpenetration is negative or very slight) or
+        -- by updating the position directly. (in more severe conditions)
+        var depth         = pgs.pts[c].d[k].depth
+        if depth > 0 then
+          posImpulse          = posImpulse
+                              + inv_timestep * baumgarte * depth --* I_N[k]
+        else
+          velImpulse          = velImpulse
+                              + inv_timestep * depth --* I_N[k]
+        end
+        if depth < split_pen_threshold then
+          pgs.rhs[4*c+k]      = posImpulse + velImpulse
+          pgs.rhsPos[4*c+k]   = num(0)
+        else
+          pgs.rhs[4*c+k]      = velImpulse
+          pgs.rhsPos[4*c+k]   = posImpulse
+        end
+        -- set friction right-hand side
+        pgs.rhs_fric[4*c+k]   = -Jf --* I_F[k]
+        C.printf("     - c(k) %d(%d) - %f, %f p v %f %f invj %f J %f %f\n",
+                c, k, depth, pgs.rhs[4*c+k], posImpulse, velImpulse,
+                I_N[k], J, inv_timestep)
+
+        -- intialize the linvel/angvel variables
+        var b0,b1             = pgs.b0[c], pgs.b1[c]
+        var im0, im1          = pgs.inv_mass[b0], pgs.inv_mass[b1]
+        var iI0, iI1          = pgs.inv_inertia[b0], pgs.inv_inertia[b1]
+        var LM                = pgs.l_mult[4*c+k]     * warmstart_factor
+        var FM                = pgs.fric_mult[4*c+k]  * warmstart_factor
+        var v0, w0, v1, w1    = pgs:JACOBIAN_T_Norm(c,k,LM)
+        var vf0,wf0,vf1,wf1   = pgs:JACOBIAN_T_Fric(c,k,FM)
+        pgs.d_linvel[b0]      = pgs.d_linvel[b0] + im0 * (v0 + vf0)
+        pgs.d_angvel[b0]      = pgs.d_angvel[b0] + iI0 * (w0 + wf0)
+        pgs.d_linvel[b1]      = pgs.d_linvel[b1] + im1 * (v1 + vf1)
+        pgs.d_angvel[b1]      = pgs.d_angvel[b1] + iI1 * (w1 + wf1)
+
+        -- intialize the multiplier variables
+        pgs.l_mult[4*c+k]     = LM
+        pgs.fric_mult[4*c+k]  = FM
+        pgs.pos_mult[4*c+k]   = num(0)
+      end
+    end end
+
+    var max_err     = num(0)
+    var iter        = 0
+
+    -- PGS Loop for Pushing
+    while true do
+      max_err = num(0)
+
+      pgs_loop(pgs, 'JACOBIAN_Norm', 'JACOBIAN_T_Norm',
+               pgs.push, pgs.turn, pgs.pos_mult, pgs.rhsPos,
+               pgs.inv_J, false, true, max_err)
 
       iter = iter + 1
-      if max_err < EPS*EPS then break end
+      if max_err < EPS then break end
+      if iter >= max_iters then break end
+    end
+
+    -- PGS Loop
+    iter            = 0
+    while true do
+      max_err = num(0)
+
+      pgs_loop(pgs, 'JACOBIAN_Norm', 'JACOBIAN_T_Norm',
+               pgs.d_linvel, pgs.d_angvel, pgs.l_mult, pgs.rhs,
+               pgs.inv_J, false, false, max_err)
+
+      pgs_loop(pgs, 'JACOBIAN_Fric', 'JACOBIAN_T_Fric',
+               pgs.d_linvel, pgs.d_angvel, pgs.fric_mult, pgs.rhs_fric,
+               pgs.inv_J_fric, true, false, max_err)
+
+      iter = iter + 1
+      if max_err < EPS then break end
       if iter >= max_iters then break end
     end
 
     -- independent error measurement
     --pgs:zero_forcetorque()
-    --for c=0,pgs.n_contacts do
+    --for c=0,pgs.n_c_alloc do if self.is_live[c] then
     --  var b0,b1       = pgs.b0[c], pgs.b1[c]
     --  var LM          = pgs.l_mult + 4*c
     --  var v0,w0,v1,w1 = pgs:JACOBIAN_T( c, LM )
@@ -645,9 +763,9 @@ local function GeneratePGSSolver(API, params)
     --  pgs.torque[b0]  = pgs.torque[b0] + pgs.inv_inertia[b0] * w0
     --  pgs.force[b1]   = pgs.force[b1]  + pgs.inv_mass[b1]    * v1
     --  pgs.torque[b1]  = pgs.torque[b1] + pgs.inv_inertia[b1] * w1
-    --end
+    --end end
     --var max_err2, norm_err = num(0), num(0)
-    --for c=0,pgs.n_contacts do
+    --for c=0,pgs.n_c_alloc do if self.is_live[c] then
     --  var J           = pgs:JACOBIAN(c, pgs.force, pgs.torque)
     --  for k=0,pgs.n_pts[c] do
     --    var derr      = J[k] - pgs.rhs[4*c+k]
@@ -655,7 +773,7 @@ local function GeneratePGSSolver(API, params)
     --    max_err2      = maxf(max_err2, err)
     --    norm_err      = norm_err + err
     --  end
-    --end
+    --end end
 
     --pgs:print()
     C.printf("    solver iters:  %d\n", iter)
@@ -664,7 +782,7 @@ local function GeneratePGSSolver(API, params)
     --C.printf("    norm_err: %20.10f\n", norm_err)
   end
 
-  terra PGS_State:do_timestep()
+  terra PGS_State:do_timestep( sfunc : API.Store->{} )
     var pgs         = self -- MUST REMAIN A POINTER
                            -- because of unlock/relock store calls
     var starttime   = taketime()
@@ -682,47 +800,45 @@ local function GeneratePGSSolver(API, params)
     -- and cache the mass matrix, inverted
     pgs:cacheInvMassMatrix()
 
-    -- integrate forward
-    pgs:integrateForward( pgs.pos,    pgs.rot,
-                          pgs.linvel, pgs.angvel,
-                          pgs.force,  pgs.torque )
-
     -- DO COLLISION DETECTION!
+    C.printf("  start collision\n")
     pgs:unlock_store()
+    C.printf("    unlocked\n")
     pgs.store:find_plank_iscts()
+    C.printf("    locking\n")
     pgs:relock_store() -- resize constraint-value arrays
     var midtime     = taketime()
+    C.printf("  end collision\n")
+    sfunc(pgs.store)
+
+    -- integrate forward velocities for the solver
+    for b=0,pgs.n_boxes do
+      var v, w = pgs:integrateVelocities( b, pgs.linvel, pgs.angvel,
+                                             pgs.force,  pgs.torque )
+      pgs.linvel[b]   = v
+      pgs.angvel[b]   = w
+    end
 
     -- Do the collision solve
     pgs:runPGS()
 
-    -- unpack the result, and then integrate the result
-    -- set gravity force,
-    -- restore the old state
+    -- now correct the predicted velocity and position using
+    -- solved contact adjustments
     for b=0,pgs.n_boxes do
-      pgs.pos[b]          = pgs.pos_prev[b]
-      pgs.rot[b]          = pgs.rot_prev[b]
-      pgs.linvel[b]       = pgs.linvel_prev[b]
-      pgs.angvel[b]       = pgs.angvel_prev[b]
-      pgs.force[b]        = v3(0, -pgs.mass[b]*gravity_acc, 0)
-      pgs.torque[b]       = v3(0,0,0)
-    end
-    -- accumulate the constraint forces
-    for c=0,pgs.n_contacts do
-      var b0,b1           = pgs.b0[c], pgs.b1[c]
-      var LM              = pgs.l_mult + 4*c
-      var v0,w0,v1,w1     = pgs:JACOBIAN_T(c,LM)
-      pgs.force[b0]       = pgs.force[b0]  + v0
-      pgs.torque[b0]      = pgs.torque[b0] + w0
-      pgs.force[b1]       = pgs.force[b1]  + v1
-      pgs.torque[b1]      = pgs.torque[b1] + w1
+      var v                 = pgs.linvel[b] + pgs.d_linvel[b]
+      var w                 = pgs.angvel[b] + pgs.d_angvel[b]
+      pgs.linvel[b]         = v
+      pgs.angvel[b]         = w
+
+      var push, turn        = pgs.push[b], pgs.turn[b]
+      var dv                = pgs.d_linvel[b]
+      C.printf("     - b %d - %f %f %f  ;  %f %f %f\n",
+               b, push(0), push(1), push(2), dv(0), dv(1), dv(2))
+      v                     = v + push
+      w                     = w + num(0.1) * turn
+      pgs:integratePositions(b, pgs.pos, pgs.rot, v, w)
     end
 
-    --pgs:print()
-
-    pgs:integrateForward( pgs.pos,    pgs.rot,
-                          pgs.linvel, pgs.angvel,
-                          pgs.force,  pgs.torque )
     var stoptime    = taketime()
 
     var collide     = midtime  - starttime

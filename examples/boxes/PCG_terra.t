@@ -76,6 +76,7 @@ local function GeneratePCGSolver(API, params)
 
   -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
 
+  error("TODO:  Need to update PCG to handle sparsity in contacts array")
   local struct PCG_State {
     -- scalar solver data
     alpha_numerator : num

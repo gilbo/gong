@@ -11,8 +11,13 @@ local C       = terralib.includecstring [[
 #include "stdio.h"
 #include "sys/time.h"
 #include "unistd.h"
+#include "float.h"
+float _GET_FLT_EPSILON() { return FLT_EPSILON; }
+double _GET_DBL_EPSILON() { return DBL_EPSILON; }
 ]]
 Exports.C = C
+Exports.FLT_EPSILON = C._GET_FLT_EPSILON()
+Exports.DBL_EPSILON = C._GET_DBL_EPSILON()
 
 Exports.taketime = macro(function()
   return quote

@@ -60,7 +60,7 @@ local terra exec()
   var B           = store:B()
   var OUT         = store:OUT()
 
-  var N = 6
+  var N = 10
   A:beginload(N)
   for k=0,N do
     A:loadrow( k )
@@ -79,7 +79,7 @@ local terra exec()
     CHECK_ERR(store)
     var n_OUT     = OUT:get_n_rows()
     var ALLOC     = OUT:get_n_alloc()
-    if n_OUT ~= 6 then ERR("expected 6 contacts; got %d", n_OUT) end
+    if n_OUT ~= 10 then ERR("expected 10 contacts; got %d", n_OUT) end
     for k = 0,ALLOC do if OUT:is_live():read(k) then
       var a, b, c = OUT:a():read(k), OUT:b():read(k), OUT:count():read(k)
       if c ~= 1 then ERR("expected all counts to be 1, but got %d", c) end
@@ -92,7 +92,7 @@ local terra exec()
     CHECK_ERR(store)
     var n_OUT     = OUT:get_n_rows()
     var ALLOC     = OUT:get_n_alloc()
-    if n_OUT ~= 6 then ERR("expected 6 contacts; got %d", n_OUT) end
+    if n_OUT ~= 10 then ERR("expected 10 contacts; got %d", n_OUT) end
     for k = 0,ALLOC do if OUT:is_live():read(k) then
       var a, b, c = OUT:a():read(k), OUT:b():read(k), OUT:count():read(k)
       if c ~= 2 then ERR("expected all counts to be 2, but got %d", c) end
@@ -103,10 +103,10 @@ local terra exec()
   do
     store:re_join(2, -2)
     CHECK_ERR(store)
-    -- expected pairs (1,0),(2,2),(3,4)
+    -- expected pairs (1,0),(2,2),(3,4),(4,6),(5,8)
     var n_OUT     = OUT:get_n_rows()
     var ALLOC     = OUT:get_n_alloc()
-    if n_OUT ~= 3 then ERR("expected 3 contacts; got %d", n_OUT) end
+    if n_OUT ~= 5 then ERR("expected 5 contacts; got %d", n_OUT) end
     for k = 0,ALLOC do if OUT:is_live():read(k) then
       var a, b, c = OUT:a():read(k), OUT:b():read(k), OUT:count():read(k)
       if a==2 and b==2 then
@@ -115,8 +115,11 @@ local terra exec()
       else
         if c ~= 1 then
           ERR("(a=%d,b=%d) has count=%d rather than count 1", a, b, c) end
-        if not(a == 1 and b == 0) and not(a == 3 and b == 4) then
-          ERR("got unexpected output row (a=%d,b=%d)", a, b) end
+        if not(a == 1 and b == 0) and not(a == 3 and b == 4) and
+           not(a == 4 and b == 6) and not(a == 5 and b == 8)
+        then
+          ERR("got unexpected output row (a=%d,b=%d)", a, b)
+        end
       end
     end end
   end

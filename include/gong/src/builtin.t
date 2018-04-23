@@ -57,7 +57,7 @@ local function unary_arg_builtin(nm)
     typecheck = function(args,ast,ctxt)
         if #args ~= 1 then
           ctxt:error(ast, nm.." expects exactly 1 argument "..
-                              "(instaed got "..#args..")")
+                              "(instead got "..#args..")")
           return T.error
         end
         local typ = args[1].type
@@ -85,6 +85,50 @@ local function unary_arg_builtin(nm)
   return b
 end
 
+local function binary_arg_builtin(nm)
+  local cpu_fn    = assert(C[nm])
+
+  local b         = NewBuiltIn {
+    name = nm,
+    typecheck = function(args,ast,ctxt)
+        if #args ~= 2 then
+          ctxt:error(ast, nm.." expects exactly 2 argument "..
+                              "(instead got "..#args..")")
+          return T.error
+        end
+
+        local rettype = T.float
+        for i,a in ipairs(args) do
+          local typ = a.type
+          if not typ:is_numeric() or not typ:is_primitive() then
+            ctxt:error(a, "argument to "..name.." must be a number")
+            return T.error
+          end
+          -- otherwise, work out return type
+          if      typ:is_coercable_to(rettype)  then
+            rettype = rettype
+          elseif  typ:is_coercable_to(T.double) then
+            rettype = T.double
+          else
+            ctxt:error(args[1], "argument to "..name.." could not "..
+                                "be coerced into a double")
+            return T.error
+          end
+        end
+
+        return rettype
+      end,
+    effectcheck = function() return newlist() end,
+    codegen     = function(args, ast, ctxt)
+        local a0, a1    = args[1], args[2]
+        local ttype     = ast.type:terratype()
+        return `[ttype](cpu_fn(a0,a1))
+      end,
+  }
+
+  return b
+end
+
 B.cos   = unary_arg_builtin('cos')
 B.acos  = unary_arg_builtin('acos')
 B.sin   = unary_arg_builtin('sin')
@@ -99,6 +143,8 @@ B.log   = unary_arg_builtin('log')
 B.log2  = unary_arg_builtin('log2')
 B.exp   = unary_arg_builtin('exp')
 B.exp2  = unary_arg_builtin('exp2')
+
+B.atan2 = binary_arg_builtin('atan2')
 
 
 

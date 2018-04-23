@@ -452,6 +452,7 @@ local function InstallStructMethods(prefix, W)
       terra CTable:alloc_more( store : &CStore, newalloc : SizeT )
         var this              = self
         var oldalloc          = self._n_alloc
+        self._n_alloc         = newalloc
         assert(newalloc > oldalloc, 'INTERNAL: no need to alloc_more')
         assert(self._free_list == oldalloc,
                'INTERNAL: expected empty free-list')

@@ -23,7 +23,7 @@ local assert    = G.cassert
 ------------------------------------------------------------------------------
 -- Sim Constants / Parameters
 
-local debug_draw            = false
+local debug_draw            = true
 
 local timestep              = 1/60
 local inv_timestep          = 1/timestep
@@ -122,7 +122,7 @@ local terra loadBoxesSimpleStack( store : API.Store )
  --              )
     -- simple boxes
     for k=0,N do
-      var Y = 1.05*k + 0.5
+      var Y = 1.05*k + 0.6
       boxes:loadrow( v3(0,Y,0.1*k),
                      q4(0,0,0,1),
                      v3(0,0,0),
@@ -234,9 +234,9 @@ local terra draw_boxes( store : API.Store )
     var nx    = rot[b]:rotvec(v3(1,0,0))
     var ny    = rot[b]:rotvec(v3(0,1,0))
     var nz    = rot[b]:rotvec(v3(0,0,1))
-    var x     = 0.5 * dims[b](0) * nx
-    var y     = 0.5 * dims[b](1) * ny
-    var z     = 0.5 * dims[b](2) * nz
+    var x     = (0.5 * dims[b](0) + 0.00) * nx
+    var y     = (0.5 * dims[b](1) + 0.00) * ny
+    var z     = (0.5 * dims[b](2) + 0.00) * nz
     var p     = pos[b]
     --[[
                c5       * ---- *        c1
@@ -254,6 +254,8 @@ local terra draw_boxes( store : API.Store )
     var c5 = p - x + y - z
     var c6 = p - x - y + z
     var c7 = p - x - y - z
+
+    --C.printf('  box #%d:  %f %f %f\n', b, p(0), p(1), p(2))
 
     if b ~= 0 then -- exclude ground box
       -- line drawing
@@ -280,23 +282,70 @@ local terra draw_boxes( store : API.Store )
   store:Planks():dims():readwrite_unlock()
 end
 
-local terra draw_contacts( store : API.Store )
-  var nC    = store:PPContacts():getsize()
-  var n_pts = store:PPContacts():n_pts():readwrite_lock()
-  var pts   = store:PPContacts():pts():readwrite_lock()
-  var basis = store:PPContacts():basis():readwrite_lock()
+local terra print_boxes( store : API.Store )
+  var n_box = store:Planks():getsize()
+  var pos   = store:Planks():pos():readwrite_lock()
+  var vel   = store:Planks():linvel():readwrite_lock()
+  var rot   = store:Planks():rot():readwrite_lock()
+  var dims  = store:Planks():dims():readwrite_lock()
 
-  for c=0,nC do
+  for b=0,n_box do
+    -- compute the box frame vectors
+    var p     = pos[b]
+    var v     = vel[b]
+
+    C.printf('  box #%d:  %f %f %f  ;  %f %f %f\n',
+              b, p(0), p(1), p(2), v(0), v(1), v(2) )
+  end
+
+  store:Planks():pos():readwrite_unlock()
+  store:Planks():linvel():readwrite_unlock()
+  store:Planks():rot():readwrite_unlock()
+  store:Planks():dims():readwrite_unlock()
+end
+
+local terra draw_contacts( store : API.Store )
+  var nC_alloc  = store:PPContacts():get_n_alloc()
+  var is_live   = store:PPContacts():is_live():read_lock()
+  var n_pts     = store:PPContacts():n_pts():readwrite_lock()
+  var pts       = store:PPContacts():pts():readwrite_lock()
+  var basis     = store:PPContacts():basis():readwrite_lock()
+
+  var c_b0      = store:PPContacts():p0():readwrite_lock()
+  var c_b1      = store:PPContacts():p1():readwrite_lock()
+
+  var pos       = store:Planks():pos():readwrite_lock()
+  var rot       = store:Planks():rot():readwrite_lock()
+
+  for c=0,nC_alloc do if is_live[c] then
+    --C.printf('    drawing contact %d\n', c)
     for k=0,n_pts[c] do
+      var b0,b1     = c_b0[c], c_b1[c]
+      var l0,l1     = pts[c].d[k].local0, pts[c].d[k].local1
+      var pt0, pt1  = rot[b0]:rotvec(l0) + pos[b0],
+                      rot[b1]:rotvec(l1) + pos[b1]
+
       var p     = pts[c].d[k].pt
       var np    = basis[c].norm + p
+
+      --vdb.color(0,1,0)
+      --vdb.point(pt0(0),pt0(1),pt0(2))
+      --vdb.color(0,0,1)
+      --vdb.point(pt1(0),pt1(1),pt1(2))
       vdb.color(1,0,0)
       vdb.point(p(0),p(1),p(2))
       vdb.color(1,1,0)
       vdb_line(p, np)
     end
-  end
+  end end
 
+  store:Planks():pos():readwrite_unlock()
+  store:Planks():rot():readwrite_unlock()
+
+  store:PPContacts():p0():readwrite_unlock()
+  store:PPContacts():p1():readwrite_unlock()
+
+  store:PPContacts():is_live():read_unlock()
   store:PPContacts():n_pts():readwrite_unlock()
   store:PPContacts():pts():readwrite_unlock()
   store:PPContacts():basis():readwrite_unlock()
@@ -309,11 +358,22 @@ end
 -- Sim Loop
 
 
+local terra drawStore( store : API.Store )
+  vdb.vbegin()
+  vdb.frame()
+
+  if debug_draw then draw_contacts(store) end
+  draw_boxes(store)
+
+  vdb.vend()
+  C.getchar()
+end
+
 local terra mainLoop()
   C.printf('        -+-+- CODE: mainLoop() -+- Begin\n')
   var store       = API.NewStore()
   C.printf('        -+-+- CODE: mainLoop() -+- into loadBoxes()\n')
-  loadBoxesRoundTower(store)
+  loadBoxesSimpleStack(store)
 
     vdb.vbegin()
     vdb.frame()
@@ -322,7 +382,6 @@ local terra mainLoop()
 
     vdb.vend()
 
---
   C.printf('        -+-+- CODE: mainLoop() -+- alloc solver\n')
   var solver : SOLVER
   solver:alloc(store)
@@ -330,21 +389,15 @@ local terra mainLoop()
   for k=0,300 do
     C.printf('timestep #%d:\n', k)
     var start     = taketime()
-    solver:do_timestep()
+    solver:do_timestep(drawStore)
     var stop      = taketime()
     var wait_time = timestep - (stop-start)
     if wait_time > 0 then
       C.usleep([int](wait_time*1e6))
     end
 
-    vdb.vbegin()
-    vdb.frame()
-
-    if debug_draw then draw_contacts(store) end
-    draw_boxes(store)
-
-    vdb.vend()
-    --C.getchar()
+    print_boxes(store)
+    --drawStore(store)
   end
 
   C.printf('        -+-+- CODE: mainLoop() -+- Start Free\n')

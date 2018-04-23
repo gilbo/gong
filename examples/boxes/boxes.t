@@ -3,17 +3,28 @@ local G = gong.stdlib
 
 
 
+local num       = G.float
+
 ------------------------------------------------------------------------------
 -- Sim Constants / Parameters
 
-local OBB_EPSILON         = G.Constant(G.float, 1e-5)
-local EDGE_FUDGE_FACTOR   = G.Constant(G.float, 1.05)
-local COLLISION_MARGIN    = G.Constant(G.float, 0.02)
+local OBB_EPSILON         = G.Constant(num, 1e-5)
+local EDGE_FUDGE_FACTOR   = G.Constant(num, 1.05)
+local COLLISION_MARGIN    = G.Constant(num, 0.02)
+
+-- contact breaking threshold
+--      = gContactBreakingThreshold
+-- contact processing threshold
+--      = minimum of two bodies (BOTH are set to HUGE)
+-- gContactBreakingThreshold = 0.02
+-- default m_friction == 0.5
+-- default m_restitution == 0
+-- default rollingfriction == 0
+--  combined of the above is that value squared
 
 ------------------------------------------------------------------------------
 -- Support Functions / Defs
 
-local num       = G.float
 local vec2      = G.vector(num,2)
 local vec3      = G.vector(num,3)
 local mat3      = G.matrix(num,3,3)
@@ -136,39 +147,48 @@ local Planks          = G.NewTable('Planks')
 
 local ContactT = G.record {
   { 'pt',                 vec3 },
+  { 'local0',             vec3 },
+  { 'local1',             vec3 },
   { 'depth',              num },
 }
 local ContactBase = G.record {
   { 'norm',               vec3 },
-  { 'friction_0',         vec3 },
-  { 'friction_1',         vec3 },
+  --{ 'friction_0',         vec3 },
+  --{ 'friction_1',         vec3 },
 }
 
 local PPContacts      = G.NewTable('PPContacts', {
-                          --join_policy = 'transfer',
-                          -- i.e. update pre-existing rows where possible
                         })
                          :NewField('p0',          Planks)
                          :NewField('p1',          Planks)
+                         :SetPrimaryKey('p0','p1')
                          :NewField('n_pts',       G.uint32)
                          :NewField('basis',       ContactBase)
                          :NewField('pts',         ContactT[4])
-                         :NewField('l_mult',      vec3[4])
+                         :NewField('l_mult',      num[4])
+                         :NewField('fric_mult',   num[4])
+
+local z3 = G.Constant(vec3, {0,0,0})
+
+
+local gong function l_mult_zero()
+  return { num(0), num(0), num(0), num(0) }
+end
 
 local gong function NullContacts() : ContactT[4]
   return {
-    { pt = vec3({0f,0f,0f}), depth = num(0f) },
-    { pt = vec3({0f,0f,0f}), depth = num(0f) },
-    { pt = vec3({0f,0f,0f}), depth = num(0f) },
-    { pt = vec3({0f,0f,0f}), depth = num(0f) }
+    { pt = z3, local0 = z3, local1 = z3, depth = num(0f) },
+    { pt = z3, local0 = z3, local1 = z3, depth = num(0f) },
+    { pt = z3, local0 = z3, local1 = z3, depth = num(0f) },
+    { pt = z3, local0 = z3, local1 = z3, depth = num(0f) }
   }
 end
 
 local gong function NullBasis() : ContactBase
   return {
-    norm        = vec3({0f,0f,0f}),
-    friction_0  = vec3({0f,0f,0f}),
-    friction_1  = vec3({0f,0f,0f})
+    norm        = z3--,
+    --friction_0  = z3--,
+    --friction_1  = z3
   }
 end
 
@@ -241,7 +261,7 @@ local gong function clipQuad( clipby : vec2, in_pts : vec2[4] )
 end
 
 -- reduce the number of points down to 4
-local cullPoints = G.Macro(function( n_pts, pts, depths )
+local cullPoints = G.Macro(function( norm, n_pts, pts, depths )
   --  INPUT  n_pts    : int
   --  IN_OUT pts      : vec3[8]
   --         depths   : num[8]
@@ -261,24 +281,20 @@ local cullPoints = G.Macro(function( n_pts, pts, depths )
   end)
 
   -- Always keep point 0.
-  -- Choose the 3 remaining points which minimize
-  --  (1)   |< d[i], d[0] >|  (i.e. most orthogonal)
-  --  (2)    < d[i], d[0] >   (i.e. most opposite)
-  --  (3)   |< d[i], d[1] >|  (i.e. most opposite to most orthogonal)
-  local case_logic = G.Macro(function(d, case)
+  -- Choose the 3 remaining points which minimize distance to poles
+  local case_logic = G.Macro(function(d, pole, case)
     return gong quote do
       var idx   = 0
       var best  = num(math.huge)
       for k=case,n_pts do
-        var val : num = 0f
-        if      case == 1 then  val = G.abs(+[i] d[i,k] * d[i,k])
-        elseif  case == 2 then  val = +[i] d[i,0] * d[i,k]
-                          else  val = +[i] d[i,1] * d[i,k] end
-        -- yah
-        if val < best then best = val; idx = k end
+        var x     = :[i] d[i,k] - pole[k]
+        var dist  = G.dot(x,x)
+        if dist < best then best = dist; idx = k end
       end
-      for i=0,1 do swap(d[i,case],    d[i,idx]) end
-      for i=0,2 do swap(pts[i,case],  pts[i,case]) end
+      for i=0,3 do
+        swap(d[i,case], d[i,idx])
+        swap(pts[i,case], pts[i,case])
+      end
       swap(depths[case],  depths[idx])
     end end
   end)
@@ -287,9 +303,13 @@ local cullPoints = G.Macro(function( n_pts, pts, depths )
     var d   : G.vec3f[8] = {{0f,0f,0f},{0f,0f,0f},{0f,0f,0f},{0f,0f,0f},
                             {0f,0f,0f},{0f,0f,0f},{0f,0f,0f},{0f,0f,0f}}
     compute_d(d)
-    case_logic(d, 1)
-    case_logic(d, 2)
-    case_logic(d, 3)
+    var pole0 = :[i] d[i,0]
+    var pole1 = -pole0
+    var pole2 = G.cross(pole0,norm)
+    var pole3 = -pole2
+    case_logic(d, pole1, 1)
+    case_logic(d, pole2, 2)
+    case_logic(d, pole3, 3)
   end end
 end)
 
@@ -389,7 +409,8 @@ function obb_isct( p0 : Planks, p1 : Planks ) : { G.int32, vec3, ContactT[4] }
   var case_code : G.int32 = -1
   var pen_ratio : num     = 0f
 
-  var margin    = {COLLISION_MARGIN,COLLISION_MARGIN,COLLISION_MARGIN}
+  --var margin    = {COLLISION_MARGIN,COLLISION_MARGIN,COLLISION_MARGIN}
+  var margin    = vec3({0,0,0})
   var hw0       = vec3(p0.dims * 0.5f + margin)
   var hw1       = vec3(p1.dims * 0.5f + margin)
 
@@ -487,7 +508,11 @@ function obb_isct( p0 : Planks, p1 : Planks ) : { G.int32, vec3, ContactT[4] }
     var uA          = :[i] R0[axisA,i]
     var uB          = :[i] R1[axisB,i]
     var alpha, beta = lineClosestApproach( mA, mB, uA, uB )
-    var pt          = :[i] num(0.5)*(mA[i] + uA[i]*alpha + mB[i] + uB[i]*beta)
+    var ptA         = mA + uA*alpha
+    var ptB         = mB + uB*beta
+    var pt          = num(0.5)*(ptA + ptB)
+    ptA             = :[i] +[j] R0[i,j]*(ptA[j] - p0.pos[j])
+    ptB             = :[i] +[j] R1[i,j]*(ptB[j] - p1.pos[j])
 
     ---- half-edge vectors in world frames
     --var hA          = :[i] R0[axisA,i] * hw0[axisA]
@@ -524,9 +549,11 @@ function obb_isct( p0 : Planks, p1 : Planks ) : { G.int32, vec3, ContactT[4] }
     ---- compute the final point as the average of these points
     --var pt    = :[i] num(0.5f) * (mA[i] + hA[i]*ta + mB[i] + hB[i]*tb)
 
-    var cs      = NullContacts()
-    cs[0].pt    = pt
-    cs[0].depth = depth
+    var cs        = NullContacts()
+    cs[0].pt      = pt
+    cs[0].local0  = ptA
+    cs[0].local1  = ptB
+    cs[0].depth   = depth
     return 1, world_norm, cs
 
   -- face-body collision
@@ -537,7 +564,7 @@ function obb_isct( p0 : Planks, p1 : Planks ) : { G.int32, vec3, ContactT[4] }
       swap(dp0,dp1)
       swap(p0,p1)
       swap(hw0,hw1)
-      norm = -norm
+      --norm = -norm
     end
     -- gong                bullet (possibly swapped as above)
     --  Ra, Rb              R0, R1
@@ -624,27 +651,138 @@ function obb_isct( p0 : Planks, p1 : Planks ) : { G.int32, vec3, ContactT[4] }
       end
       swap(depths[idx], depths[0])
       for k=0,3 do swap(A_pts[k,idx], A_pts[k,0]) end
-      cullPoints( n_pts, A_pts, depths )
+      cullPoints( norm, n_pts, A_pts, depths )
       n_pts = 4
     end
 
     -- Output
-    var posA = p0.pos -- unswapped...
+    var posA, posB    = p0.pos, p1.pos -- unswapped...
+    var off_norm      = norm
     if case_code >= 3 then -- unflip the data
-    --  swap(R0,R1)
-      swap(dp0,dp1)
-      swap(p0,p1)
-    --  swap(hw0,hw1)
+      --swap(R0,R1)
+      --swap(dp0,dp1)
+      --swap(p0,p1)
+      --swap(posA,posB)
+      norm  = -norm
+      --swap(hw0,hw1)
     end
     var cs : ContactT[4] = NullContacts()
     for k=0,n_pts do
+      -- the A_pts are on the surface of B, in the local coordinates of A
       -- convert the point back to the world frame
-      var pt          = :[i] posA[i] + (+[j] R0[j,i] * A_pts[j,k])
+      --var world_ptA   = :[i] A_pts[i,k]
+      var world_ptB   = :[i] posA[i] + (+[j] R0[j,i] * A_pts[j,k])
+      var world_ptA   = :[i] world_ptB[i] + depths[k]*off_norm[i]
+      var pt          = 0.5*(world_ptA + world_ptB)
+      var ptA         = :[i] +[j] R0[i,j] * (world_ptA[j] - posA[j])
+      var ptB         = :[i] +[j] R1[i,j] * (world_ptB[j] - posB[j])
+
+      if case_code >= 3 then swap(ptA,ptB) end
       cs[k].pt        = pt
+      cs[k].local0    = ptA
+      cs[k].local1    = ptB
       cs[k].depth     = depths[k]
     end
     return n_pts, norm, cs
   end
+end
+
+local gong function cacheLookup( c : PPContacts, local0 : vec3 )
+  var N       = c.n_pts
+  var min_d   = COLLISION_MARGIN*COLLISION_MARGIN
+  var min_k   = -1
+  for k=0,G.int32(N) do
+    var diff  = c.pts[k].local0 - local0
+    var d     = G.dot(diff,diff)
+    if d < min_d then
+      min_d   = d
+      min_k   = k
+    end
+  end
+  return min_k
+end
+
+local gong function replacePoint(
+  c : PPContacts, norm : vec3, pt : vec3, depth : num
+)
+  var N       = c.n_pts
+  var pts     = c.pts
+  var id      = 0
+  -- Do we have spare room?
+  if N < 4 then
+    return G.int32(N)
+  end
+  -- keep deepest point
+  var max_dep = depth
+  var max_i   = -1
+  for k=0,G.int32(N) do
+    if pts[k].depth > max_dep then
+      max_dep = pts[k].depth
+      max_i   = k
+    end
+  end
+  -- maximize area
+  var replace_i = -1
+  var max_area  = num(0)
+  var d0, d1          = (pt - pts[0].pt), (pt - pts[1].pt)
+  var d32, d21, d31   = (pts[3].pt - pts[2].pt), (pts[2].pt - pts[1].pt),
+                        (pts[3].pt - pts[1].pt)
+  if max_i ~= 0 then
+    var c = G.cross(d1, d32)
+    var a = +[i] c[i]*c[i]
+    if a > max_area then    max_area = a;   replace_i = 0   end
+  end
+  if max_i ~= 1 then
+    var c = G.cross(d0, d32)
+    var a = +[i] c[i]*c[i]
+    if a > max_area then    max_area = a;   replace_i = 1   end
+  end
+  if max_i ~= 2 then
+    var c = G.cross(d0, d31)
+    var a = +[i] c[i]*c[i]
+    if a > max_area then    max_area = a;   replace_i = 2   end
+  end
+  if max_i ~= 3 then
+    var c = G.cross(d0, d21)
+    var a = +[i] c[i]*c[i]
+    if a > max_area then    max_area = a;   replace_i = 3   end
+  end
+
+  return replace_i
+end
+
+local gong function refreshPoints( c : PPContacts )
+  -- blah
+  var N         = G.int32(c.n_pts)
+  var n_out     = G.uint32(0)
+  var pt_out    = NullContacts()
+  var LM_out    = l_mult_zero()
+  var FM_out    = l_mult_zero()
+  --G.print('refresh ', c.p0, c.p1)
+  for k=0,N do
+    var p0, p1  = c.p0, c.p1
+    var pt0     = qRot( p0.rot, c.pts[k].local0 ) + p0.pos
+    var pt1     = qRot( p1.rot, c.pts[k].local1 ) + p1.pos
+    var diff    = pt1-pt0
+    var norm    = c.basis.norm
+    var dep     = -G.dot(diff, norm)
+    --G.print(' ',k,':', dep, c.pts[k].depth )
+
+    if dep > -COLLISION_MARGIN then
+      var projPt    = pt0 - dep * norm
+      var diff      = projPt - pt1
+      if G.dot(diff,diff) < COLLISION_MARGIN*COLLISION_MARGIN then
+        -- keep the point
+        pt_out[n_out]       = c.pts[k]
+        pt_out[n_out].pt    = 0.5*(pt0 + pt1)
+        pt_out[n_out].depth = dep
+        LM_out[n_out]       = c.l_mult[k]
+        FM_out[n_out]       = c.fric_mult[k]
+        n_out               = n_out + 1
+      end
+    end
+  end
+  return n_out, pt_out, LM_out, FM_out
 end
 
 local gong function compute_friction(norm : vec3)
@@ -652,9 +790,8 @@ local gong function compute_friction(norm : vec3)
   e[ vMinAbsAxis(norm) ] = 1
   var f0    = normed( G.cross(norm,e) )
   var f1    = G.cross(norm, f0)
-  return f0,f1
+  return f0, f1
 end
-
 
 -- quick accelerating check
 local gong function bound_sphere_test( p0 : Planks, p1 : Planks )
@@ -674,22 +811,57 @@ local gong join find_plank_iscts ( p0 : Planks, p1 : Planks )
   var n_pts, norm, contacts = obb_isct(p0, p1)
   where n_pts > 0
 do
-  var f0,f1   = compute_friction(norm)
-  var l_mult  = { vec3({0f,0f,0f}),
-                  vec3({0f,0f,0f}),
-                  vec3({0f,0f,0f}),
-                  vec3({0f,0f,0f}) }
-  emit  { p0          = p0,
-          p1          = p1,
-          n_pts       = G.uint32(n_pts),
-          basis       = {
-            norm        = norm,
-            friction_0  = f0,
-            friction_1  = f1
-          },
-          pts         = contacts,
-          l_mult      = l_mult
-  } in PPContacts
+  --var f0, f1 = compute_friction(norm)
+
+  merge c in PPContacts do
+    c.basis             = { norm        = norm }
+    -- sort out point-to-point correspondence
+    if false then --n_pts == 1 or c.n_pts == 1 then -- just overwrite in simple case
+      c.n_pts           = G.uint32(n_pts)
+      c.pts             = contacts
+      c.l_mult          = l_mult_zero()
+      c.fric_mult       = l_mult_zero()
+    else
+      --c.n_pts = 0
+      -- for each new point,
+      --    * try to find an existing old point to associate to
+      --    * add if room, or try to find the best point to replace
+      for k=0,n_pts do
+        var id  = cacheLookup( c, contacts[k].local0 )
+        if id >= 0 then
+          c.pts[id]       = contacts[k]
+        elseif c.n_pts < 4 then
+          var id          = c.n_pts
+          c.n_pts         = id+1
+          c.pts[id]       = contacts[k]
+          c.l_mult[id]    = num(0)
+          c.fric_mult[id] = num(0)
+        else
+          id              = replacePoint( c, norm, contacts[k].pt,
+                                                   contacts[k].depth )
+          c.pts[id]       = contacts[k]
+          c.l_mult[id]    = num(0)
+          c.fric_mult[id] = num(0)
+        end
+      end
+      -- Then, update all the points, potentially discarding some
+      var N, PTS, LM, FM = refreshPoints( c )
+      --G.print('discard from-to...',c.n_pts,'-/->',N)
+      c.n_pts     = N
+      c.pts       = PTS
+      c.l_mult    = LM
+      c.fric_mult = FM
+    end
+  else
+    emit  { n_pts       = G.uint32(n_pts),
+            basis       = {
+              norm = norm
+            },
+            pts         = contacts,
+            l_mult      = l_mult_zero(),
+            fric_mult   = l_mult_zero()
+    } in PPContacts
+  end
 end
 
 
