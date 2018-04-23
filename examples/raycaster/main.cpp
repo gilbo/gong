@@ -41,8 +41,9 @@ void MeshLoadOFF( Store store, std::string filename )
   vector<float>     positions;
   vector<uint32_t>  indices;
   loadOFF(filename, positions, indices);
-
-  MeshLoad( store, positions.size(), indices.size(), 
+  uint32_t n_vert = positions.size()/3;
+  uint32_t n_tri = indices.size()/3;
+  MeshLoad( store, n_vert, n_tri, 
     positions.data(), indices.data() );
 }
 
@@ -54,6 +55,8 @@ void RayLoadRFF( Store store, std::string filename )
   vector<float>     tMax;
   tMax.resize(origins.size()/3);
   for (int i = 0 ; i < tMax.size(); ++i) {
+    printf("Ray ori. %d: %f %f %f\n", i, origins[i*3+0], origins[i*3+1], origins[i*3+2]);
+    printf("Ray dir. %d: %f %f %f\n", i, directions[i*3+0], directions[i*3+1], directions[i*3+2]);
     tMax[i] = std::numeric_limits<float>::infinity();
   }
 
@@ -61,18 +64,49 @@ void RayLoadRFF( Store store, std::string filename )
 }
 
 
-void MeshIsctPrint( Store store )
+void MeshIsctPrintBoolIntersection( Store store )
 {
   
-  uint32_t n_isct       = store.RTIntersections().size();
+  uint32_t n_isct       = store.BoolIntersections().size();
   printf("Num ray tri intersections: %u\n", n_isct);
-  uint32_t* t           = store.RTIntersections().tri().readwrite_lock();
-  uint32_t* r           = store.RTIntersections().ray().readwrite_lock();
+  uint32_t* r           = store.BoolIntersections().ray().readwrite_lock();
+  for(uint32_t k=0; k<n_isct; k++) {
+    printf("%u: ray %u\n", k, r[k]);
+  }
+  store.BoolIntersections().ray().readwrite_unlock();
+}
+
+void MeshIsctPrintRayTriIntersection( Store store )
+{
+  
+  uint32_t n_isct       = store.RayTriIntersections().size();
+  printf("Num ray tri intersections: %u\n", n_isct);
+  uint32_t* t           = store.RayTriIntersections().tri().readwrite_lock();
+  uint32_t* r           = store.RayTriIntersections().ray().readwrite_lock();
   for(uint32_t k=0; k<n_isct; k++) {
     printf("%u: ray %u / tri %u\n", k, r[k], t[k]);
   }
-  store.RTIntersections().ray().readwrite_unlock();
-  store.RTIntersections().tri().readwrite_unlock();
+  store.RayTriIntersections().ray().readwrite_unlock();
+  store.RayTriIntersections().tri().readwrite_unlock();
+  
+}
+
+void MeshIsctPrintFullIntersection( Store store )
+{
+  
+  uint32_t n_isct       = store.FullIntersections().size();
+  printf("Num ray tri intersections: %u\n", n_isct);
+  uint32_t* tri          = store.FullIntersections().tri().readwrite_lock();
+  uint32_t* r           = store.FullIntersections().ray().readwrite_lock();
+  float* t              = store.FullIntersections().t().readwrite_lock();
+  float* b              = (float*)store.FullIntersections().barys().readwrite_lock();
+  for(uint32_t k=0; k<n_isct; k++) {
+    printf("%u: ray %u / tri %u: %f (%f, %f, %f)\n", k, r[k], tri[k], t[k], b[k*3+0],b[k*3+1],b[k*3+2]);
+  }
+  store.FullIntersections().ray().readwrite_unlock();
+  store.FullIntersections().tri().readwrite_unlock();
+  store.FullIntersections().t().readwrite_unlock();
+  store.FullIntersections().barys().readwrite_unlock();
   
 }
 
@@ -86,9 +120,16 @@ int main() {
     printf("Loaded .off\n");
     RayLoadRFF(store, "simple.rff");
     printf("Loaded .rff\n");
+
+    store.find_raytri_iscts_bool();
+    printf("Intersected\n");
+    MeshIsctPrintBoolIntersection(store);
     store.find_raytri_iscts();
     printf("Intersected\n");
-    MeshIsctPrint(store);
+    MeshIsctPrintRayTriIntersection(store);
+    store.find_raytri_iscts_full();
+    printf("Intersected\n");
+    MeshIsctPrintFullIntersection(store);
   }
 
   std::cout << "raycaster done" << std::endl;
