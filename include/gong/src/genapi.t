@@ -1,7 +1,7 @@
 
 local Exports = {}
 package.loaded["gong.src.genapi"] = Exports
-
+local verbosity = require('gong.src.verbosity').get_verbosity()
 
 local T             = require 'gong.src.types'
 local is_type       = T.is_type
@@ -148,6 +148,17 @@ function Exports.CompileLibrary(args)
   -- Assemble all the structs and funcs to expose
   local FUNCS, STRUCTS, HIERARCHY =
                           W:GenExternCAPI(prefix, joins)
+
+  if verbosity > 3 then
+    print("***GONG-GENERATED API FUNCTIONS***")
+    for _,f in ipairs(FUNCS) do
+      if type(f) == 'string' then
+        print(f)
+      else
+        f:printpretty(false)
+      end
+    end
+  end
 
   if langmode=='terra' then
     local API           = Exports.GenTerraAPI(HIERARCHY)
@@ -388,6 +399,10 @@ local function C_Common_API(prefix, structs, funcs)
 
       FUNC_SIGS:insert(sig)
       FUNC_TABLE[prefix..name] = f
+      --[[print(name)
+      if (name == "find_raytri_iscts") then
+        f:printpretty()
+      end--]]
     end
   end
 
