@@ -20,11 +20,28 @@ local OUT = G.NewTable('OUT')
 local gong join re_join( a : A, b : B, mul : G.int32, off : G.int32 )
   where mul*a.id + off == b.id
 do
-  merge x in OUT do
-    x.count = x.count + 1
-  else emit { count=1 } in OUT end
+  merge in OUT
+    new { count=1 }
+    update(x)
+      x.count = x.count + 1
+    end
 end
 
+--[[
+local gong join semaphore( a : A, b : B, mul : G.int32, off : G.int32 )
+  where mul*a.id + off == b.id
+do
+  merge in OUT
+    new { count=1 }
+    update(x)
+      x.count = x.count + 1
+    end
+    remove(x)
+      var c = x.count
+      if c > 1 then keep(x); x.count = c-1 end
+    end
+end
+--]]
 
 ------------------------------------------------------------------------------
 
@@ -54,13 +71,11 @@ local ERR = macro(function(err, ...)
   end
 end)
 
-local terra exec()
-  var store       = API.NewStore()
+local terra loadstore( store : API.Store, N : int32 )
   var A           = store:A()
   var B           = store:B()
   var OUT         = store:OUT()
 
-  var N = 10
   A:beginload(N)
   for k=0,N do
     A:loadrow( k )
@@ -71,8 +86,19 @@ local terra exec()
     B:loadrow( k )
   end
   B:endload()
+  OUT:beginload(0)
+  OUT:endload()
   CHECK_ERR(store)
   C.printf("  Load done\n")
+end
+
+local terra exec()
+  var store       = API.NewStore()
+  var A           = store:A()
+  var B           = store:B()
+  var OUT         = store:OUT()
+
+  loadstore(store, 10)
 
   do
     store:re_join(1, 0)
@@ -124,6 +150,8 @@ local terra exec()
     end end
   end
   C.printf("  Join 3 done\n")
+
+  loadstore(store, 10)
 
   store:destroy()
   return 0

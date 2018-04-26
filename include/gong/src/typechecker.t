@@ -71,9 +71,11 @@ local ADT A
           WhereFilter { expr      : Expr }
         | EmitStmt    { record    : RecordExpr,
                         dst       : Type }
-        | MergeStmt   { name      : Symbol,
-                        dst       : Type,
-                        body      : Block,    else_emit : EmitStmt? }
+        | MergeStmt   { dst       : Type,
+                        new_emit  : EmitStmt?,
+                        up_name   : Symbol,   up_body   : Block,
+                        rm_name   : Symbol?,  rm_body   : Block? }
+        | KeepStmt    { expr      : Expr }
         | ReturnStmt  { expr      : Expr }
         | BuiltInStmt { builtin   : BuiltIn,  args      : Expr* }
     -- Binding & Assignment
@@ -500,24 +502,28 @@ end
 function AST.MergeStmt:typecheck(ctxt)
   assert(self.dst:is_row(), 'INTERNAL: expect row type')
 
-  -- typecheck subexpressions
-  ctxt:enterblock()
-  ctxt:settype(self.name, self.dst)
-  local body      = self.body:typecheck(ctxt)
-  ctxt:leaveblock()
-
-  -- possible emit
-  local else_emit = nil
-  if self.else_emit then
-    else_emit     = self.else_emit:typecheck(ctxt)
-    if self.dst ~= else_emit.dst then
-      ctxt:error(else_emit, "expected else-emit statement to emit into "..
-        "the merge table '"..self.dst:table():name().."' not into table "..
-        "'"..else_emit.dst:table():name().."'")
-    end
+  -- new emit?
+  local new_emit = nil
+  if self.new_rec then
+    local tmpemit = AST.EmitStmt(self.new_rec, self.dst, self.srcinfo)
+    new_emit      = tmpemit:typecheck(ctxt)
   end
 
-  return A.MergeStmt(self.name, self.dst, body, else_emit, self.srcinfo)
+  ctxt:enterblock()
+  ctxt:settype(self.up_name, self.dst)
+  local up_body   = self.up_body:typecheck(ctxt)
+  ctxt:leaveblock()
+
+  local rm_body = nil
+  if self.rm_name then
+    ctxt:enterblock()
+    ctxt:settype(self.rm_name, self.dst)
+    rm_body       = self.rm_body:typecheck(ctxt)
+    ctxt:leaveblock()
+  end
+
+  return A.MergeStmt(self.dst, new_emit, self.up_name, up_body,
+                                         self.rm_name, rm_body, self.srcinfo)
 end
 
 function AST.ExprStmt:typecheck(ctxt)
@@ -1075,6 +1081,19 @@ function AST.Call:typecheck(ctxt)
   end
 
   return A.Var(NewSymbol(), calltype, self.srcinfo)
+end
+
+function AST.KeepExpr:typecheck(ctxt)
+  local arg       = self.arg:typecheck(ctxt)
+  if not arg.type:is_row() then
+    ctxt:error(arg, "expected argument to be a table row")
+  end
+  -- promote to a quote, with the assumption that
+  -- we're directly inside of an expression statement
+  local keepstmt  = A.KeepStmt(arg, self.srcinfo)
+  local block     = A.Block( newlist{ keepstmt }, self.srcinfo )
+  local q         = Macro.NewQuote(block, self.srcinfo, true)
+  return A.LuaObj(T.internal(q), self.srcinfo)
 end
 
 ---------------------------------------

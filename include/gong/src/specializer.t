@@ -73,9 +73,10 @@ local ADT A
           WhereFilter { expr      : Expr }
         | EmitStmt    { record    : RecordExpr,
                         dst       : Type }
-        | MergeStmt   { name      : Symbol,
-                        dst       : Type,
-                        body      : Block,    else_emit : EmitStmt? }
+        | MergeStmt   { dst       : Type,
+                        new_rec   : RecordExpr?,
+                        up_name   : Symbol,   up_body   : Block,
+                        rm_name   : Symbol?,  rm_body   : Block? }
         | ExprStmt    { expr      : Expr }
         | ReturnStmt  { exprs     : Expr* }
     -- Basic Structural Statements
@@ -117,6 +118,7 @@ local ADT A
     -- Special forms
         -- call is base(a1,...)
         | Call        { base  : Expr,         args      : Expr* }
+        | KeepExpr    { arg   : Expr }
         | TensorMap   { names : Symbol*,      expr      : Expr  }
         | TensorFold  { op    : redop,
                         names : Symbol*,      expr      : Expr  }
@@ -141,12 +143,24 @@ Exports.AST = A
 local Context = {}
 Context.__index = Context
 
-function NewContext(env)
+function NewContext(luaenv)
   local ctxt = setmetatable({
-    env     = env,
-    diag    = terralib.newdiagnostics(),
+    env       = terralib.newenvironment(luaenv),
+    _luaenv   = luaenv,
+    _env_stk  = newlist(),
+    diag      = terralib.newdiagnostics(),
   }, Context)
   return ctxt
+end
+function Context:pushenv()
+  self._env_stk:insert(self.env)
+  self.env = terralib.newenvironment(self._luaenv)
+end
+function Context:in_merge_remove()
+  return #self._env_stk > 0
+end
+function Context:popenv()
+  self.env = self._env_stk:remove()
 end
 function Context:localenv()
   return self.env:localenv()
@@ -173,8 +187,7 @@ end
 -------------------------------------------------------------------------------
 
 function Exports.specialize(input_ast, luaenv)
-  local env     = terralib.newenvironment(luaenv)
-  local ctxt    = NewContext(env)
+  local ctxt    = NewContext(luaenv)
 
   ctxt:enterblock()
   local output_ast = input_ast:specialize(ctxt)
@@ -319,14 +332,29 @@ function AST.MergeStmt:specialize(ctxt)
     dst           = T.row(dst)
   end
 
+  -- new?
+  local new_rec   = nil
+  if self.new_rec then
+    new_rec       = self.new_rec:specialize(ctxt)
+  end
+
+  -- update:
   ctxt:enterblock()
-  local name      = introsym(self.name, ctxt)
-  local body      = self.body:specialize(ctxt)
+  local up_name   = introsym(self.up_name, ctxt)
+  local up_body   = self.up_body:specialize(ctxt)
   ctxt:leaveblock()
 
-  local else_emit = (self.else_emit and self.else_emit:specialize(ctxt))
-                                     or nil
-  return A.MergeStmt(name, dst, body, else_emit, self.srcinfo)
+  -- remove? (needs a new context)
+  local rm_name, rm_body = nil, nil
+  if self.rm_name then
+    ctxt:pushenv()
+    rm_name       = introsym(self.up_name, ctxt)
+    rm_body       = self.up_body:specialize(ctxt)
+    ctxt:popenv()
+  end
+
+  return A.MergeStmt(dst, new_rec, up_name, up_body,
+                                   rm_name, rm_body, self.srcinfo)
 end
 
 function AST.ExprStmt:specialize(ctxt)
@@ -615,9 +643,24 @@ end
 ----------------------------------------
 
 function AST.Call:specialize(ctxt)
-  local base    = self.base:specialize(ctxt)
-  local args    = specialize_all(self.args, ctxt)
-  return A.Call(base, args, self.srcinfo)
+  -- special case override
+  if ctxt:in_merge_remove()   and
+     AST.Var.check(self.base) and
+     self.base.name == 'keep' and
+     not ctxt:localenv()['keep']
+  then
+    local args  = specialize_all(self.args, ctxt)
+    if #args ~= 1 then
+      ctxt:error(self, 'expected 1 argument to keep()')
+      return A.Var(NewSymbol('ERROR'),self.srcinfo)
+    else
+      return A.KeepExpr(args[1], self.srcinfo)
+    end
+  else
+    local base  = self.base:specialize(ctxt)
+    local args  = specialize_all(self.args, ctxt)
+    return A.Call(base, args, self.srcinfo)
+  end
 end
 function AST.TensorMap:specialize(ctxt)
   ctxt:enterblock()

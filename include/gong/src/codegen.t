@@ -345,14 +345,15 @@ function AST.EmitStmt:codegen(ctxt)
   return ctxt:Insert(dst, exprs)
 end
 function AST.MergeStmt:codegen(ctxt)
-  local rowvar    = ctxt:NewSym(self.name, self.dst)
+  assert(not self.rm_var, 'INTERNAL: TODO Need to implement merge-remove')
+  local up_var    = ctxt:NewSym(self.up_name, self.dst)
   local k0, k1    = ctxt:GetScanArgs()
-  local body      = self.body:codegen(ctxt)
-  local else_vals = nil
-  if self.else_emit then
-    else_vals     = codegen_all(self.else_emit.record.exprs, ctxt)
+  local up_body   = self.up_body:codegen(ctxt)
+  local new_vals  = nil
+  if self.new_emit then
+    new_vals      = codegen_all(self.new_emit.record.exprs, ctxt)
   end
-  return ctxt:MergeLookup(self.dst, rowvar, k0, k1, body, else_vals)
+  return ctxt:MergeLookup(self.dst, up_var, k0, k1, up_body, new_vals)
 end
 function AST.ReturnStmt:codegen(ctxt)
   local expr      = self.expr:codegen(ctxt)

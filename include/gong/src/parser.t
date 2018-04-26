@@ -97,9 +97,10 @@ local ADT A
           WhereFilter { expr      : Expr }
         | EmitStmt    { record    : RecordExpr,
                         dst_table : LuaTable }
-        | MergeStmt   { name      : id_str,
-                        dst_table : LuaTable,
-                        body      : Block,    else_emit : EmitStmt? }
+        | MergeStmt   { dst_table : LuaTable,
+                        new_rec   : RecordExpr?,
+                        up_name   : id_str,   up_body   : Block,
+                        rm_name   : id_str?,  rm_body   : Block? }
         | ExprStmt    { expr      : Expr }
         | ReturnStmt  { exprs     : Expr* }
     -- Basic Structural Statements
@@ -436,6 +437,50 @@ function lang.block(P, is_join_filter)
   return A.Block(stmts, info)
 end
 
+function lang.merge_stmt(P, info)
+                            P:expect('in')
+  local dst_table         = P:luaexpr()
+  local new_rec, update_name, update_body,
+                 remove_name, remove_body   = nil, nil, nil, nil, nil
+  local function block_clause(tknname, check)
+    if check then
+      P:error('only one '..tknname..' clause allowed in merge') end
+    local tkn             = P:srcinfo()
+                            P:next()
+    local openparens      = P:srcinfo()
+                            P:expect('(')
+    local name            = P:id_str()
+                            P:expectmatch(')','(',openparens.linenumber)
+    local body            = P:block()
+                            P:expectmatch('end',tknname,tkn.linenumber)
+    return name, body
+  end
+  local count = 3
+  while count > 0 do
+    count = count - 1
+    if P:matches(P.name) then
+      local tokenname     = P:cur().value
+      if tokenname == 'new' then
+        if new_rec then P:error('only one new clause allowed in merge') end
+                            P:next()
+        local openinfo    = P:srcinfo()
+                            P:expect('{')
+        new_rec           = P:record_expr(openinfo)
+      elseif tokenname == 'update' then
+        update_name, update_body = block_clause(tokenname, update_name)
+      elseif tokenname == 'remove' then
+        remove_name, remove_body = block_clause(tokenname, remove_name)
+      else count = 0 end
+    else count = 0 end
+  end
+
+  if not update_name then
+    P:error("expected 'update' clause in merge")
+  end
+  return A.MergeStmt(dst_table, new_rec, update_name, update_body,
+                                         remove_name, remove_body, info)
+end
+
 -- can return nil to cut off block parsing
 function lang.stmt(P, is_join_filter)
   local info        = P:srcinfo()
@@ -467,29 +512,7 @@ function lang.stmt(P, is_join_filter)
     return A.EmitStmt(recexpr, dst_table, info)
 
   elseif  P:nextif('merge') then
-    local name      = P:id_str()
-                      P:expect('in')
-    local dst_table = P:luaexpr()
-    local doinfo    = P:srcinfo()
-                      P:expect('do')
-    local body      = P:block()
-    local else_emit = nil
-    if P:matches('else') then
-      local elseinfo  = P:srcinfo()
-                        P:expect('else')
-      local emitinfo  = P:srcinfo()
-                        P:expect('emit')
-      local openinfo  = P:srcinfo()
-                        P:expect('{')
-      local recexpr   = P:record_expr(openinfo)
-                        P:expect('in')
-      local edst      = P:luaexpr()
-                        P:expectmatch('end','else',elseinfo.linenumber)
-      else_emit = A.EmitStmt(recexpr, edst, emitinfo)
-    else
-                        P:expectmatch('end','do',doinfo.linenumber)
-    end
-    return A.MergeStmt(name, dst_table, body, else_emit, info)
+    return P:merge_stmt(info)
 
   elseif  P:nextif('if') then
     -- parse the first if and any number of elseif-cases

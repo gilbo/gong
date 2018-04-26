@@ -267,8 +267,14 @@ function DataTable:_INTERNAL_ActivateMergeIndex()
     self._indices:insert(idx)
   end
 end
+function DataTable:_INTERNAL_ActivateMergeRemovals()
+  self._merge_removeable  = true
+end
 function DataTable:_INTERNAL_HasMergeIndex()
   return self._mergeable
+end
+function DataTable:_INTERNAL_IsMergeRemovable()
+  return self._merge_removeable
 end
 function DataTable:_INTERNAL_GetIndices()
   return self._indices:copy()

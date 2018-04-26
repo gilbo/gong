@@ -35,6 +35,7 @@ local ADT E
          | Filter   {}
          | Emit     { dst  : Type } -- destination table
          | Merge    { dst  : Type }
+         | MergeRemove { dst : Type }
          | Return   { type : Type }
          | Write    { dst  : Type,        path : PathToken* }
          | Reduce   { op   : redop,
@@ -86,6 +87,7 @@ local function NewContext()
     _vardefstack  = newlist(),
     _vardefs      = terralib.newenvironment(nil),
     _mode         = nil,
+    _in_remove    = false,
     _permissions  = {},
     _emit_tables  = {},
     _scan_tables  = {},
@@ -146,6 +148,14 @@ function Context:leave_letblock()
   self:leave_noassign()
   self._let_depth = self._let_depth-1
 end
+function Context:enter_mergeblock_remove(varname, tbl)
+  self._in_remove     = true
+  self:enter_mergeblock(varname, tbl)
+end
+function Context:leave_mergeblock_remove()
+  self:leave_mergeblock()
+  self._in_remove     = false
+end
 function Context:enter_mergeblock(varname, tbl)
   self._merge_var     = varname
   self._merge_tbl     = tbl
@@ -169,6 +179,7 @@ function Context:leave_joindo()     self._mode      = nil                 end
 function Context:in_letblock()
   return self._let_depth > 0
 end
+function Context:in_remove_merge()  return self._in_remove          end
 function Context:in_mergeblock()    return self._in_merge_flag      end
 function Context:in_function()      return self._mode == 'function' end
 function Context:in_joinfilter()    return self._mode == 'filter'   end
@@ -275,6 +286,10 @@ function Context:add_effect(eff, opt)
         err = true end
       self._emit_tables[eff.dst] = eff
     end
+
+  elseif E.MergeRemove.check(eff) then
+    -- we checked on the merge already
+    assert(self._emit_tables[eff.dst], "INTERNAL")
 
   elseif E.Reduce.check(eff) then
     if not self:in_joindo() then
@@ -518,15 +533,37 @@ function AST.MergeStmt:effectcheck(ctxt)
     -- effect
     ctxt:add_effect( E.Merge(self.dst, self.srcinfo) )
 
-    -- set guard flags and process the merge body
-    ctxt:enter_mergeblock( self.name, self.dst )
-      self.body:effectcheck(ctxt)
+    if self.new_emit then
+      self.new_emit.record:effectcheck(ctxt)
+    end
+
+    -- set guard flags and process the update body
+    ctxt:enter_mergeblock( self.up_name, self.dst )
+      self.up_body:effectcheck(ctxt)
     ctxt:leave_mergeblock()
-    if self.else_emit then
-      self.else_emit.record:effectcheck(ctxt)
+
+    if self.rm_name then
+      ctxt:add_effect( E.MergeRemove(self.dst, self.srcinfo) )
+      ctxt:enter_mergeblock_remove( self.rm_name, self.dst )
+        self.rm_body:effectcheck(ctxt)
+      ctxt:leave_mergeblock_remove()
     end
   end
 end
+
+function AST.KeepStmt:effectcheck(ctxt)
+  if ctxt:in_remove_merge() then
+    local mergevar  = ctxt:get_mergevar()
+    if not AST.Var.check(self.arg) or self.arg.name ~= mergevar then
+      ctxt:error(self, "argument to keep() statement was not "..
+                       "the argument to remove("..tostring(mergevar)..")")
+    end
+  else
+    ctxt:error("Cannot execute keep() statement "..
+               "outside of a merge-remove() block")
+  end
+end
+
 
 local function get_readwrite_path(lval, ctxt)
   return lval.path:map(function(p)

@@ -120,6 +120,8 @@ function Exports.CompileLibrary(args)
     for _,eff in ipairs(j:_INTERNAL_geteffects()) do
       if E.Merge.check(eff) then
         eff.dst:table():_INTERNAL_ActivateMergeIndex()
+      elseif E.MergeRemove.check(eff) then
+        eff.dst:table():_INTERNAL_ActivateMergeRemovals()
       end
     end
   end
