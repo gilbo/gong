@@ -40,6 +40,7 @@ local function NewContext(effects, StoreWrap)
     _W            = StoreWrap,
     effects       = effects,
     _scan_args    = nil,
+    _merge_rms    = {},
   }, Context)
   return ctxt
 end
@@ -54,6 +55,15 @@ function Context:GetScanArgs()
   if self._scan_args then
     return unpack(self._scan_args)
   end
+end
+
+function Context:AddMergeRemove(merge_stmt)
+  assert(not self._merge_rms[merge_stmt.dst],
+         'INTERNAL: expect no duplicates')
+  self._merge_rms[merge_stmt.dst] = merge_stmt
+end
+function Context:GetMergeRemove(tbl)
+  return self._merge_rms[tbl]
 end
 
 function Context:GetTerraFunction(obj)
@@ -113,13 +123,17 @@ function Context:PreMerge(dsttype)
   return self._W:PreMerge(self:StorePtr(), dsttype)
 end
 
-function Context:PostMerge(dsttype)
-  return self._W:PostMerge(self:StorePtr(), dsttype)
+function Context:PostMerge(dsttype, rm_var, rm_body)
+  return self._W:PostMerge(self:StorePtr(), dsttype, rm_var, rm_body)
 end
 
 function Context:MergeLookup(dsttype, row, key0, key1, body, else_vals)
   return self._W:MergeLookup(self:StorePtr(), dsttype, row, key0, key1,
                                                             body, else_vals)
+end
+
+function Context:KeepRow(dsttype, row)
+  return self._W:KeepRow(self:StorePtr(), dsttype, row)
 end
 
 -------------------------------------------------------------------------------
@@ -330,7 +344,15 @@ function AST.Join:codegen(ctxt)
               end)))
     end
     -- cleanup any merge tables
-    for dst,_ in pairs(mergetbls) do emit( ctxt:PostMerge(dst) ) end
+    for dst,_ in pairs(mergetbls) do
+      local mstmt           = ctxt:GetMergeRemove(dst)
+      local rm_var, rm_body = nil, nil
+      if mstmt then
+        rm_var              = ctxt:NewSym(mstmt.rm_name, mstmt.dst)
+        rm_body             = mstmt.rm_body:codegen(ctxt)
+      end
+      emit( ctxt:PostMerge(dst, rm_var, rm_body) )
+    end
   end end
   return outerloop, newlist{ innerloop }
 end
@@ -364,7 +386,9 @@ function AST.EmitStmt:codegen(ctxt)
   return ctxt:Insert(dst, exprs)
 end
 function AST.MergeStmt:codegen(ctxt)
-  assert(not self.rm_var, 'INTERNAL: TODO Need to implement merge-remove')
+  if self.rm_name then
+    ctxt:AddMergeRemove(self)
+  end
   local up_var    = ctxt:NewSym(self.up_name, self.dst)
   local k0, k1    = ctxt:GetScanArgs()
   local up_body   = self.up_body:codegen(ctxt)
@@ -373,6 +397,10 @@ function AST.MergeStmt:codegen(ctxt)
     new_vals      = codegen_all(self.new_emit.record.exprs, ctxt)
   end
   return ctxt:MergeLookup(self.dst, up_var, k0, k1, up_body, new_vals)
+end
+function AST.KeepStmt:codegen(ctxt)
+  local arg       = self.arg:codegen(ctxt)
+  return ctxt:KeepRow(self.arg.type, arg)
 end
 function AST.ReturnStmt:codegen(ctxt)
   local expr      = self.expr:codegen(ctxt)

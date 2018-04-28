@@ -59,6 +59,7 @@ local function NewTable(name, options)
     _is_sealed      = false,
     _gong_record    = false,
     _mergeable      = false,
+    _merge_removeable = false,
   }, DataTable)
 end
 Exports.NewTable    = NewTable

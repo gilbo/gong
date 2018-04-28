@@ -75,7 +75,7 @@ local ADT A
                         new_emit  : EmitStmt?,
                         up_name   : Symbol,   up_body   : Block,
                         rm_name   : Symbol?,  rm_body   : Block? }
-        | KeepStmt    { expr      : Expr }
+        | KeepStmt    { arg       : Expr }
         | ReturnStmt  { expr      : Expr }
         | BuiltInStmt { builtin   : BuiltIn,  args      : Expr* }
     -- Binding & Assignment

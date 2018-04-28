@@ -348,8 +348,8 @@ function AST.MergeStmt:specialize(ctxt)
   local rm_name, rm_body = nil, nil
   if self.rm_name then
     ctxt:pushenv()
-    rm_name       = introsym(self.up_name, ctxt)
-    rm_body       = self.up_body:specialize(ctxt)
+    rm_name       = introsym(self.rm_name, ctxt)
+    rm_body       = self.rm_body:specialize(ctxt)
     ctxt:popenv()
   end
 

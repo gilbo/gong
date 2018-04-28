@@ -27,7 +27,6 @@ do
     end
 end
 
---[[
 local gong join semaphore( a : A, b : B, mul : G.int32, off : G.int32 )
   where mul*a.id + off == b.id
 do
@@ -41,14 +40,13 @@ do
       if c > 1 then keep(x); x.count = c-1 end
     end
 end
---]]
 
 ------------------------------------------------------------------------------
 
 
 local API = G.CompileLibrary {
   tables        = {},
-  joins         = {re_join},
+  joins         = {re_join, semaphore},
   terra_out     = true,
 }
 
@@ -111,7 +109,7 @@ local terra exec()
       if c ~= 1 then ERR("expected all counts to be 1, but got %d", c) end
     end end
   end
-  C.printf("  Join 1 done\n")
+  C.printf("  Join 1a done\n")
   -- repeat the same join for counts of 2 everywhere
   do
     store:re_join(1, 0)
@@ -124,7 +122,7 @@ local terra exec()
       if c ~= 2 then ERR("expected all counts to be 2, but got %d", c) end
     end end
   end
-  C.printf("  Join 2 done\n")
+  C.printf("  Join 1b done\n")
   -- now do the join with a shift so that only one row persists
   do
     store:re_join(2, -2)
@@ -149,9 +147,72 @@ local terra exec()
       end
     end end
   end
-  C.printf("  Join 3 done\n")
+  C.printf("  Join 1c done\n")
 
   loadstore(store, 10)
+
+  do
+    store:semaphore(1, 0)
+    CHECK_ERR(store)
+    var n_OUT     = OUT:get_n_rows()
+    var ALLOC     = OUT:get_n_alloc()
+    if n_OUT ~= 10 then ERR("expected 10 contacts; got %d", n_OUT) end
+    for k = 0,ALLOC do if OUT:is_live():read(k) then
+      var a, b, c = OUT:a():read(k), OUT:b():read(k), OUT:count():read(k)
+      if c ~= 1 then ERR("expected all counts to be 1, but got %d", c) end
+    end end
+  end
+  C.printf("  Join 2a done\n")
+  -- now do the join with a shift so that only one row persists
+  do
+    store:semaphore(2, -2)
+    CHECK_ERR(store)
+    -- expected pairs (1,0),(2,2),(3,4),(4,6),(5,8)
+    var n_OUT     = OUT:get_n_rows()
+    var ALLOC     = OUT:get_n_alloc()
+    if n_OUT ~= 5 then ERR("expected 5 contacts; got %d", n_OUT) end
+    for k = 0,ALLOC do if OUT:is_live():read(k) then
+      var a, b, c = OUT:a():read(k), OUT:b():read(k), OUT:count():read(k)
+      if a==2 and b==2 then
+        if c ~= 2 then
+          ERR("expected (a=2,b=2) to have count 2, but got %d", c) end
+      else
+        if c ~= 1 then
+          ERR("(a=%d,b=%d) has count=%d rather than count 1", a, b, c) end
+        if not(a == 1 and b == 0) and not(a == 3 and b == 4) and
+           not(a == 4 and b == 6) and not(a == 5 and b == 8)
+        then
+          ERR("got unexpected output row (a=%d,b=%d)", a, b)
+        end
+      end
+    end end
+  end
+  C.printf("  Join 2b done\n")
+  -- now do a simple offset join and observe the retained pair with count 2
+  do
+    store:semaphore(1, 1)
+    CHECK_ERR(store)
+    var n_OUT     = OUT:get_n_rows()
+    var ALLOC     = OUT:get_n_alloc()
+    if n_OUT ~= 10 then ERR("expected 10 contacts; got %d", n_OUT) end
+    for k = 0,ALLOC do if OUT:is_live():read(k) then
+      var a, b, c = OUT:a():read(k), OUT:b():read(k), OUT:count():read(k)
+      if (a == 3 and b == 4) then
+        if c ~= 2 then
+          ERR("expected (a=3,b=4) to have count 2, but got %d", c)
+        end
+      elseif (a == 2 and b == 2) or a+1 == b then
+        if c ~= 1 then
+          ERR("expected count to be 1, but got %d for (a=%d,b=%d)",
+              c, a, b)
+        end
+      else
+        ERR("got unexpected output row (a=%d,b=%d)", a, b)
+      end
+    end end
+  end
+  C.printf("  Join 2c done\n")
+
 
   store:destroy()
   return 0

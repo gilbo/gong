@@ -1039,7 +1039,7 @@ function Wrapper:PreMerge(storeptr, tbltype)
   return quote end
 end
 
-function Wrapper:PostMerge(storeptr, tbltype)
+function Wrapper:PostMerge(storeptr, tbltype, rm_var, rm_body)
   local W               = self
   local Table, tblname  = unpack_tbl(self, tbltype)
 
@@ -1059,7 +1059,18 @@ function Wrapper:PostMerge(storeptr, tbltype)
     for row=0,ALLOC do
       var liveval = [ live_ptr(W, storeptr, tbltype, row) ]
       if [ W:_INTERNAL_is_live_read(storeptr, tbltype, row) ] then
-        if [ W:_INTERNAL_was_visited(storeptr, tbltype, row) ] then
+        var VISITED = [ W:_INTERNAL_was_visited(storeptr, tbltype, row) ]
+        escape if rm_var then emit quote
+          if not VISITED then
+          -- run remove code, and check whether we decided to keep the row
+            var [rm_var]  = row
+            [rm_body]
+            VISITED = [ W:_INTERNAL_was_visited(storeptr, tbltype, row) ]
+          end
+        end end end
+
+        -- act based on final decision after possible remove clause
+        if VISITED then
           [ W:_INTERNAL_clear_visit(storeptr, tbltype, row) ]
         else
           var key0      = (storeptr.[tblname].[f0name])[row]
@@ -1100,6 +1111,11 @@ function Wrapper:MergeLookup(
       [ W:WriteRow(storeptr, tbltype, row, else_vals) ]
     end end end end
   end
+end
+
+function Wrapper:KeepRow(storeptr, tbltype, row)
+  local W               = self
+  return W:_INTERNAL_visit(storeptr, tbltype, row)
 end
 
 -------------------------------------------------------------------------------
