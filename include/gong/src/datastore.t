@@ -291,12 +291,11 @@ local function GeneralMergeIndex(Index, IndexName)
       return false, v, lo
     end
 
-    local terra print_idx( idx : CIdx, k0 : K0 )
-      C.printf("  idx[%d]\n", k0)
+    local terra print_idx( idx : &CIdx, k0 : K0 )
+      C.printf("  idx[%d]: ", k0)
       var V = idx._keys[k0]
-      for k=0,V:size() do
-        C.printf("    %d: %d %d\n", k, V(k).k1, V(k).dst)
-      end
+      for k=0,V:size() do C.printf(" %d(%d)", V(k).k1, V(k).dst) end
+      C.printf("\n")
     end
 
     terra CIdx:insert( k0 : K0, k1 : K1, row : KDST )
@@ -304,8 +303,9 @@ local function GeneralMergeIndex(Index, IndexName)
       assert(not success, "INTERNAL: expect insert-entry to be missing")
       var N             = v:size()
       v:resize(N+1)
-      -- shift contents and then enter data
-      for k=i,N do v(k+1) = v(k) end
+      -- shift contents right and then enter data
+      var tmp = v(i)
+      for k=i+1,N+1 do v(k), tmp = tmp, v(k) end
       v(i).k1           = k1
       v(i).dst          = row
     end
@@ -313,20 +313,20 @@ local function GeneralMergeIndex(Index, IndexName)
       var success, v, i = find(self, k0, k1)
       assert(success, "INTERNAL: expect remove-entry to be present")
       var N             = v:size()
-      -- shift contents right
+      -- shift contents left
       for k=i,N-1 do v(k) = v(k+1) end
       v:resize(N-1)
     end
     terra CIdx:lookup( k0 : K0, k1 : K1 )
       var success, v, i = find(self, k0, k1)
-      --print_idx(@self, k0)
       if success then
         return true, &(v(i).dst)
       else
         var N             = v:size()
         v:resize(N+1)
-        -- shift contents and then enter data
-        for k=i,N do v(k+1) = v(k) end
+        -- shift contents right and then enter data
+        var tmp = v(i)
+        for k=i+1,N+1 do v(k), tmp = tmp, v(k) end
         v(i).k1           = k1
         return false, &(v(i).dst)
       end

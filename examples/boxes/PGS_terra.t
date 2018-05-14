@@ -71,9 +71,9 @@ local function GeneratePGSSolver(API, params)
   local split_pen_threshold   = constant(num, 0.04)
   local warmstart_factor  = constant(num, 0.85)
 
-  local friction_coefficient  = params.friction_coefficient or 0.30
-  local gravity_acc           = params.gravity_acc or 9.8
-  friction_coefficient    = constant(num, friction_coefficient)
+  local friction          = params.friction or 0.25
+  local gravity_acc       = params.gravity_acc or 9.8
+  friction                = constant(num, friction)
   gravity_acc             = constant(num, gravity_acc)
 
   local max_iters         = params.max_iters or 50
@@ -120,7 +120,7 @@ local function GeneratePGSSolver(API, params)
     rhs             : &num
     rhs_fric        : &num
     rhsPos          : &num
-    fric_limit      : &num
+    fric_limit      : &num  -- superfluous
     inv_J           : &num
     inv_J_fric      : &num
     --
@@ -323,36 +323,46 @@ local function GeneratePGSSolver(API, params)
   -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
 
   terra PGS_State:print()
-    --[[
+    --
     C.printf("  BOXES       #%d\n", self.n_boxes)
-    C.printf("           pos     -       -       ; vel     -       -       \n")
-    C.printf("           force   -       -       ; torque  -       -       \n")
+   C.printf(["           pos     -       -               ;"..
+                       " linvel  -       -       \n"])
+   C.printf(["           rot     -       -       -       ;"..
+                       " angvel  -       -       \n"])
+  --C.printf("           force   -       -       ; torque  -       -       \n")
     for b=0,self.n_boxes do
       var p, v = self.pos[b], self.linvel[b]
-      var f, t = self.force[b], self.torque[b]
-    C.printf("    %4d:  %7.3f %7.3f %7.3f ; %7.3f %7.3f %7.3f\n",
+      var r, w = self.rot[b], self.angvel[b]
+  --  var f, t = self.force[b], self.torque[b]
+    C.printf("    %4d:  %7.3f %7.3f %7.3f         ; %7.3f %7.3f %7.3f\n",
              b, p(0), p(1), p(2), v(0), v(1), v(2))
-    C.printf("           %7.3f %7.3f %7.3f ; %7.3f %7.3f %7.3f %7.3f\n",
-             b, f(0), f(1), f(2), t(0), t(1), t(2))
+    C.printf("           %7.3f %7.3f %7.3f %7.3f ; %7.3f %7.3f %7.3f\n",
+             r(0), r(1), r(2), r(3), w(0), w(1), w(2))
     end
     C.printf("  CONTACTS    #%d\n", self.n_contacts)
-    C.printf("              l_mult  -       -       ; rhs     -       -       ; depth\n")
-    --C.printf("              invdiag -       -       ; -       -       -\n")
-    --C.printf("              -       -       -       ; depth   -       \n")
-    --C.printf("              force   -       -       ; torque  -       \n")
+    C.printf("              l_mult  fricmlt pos_mlt ; rhs     rhsfric rhs_pos ; depth\n")
+    C.printf("              fric_dir        -       ; invJ    invJfric\n")
+    C.printf("              norm    -       -       ; ctct_pt -       -\n")
+    --C.printf("              rel0    -       -       ; rel1    -       -\n")
     for c=0,self.n_c_alloc do if self.is_live[c] then
     C.printf("    %4d: (%d)  %4d, %4d\n", c, self.n_pts[c],
                                           self.b0[c], self.b1[c])
       for k=0,self.n_pts[c] do
-        var m, r = self.l_mult[4*c+k], self.rhs[4*c+k]
-        var d    = self.pts[c].d[k].depth
-        --var i    = self.inv_diag[4*c+k]
+        var lm, fm, pm  = self.l_mult[4*c+k], self.fric_mult[4*c+k],
+                                              self.pos_mult[4*c+k]
+        var  r, fr, pr  = self.rhs[4*c+k], self.rhs_fric[4*c+k],
+                                           self.rhsPos[4*c+k]
+        var d           = self.pts[c].d[k].depth
+        var fd          = self.friction_dir[4*c+k]
+        var iJ, iJf     = self.inv_J[4*c+k], self.inv_J_fric[4*c+k]
+        var n           = self.basis[c].norm
+        var pt          = self.pts[c].d[k].rel1 + self.pos_prev[ self.b1[c] ]
     C.printf("          %d : %7.3f %7.3f %7.3f ; %7.3f %7.3f %7.3f ; %7.3f\n",
-             k, m(0), m(1), m(2), r(0), r(1), r(2), d)
-    --C.printf("            : %7.3f %7.3f %7.3f ; %7.3f %7.3f %7.3f\n",
-    --         k, i(0), i(1), i(2), 0,0,0)
-    --C.printf("          %d : %7.3f %7.3f %7.3f ; %7.3f %7.3f %7.3f\n",
-    --         k, 0,0,0, d(0), d(1), d(2))
+             k, lm, fm, pm, r, fr, pr, d)
+    C.printf("            : %7.3f %7.3f %7.3f ; %7.3f %7.3f\n",
+             fd(0), fd(1), fd(2), iJ, iJf)
+    C.printf("            : %7.3f %7.3f %7.3f ; %7.3f %7.3f %7.3f\n\n",
+             n(0), n(1), n(2), pt(0), pt(1), pt(2))
       end
     end end
     --]]
@@ -386,23 +396,42 @@ local function GeneratePGSSolver(API, params)
     end
   end
 
+  terra PGS_State:gyroForce(b : uint32, dt : num)
+    var m                 = self.mass[b]
+    if m == num(0) then return v3(0,0,0) end
+
+    var d0, d1, d2        = self.dims[b](0), self.dims[b](1), self.dims[b](2)
+    var Inertia           = m3( (m*(d1*d1 + d2*d2))/12, 0, 0,
+                                0, (m*(d0*d0 + d2*d2))/12, 0,
+                                0, 0, (m*(d0*d0 + d1*d1))/12 )
+    var w                 = self.angvel[b]
+    var q                 = self.rot[b]
+
+    var w_b               = q:conj():rotvec(w)
+    var f                 = dt * ( w_b:cross(Inertia * w_b) )
+    var skew0             = w_b:crossmat()
+    var skew1             = (Inertia * w_b):crossmat()
+    var J                 = Inertia + dt * (skew0*Inertia - skew1)
+
+    var w_d               = J:invert() * f
+    return - q:rotvec(w_d)
+  end
+
   PGS_State.methods.ComputeFrictionDir = macro(function(pgs, ci, k)
     return quote
       var b0      = pgs.b0[ci]
       var b1      = pgs.b1[ci]
-      var x0, x1  = pgs.pos[b0],  pgs.pos[b1]
       var v0, v1  = pgs.linvel[b0], pgs.linvel[b1]
       var w0, w1  = pgs.angvel[b0], pgs.angvel[b1]
 
       var n       = pgs.basis[ci].norm
-      var pt      = pgs.pts[ci].d[k].pt
-      var r0      = pt - x0
-      var r1      = pt - x1
+      var r0      = pgs.pts[ci].d[k].rel0
+      var r1      = pgs.pts[ci].d[k].rel1
 
-      var vel     = v1 - v0 + w1:cross(r1) - w0:cross(r0)
+      var vel     = (v1 - v0 + w1:cross(r1) - w0:cross(r0))
       var lat     = vel - n:dot(vel) * n
       var fdir    = lat
-      if lat:dot(lat) > numEPS then
+      if lat:dot(lat) > SIMD_EPS then
         fdir      = (num(1)/lat:norm()) * lat
       else
         if n(2) > [1/math.sqrt(2)] then
@@ -420,14 +449,12 @@ local function GeneratePGSSolver(API, params)
     return quote
       var b0      = pgs.b0[ci]
       var b1      = pgs.b1[ci]
-      var x0, x1  = pgs.pos[b0],  pgs.pos[b1]
       var v0, v1  = b_lin[b0],    b_lin[b1]
       var w0, w1  = b_ang[b0],    b_ang[b1]
 
       var n       = pgs.basis[ci].norm
-      var pt      = pgs.pts[ci].d[k].pt
-      var r0      = pt - x0
-      var r1      = pt - x1
+      var r0      = pgs.pts[ci].d[k].rel0
+      var r1      = pgs.pts[ci].d[k].rel1
 
       var nwr0    = n:dot( w0:cross(r0) )
       var nwr1    = n:dot( w1:cross(r1) )
@@ -439,14 +466,12 @@ local function GeneratePGSSolver(API, params)
     return quote
       var b0      = pgs.b0[ci]
       var b1      = pgs.b1[ci]
-      var x0, x1  = pgs.pos[b0],  pgs.pos[b1]
       var v0, v1  = b_lin[b0],    b_lin[b1]
       var w0, w1  = b_ang[b0],    b_ang[b1]
 
       var f       = pgs.friction_dir[4*ci+k]
-      var pt      = pgs.pts[ci].d[k].pt
-      var r0      = pt - x0
-      var r1      = pt - x1
+      var r0      = pgs.pts[ci].d[k].rel0
+      var r1      = pgs.pts[ci].d[k].rel1
 
       var fwr0    = f:dot( w0:cross(r0) )
       var fwr1    = f:dot( w1:cross(r1) )
@@ -458,12 +483,10 @@ local function GeneratePGSSolver(API, params)
     return quote
       var b0      = pgs.b0[ci]
       var b1      = pgs.b1[ci]
-      var x0, x1  = pgs.pos[b0],  pgs.pos[b1]
 
       var n       = pgs.basis[ci].norm
-      var pt      = pgs.pts[ci].d[k].pt
-      var r0      = pt - x0
-      var r1      = pt - x1
+      var r0      = pgs.pts[ci].d[k].rel0
+      var r1      = pgs.pts[ci].d[k].rel1
 
       var nLM     = lm * n
       var v0, w0  = -nLM, -r0:cross(nLM)
@@ -475,12 +498,10 @@ local function GeneratePGSSolver(API, params)
     return quote
       var b0      = pgs.b0[ci]
       var b1      = pgs.b1[ci]
-      var x0, x1  = pgs.pos[b0],  pgs.pos[b1]
       
       var f       = pgs.friction_dir[4*ci+k]
-      var pt      = pgs.pts[ci].d[k].pt
-      var r0      = pt - x0
-      var r1      = pt - x1
+      var r0      = pgs.pts[ci].d[k].rel0
+      var r1      = pgs.pts[ci].d[k].rel1
 
       var fLM     = lm * f
       var v0, w0  = -fLM, -r0:cross(fLM)
@@ -491,7 +512,6 @@ local function GeneratePGSSolver(API, params)
   PGS_State.methods.CacheJMJDiagonal = macro(function(pgs, ci)
     return quote
       var b0, b1      = pgs.b0[ci],           pgs.b1[ci]
-      var x0, x1      = pgs.pos[b0],          pgs.pos[b1]
       var I0, I1      = pgs.inv_inertia[b0],  pgs.inv_inertia[b1]
       var n           = pgs.basis[ci].norm
 
@@ -504,8 +524,8 @@ local function GeneratePGSSolver(API, params)
       var inv_d_f : num[4]
       for k=0,n_pts do
         var f         = pgs.friction_dir[4*ci+k]
-        var pt        = pgs.pts[ci].d[k].pt
-        var r0, r1    = x0-pt, x1-pt
+        var r0        = pgs.pts[ci].d[k].rel0
+        var r1        = pgs.pts[ci].d[k].rel1
 
         var r0n, r1n  = r0:cross(n),  r1:cross(n)
         var r0f, r1f  = r0:cross(f),  r1:cross(f)
@@ -618,28 +638,36 @@ local function GeneratePGSSolver(API, params)
         -- L[c] = Proj( L0 + ((RHS - J F)[c] / D[c]) )
         -- dL   = L[c] - L0
         for k=0,pgs.n_pts[c] do if (not in_push) or rhs[4*c+k] ~= num(0) then
-          var J             = pgs:[JACOBIAN]( c, k, linvel, angvel )
-          var tmp           = rhs[4*c+k] - J
-          var L0            = mult[4*c+k]
-          tmp               = L0 + inv_diag[4*c+k]*tmp
-          -- Project
+          var norm_impls    = num(1)
           escape if use_friction then emit quote
-            var lim         = pgs.fric_limit[4*c+k]
-            tmp             = clampf( tmp, -lim, lim )
-          end else emit quote
-            tmp             = maxf( tmp, 0 )
+            norm_impls      = pgs.l_mult[4*c+k]
           end end end
-          mult[4*c+k]       = tmp
-          var dL            = tmp - L0
-          max_err           = maxf(max_err, C.fabs(dL))
+          -- only modify friction when we have a normal force
+          if true then--norm_impls > num(0) then
+            var J             = pgs:[JACOBIAN]( c, k, linvel, angvel )
+            var tmp           = rhs[4*c+k] - inv_diag[4*c+k]*J
+            var L0            = mult[4*c+k]
+            tmp               = L0 + tmp
+            -- Project
+            escape if use_friction then emit quote
+              var lim         = friction * norm_impls
+              tmp             = clampf( tmp, -lim, lim )
+            end else emit quote
+              --C.printf(" LOWER LIM [%d] %f %f\n", c, L0, tmp )
+              tmp             = maxf( tmp, 0 )
+            end end end
+            mult[4*c+k]       = tmp
+            var dL            = tmp - L0
+            max_err           = maxf(max_err, C.fabs(dL))
 
-          -- F[b0] += dL * (M^ J')[c,b0]
-          -- F[b1] += dL * (M^ J')[c,b1]
-          var v0,w0,v1,w1   = pgs:[JACOBIAN_T]( c, k, dL )
-          linvel[b0]        = linvel[b0] + pgs.inv_mass[b0]    * v0
-          angvel[b0]        = angvel[b0] + pgs.inv_inertia[b0] * w0
-          linvel[b1]        = linvel[b1] + pgs.inv_mass[b1]    * v1
-          angvel[b1]        = angvel[b1] + pgs.inv_inertia[b1] * w1
+            -- F[b0] += dL * (M^ J')[c,b0]
+            -- F[b1] += dL * (M^ J')[c,b1]
+            var v0,w0,v1,w1   = pgs:[JACOBIAN_T]( c, k, dL )
+            linvel[b0]        = linvel[b0] + pgs.inv_mass[b0]    * v0
+            angvel[b0]        = angvel[b0] + pgs.inv_inertia[b0] * w0
+            linvel[b1]        = linvel[b1] + pgs.inv_mass[b1]    * v1
+            angvel[b1]        = angvel[b1] + pgs.inv_inertia[b1] * w1
+          end
         end end
       end end
     end
@@ -660,9 +688,7 @@ local function GeneratePGSSolver(API, params)
       var D_N, I_N, D_F, I_F  = pgs:CacheJMJDiagonal(c)
       var f_mass              = num(1) / num(pgs.n_pts[c])
       for k=0,pgs.n_pts[c] do
-        -- set diagonal and limits
-        pgs.fric_limit[4*c+k] = friction_coefficient * gravity_acc *
-                                f_mass * D_F[k] --* timestep
+        -- set diagonal
         pgs.inv_J[4*c+k]      = I_N[k]
         pgs.inv_J_fric[4*c+k] = I_F[k]
       end
@@ -672,7 +698,7 @@ local function GeneratePGSSolver(API, params)
         var J             = pgs:JACOBIAN_Norm(c, k, pgs.linvel, pgs.angvel)
         var Jf            = pgs:JACOBIAN_Fric(c, k, pgs.linvel, pgs.angvel)
         -- velocity impulse is initialized to the goal of achieving 0 velocity
-        var velImpulse    = -J --* I_N[k]
+        var velImpulse    = -J * I_N[k]
         var posImpulse    = num(0)
         -- the required update to the position to resolve interpenetration
         -- can be handled either by updating the velocity (which we do in
@@ -681,10 +707,10 @@ local function GeneratePGSSolver(API, params)
         var depth         = pgs.pts[c].d[k].depth
         if depth > 0 then
           posImpulse          = posImpulse
-                              + inv_timestep * baumgarte * depth --* I_N[k]
+                              + inv_timestep * baumgarte * depth * I_N[k]
         else
           velImpulse          = velImpulse
-                              + inv_timestep * depth --* I_N[k]
+                              + inv_timestep * depth * I_N[k]
         end
         if depth < split_pen_threshold then
           pgs.rhs[4*c+k]      = posImpulse + velImpulse
@@ -694,10 +720,10 @@ local function GeneratePGSSolver(API, params)
           pgs.rhsPos[4*c+k]   = posImpulse
         end
         -- set friction right-hand side
-        pgs.rhs_fric[4*c+k]   = -Jf --* I_F[k]
-        C.printf("     - c(k) %d(%d) - %f, %f p v %f %f invj %f J %f %f\n",
-                c, k, depth, pgs.rhs[4*c+k], posImpulse, velImpulse,
-                I_N[k], J, inv_timestep)
+        pgs.rhs_fric[4*c+k]   = -Jf * I_F[k]
+        --C.printf("     - c(k) %d(%d) - %f, %f p v %f %f invj %f J %f %f\n",
+        --        c, k, depth, pgs.rhs[4*c+k], posImpulse, velImpulse,
+        --        I_N[k], J, inv_timestep)
 
         -- intialize the linvel/angvel variables
         var b0,b1             = pgs.b0[c], pgs.b1[c]
@@ -711,6 +737,15 @@ local function GeneratePGSSolver(API, params)
         pgs.d_angvel[b0]      = pgs.d_angvel[b0] + iI0 * (w0 + wf0)
         pgs.d_linvel[b1]      = pgs.d_linvel[b1] + im1 * (v1 + vf1)
         pgs.d_angvel[b1]      = pgs.d_angvel[b1] + iI1 * (w1 + wf1)
+        --vf0, vf1, wf0, wf1 = im0*(v0+vf0), im1*(v1+vf1),
+        --                     iI0*(w0+wf0), iI1*(w1+wf1)
+        --C.printf('  vf0/1 %d:  %7.3f %7.3f %7.3f ; %7.3f %7.3f %7.3f\n',
+        --         c, vf0(0), vf0(1), vf0(2), vf1(0), vf1(1), vf1(2))
+        --C.printf('  wf0/1 %d:  %7.3f %7.3f %7.3f ; %7.3f %7.3f %7.3f\n',
+        --         c, wf0(0), wf0(1), wf0(2), wf1(0), wf1(1), wf1(2))
+        --C.printf("  LMFM : %7.3f %7.3f\n", LM, FM)
+        --var r1                = pgs.pts[c].d[k].rel1
+        --C.printf('    r1 :    %7.3f %7.3f %7.3f\n', r1(0), r1(1), r1(2))
 
         -- intialize the multiplier variables
         pgs.l_mult[4*c+k]     = LM
@@ -718,6 +753,11 @@ local function GeneratePGSSolver(API, params)
         pgs.pos_mult[4*c+k]   = num(0)
       end
     end end
+    --for b=0,pgs.n_boxes do
+    --  var v, w                = pgs.d_linvel[b], pgs.d_angvel[b]
+    --  C.printf('  b %d:  %7.3f %7.3f %7.3f ; %7.3f %7.3f %7.3f\n',
+    --           b, v(0), v(1), v(2), w(0), w(1), w(2))
+    --end
 
     var max_err     = num(0)
     var iter        = 0
@@ -775,7 +815,6 @@ local function GeneratePGSSolver(API, params)
     --  end
     --end end
 
-    --pgs:print()
     C.printf("    solver iters:  %d\n", iter)
     C.printf("    max_err:  %20.10f\n", max_err)
     --C.printf("    max_err2: %20.10f\n", max_err2)
@@ -794,8 +833,13 @@ local function GeneratePGSSolver(API, params)
       pgs.rot_prev[b]     = pgs.rot[b]
       pgs.linvel_prev[b]  = pgs.linvel[b]
       pgs.angvel_prev[b]  = pgs.angvel[b]
-      pgs.force[b]        = v3(0, -pgs.mass[b]*gravity_acc, 0)
-      pgs.torque[b]       = v3(0,0,0)
+      var force           = v3(0, -pgs.mass[b]*gravity_acc, 0)
+      var torque          = v3(0,0,0)
+      var gyro            = pgs:gyroForce(b, timestep)
+      --C.printf("GGG %f %f %f\n", gyro(0), gyro(1), gyro(2))
+      --gyro = v3(0,0,0)
+      pgs.force[b]        = force
+      pgs.torque[b]       = torque + gyro
     end
     -- and cache the mass matrix, inverted
     pgs:cacheInvMassMatrix()
@@ -803,13 +847,13 @@ local function GeneratePGSSolver(API, params)
     -- DO COLLISION DETECTION!
     C.printf("  start collision\n")
     pgs:unlock_store()
-    C.printf("    unlocked\n")
+    --C.printf("    unlocked\n")
     pgs.store:find_plank_iscts()
-    C.printf("    locking\n")
+    --C.printf("    locking\n")
     pgs:relock_store() -- resize constraint-value arrays
     var midtime     = taketime()
     C.printf("  end collision\n")
-    sfunc(pgs.store)
+    if sfunc ~= nil then sfunc(pgs.store) end
 
     -- integrate forward velocities for the solver
     for b=0,pgs.n_boxes do
@@ -820,6 +864,7 @@ local function GeneratePGSSolver(API, params)
     end
 
     -- Do the collision solve
+    C.printf("  start solve\n")
     pgs:runPGS()
 
     -- now correct the predicted velocity and position using
@@ -831,9 +876,9 @@ local function GeneratePGSSolver(API, params)
       pgs.angvel[b]         = w
 
       var push, turn        = pgs.push[b], pgs.turn[b]
-      var dv                = pgs.d_linvel[b]
-      C.printf("     - b %d - %f %f %f  ;  %f %f %f\n",
-               b, push(0), push(1), push(2), dv(0), dv(1), dv(2))
+      --var dw                = pgs.d_angvel[b]
+      --C.printf("     - b %d - %f %f %f  ;  %f %f %f\n",
+      --         b, turn(0), turn(1), turn(2), dw(0), dw(1), dw(2))
       v                     = v + push
       w                     = w + num(0.1) * turn
       pgs:integratePositions(b, pgs.pos, pgs.rot, v, w)
@@ -841,6 +886,7 @@ local function GeneratePGSSolver(API, params)
 
     var stoptime    = taketime()
 
+    --pgs:print()
     var collide     = midtime  - starttime
     var solve       = stoptime - midtime
     var total       = stoptime - starttime

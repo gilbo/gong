@@ -87,6 +87,14 @@ function Exports.API_Extend(API)
           lhs(1,0)+rhs(1,0), lhs(1,1)+rhs(1,1), lhs(1,2)+rhs(1,2),
           lhs(2,0)+rhs(2,0), lhs(2,1)+rhs(2,1), lhs(2,2)+rhs(2,2)) end
   end)
+  mat3.metamethods.__sub = macro(function(a,b)
+    local atyp = a:gettype()
+    assert(atyp == mat3 and atyp == b:gettype(), 'bad mat3 __sub args')
+    return quote var lhs = a; var rhs = b
+    in m3(lhs(0,0)-rhs(0,0), lhs(0,1)-rhs(0,1), lhs(0,2)-rhs(0,2),
+          lhs(1,0)-rhs(1,0), lhs(1,1)-rhs(1,1), lhs(1,2)-rhs(1,2),
+          lhs(2,0)-rhs(2,0), lhs(2,1)-rhs(2,1), lhs(2,2)-rhs(2,2)) end
+  end)
   mat3.metamethods.__unm = macro(function(a)
     return quote var x = a in m3(-x(0,0), -x(0,1), -x(0,2),
                                  -x(1,0), -x(1,1), -x(1,2),
@@ -200,6 +208,13 @@ function Exports.API_Extend(API)
     return inv * m3(  m:subdet(0,0), -m:subdet(1,0),  m:subdet(2,0),
                      -m:subdet(0,1),  m:subdet(1,1), -m:subdet(2,1),
                       m:subdet(0,2), -m:subdet(1,2),  m:subdet(2,2) )
+  end
+
+  terra vec3:crossmat()
+    var v0, v1, v2 = self(0), self(1), self(2)
+    return m3(  0, -v2,  v1,
+               v2,   0, -v0,
+              -v1,  v0,   0 )
   end
 
   terra quat:conj() : quat

@@ -34,7 +34,7 @@ local gravity_acc           = 9.8
 local mass                  = 1
 local invmass               = 1/mass
 
-local max_iters             = 5000
+local max_iters             = 50
 
 -- NOTE: The PCG solver appears to be broken
 --        I don't know what's wrong with it...
@@ -86,10 +86,49 @@ Prelude.API_Extend(API)
 ------------------------------------------------------------------------------
 -- Build box configuration
 
+local terra loadBoxesSlantGround( store : API.Store )
+  var boxes = store:Planks()
+
+  boxes:beginload( 2 )
+    -- ground box
+    var ang = 10.0 * [math.pi/180.0]
+    --cos = 1 - 2qq
+    --sin = 2qs
+    --so,
+    --q = sqrt( (1-cos)/2 )
+    --s = sin / 2q
+    var cos = C.cos(ang)
+    var sin = C.sin(ang)
+    var q   = C.sqrt( (1-cos)/2 )
+    --var s   = sin / (2*q)
+    -- s^2 = 1 - q^2 = 1 - (1-cos)/2 = (1+cos)/2
+    var s   = C.sqrt( (1+cos)/2 )
+    boxes:loadrow( v3(0,-50,0),     -- position
+                   q4(q,0,0,s),     -- rotation
+                   v3(0,0,0),       -- linear velocity
+                   v3(0,0,0),       -- angular velocity
+                   v3(0,0,0),       -- force
+                   v3(0,0,0),       -- torque
+                   num(0),          -- mass
+                   v3(200,100,200)  -- dims
+                 )
+    boxes:loadrow( v3(0,3.0,0),
+                   q4(0,0,0,1),
+                   v3(0,0,0),
+                   v3(0,0,0),
+                   v3(0,0,0),
+                   v3(0,0,0),
+                   num(1),
+                   v3(2,1,2)
+                 )
+
+  boxes:endload()
+end
+
 local terra loadBoxesSimpleStack( store : API.Store )
   var boxes = store:Planks()
 
-  var N     = 10
+  var N     = 4
 
   boxes:beginload( N + 1 )
     -- ground box
@@ -122,8 +161,8 @@ local terra loadBoxesSimpleStack( store : API.Store )
  --              )
     -- simple boxes
     for k=0,N do
-      var Y = 1.05*k + 0.6
-      boxes:loadrow( v3(0,Y,0.1*k),
+      var Y = 1.0*k + 0.5
+      boxes:loadrow( v3(0,Y,0.6*k),
                      q4(0,0,0,1),
                      v3(0,0,0),
                      v3(0,0,0),
@@ -139,11 +178,11 @@ end
 local terra loadBoxesRoundTower( store : API.Store )
   var boxes = store:Planks()
 
-  var n_levels  = 10
+  var n_levels  = 50
   var n_ring    = 24
   var radius    = 11
 
-  boxes:beginload( n_levels*n_ring + 1 )
+  boxes:beginload( n_levels*n_ring + 2 )
     -- ground box
     boxes:loadrow( v3(0,-50,0),
                    q4(0,0,0,1),
@@ -155,15 +194,15 @@ local terra loadBoxesRoundTower( store : API.Store )
                    v3(200,100,200)
                  )
     -- projectile box
-   -- boxes:loadrow( v3(20,14,0),   -- position
-   --                q4(0,0,0,1),   -- rotation
-   --                v3(-60,-30,0), -- linear velocity
-   --                v3(0,0,0),     -- angular velocity
-   --                v3(0,0,0),     -- force
-   --                v3(0,0,0),     -- torque
-   --                num(15),       -- mass
-   --                v3(2,7,5)      -- dims
-   --              )
+    boxes:loadrow( v3(20,14,0),   -- position
+                   q4(0,0,0,1),   -- rotation
+                   v3(-60,-30,0), -- linear velocity
+                   v3(0,0,0),     -- angular velocity
+                   v3(0,0,0),     -- force
+                   v3(0,0,0),     -- torque
+                   num(15),       -- mass
+                   v3(2,7,5)      -- dims
+                 )
     for k=0,n_levels do
       var off = num((k+1)%2)/2
       for j=0,n_ring do
@@ -171,7 +210,7 @@ local terra loadBoxesRoundTower( store : API.Store )
         var rang    = 0.5*-ang
         var x       = radius*C.cos(ang)
         var z       = radius*C.sin(ang)
-        boxes:loadrow( v3(x,1.05*k+0.5,z),
+        boxes:loadrow( v3(x,1.0*k+0.5,z),
                        q4(0,C.sin(rang),0,C.cos(rang)),
                        v3(0,0,0),
                        v3(0,0,0),
@@ -373,7 +412,9 @@ local terra mainLoop()
   C.printf('        -+-+- CODE: mainLoop() -+- Begin\n')
   var store       = API.NewStore()
   C.printf('        -+-+- CODE: mainLoop() -+- into loadBoxes()\n')
+  --loadBoxesSlantGround(store)
   loadBoxesSimpleStack(store)
+  --loadBoxesRoundTower(store)
 
     vdb.vbegin()
     vdb.frame()
@@ -389,15 +430,15 @@ local terra mainLoop()
   for k=0,300 do
     C.printf('timestep #%d:\n', k)
     var start     = taketime()
-    solver:do_timestep(drawStore)
+    solver:do_timestep(nil)
     var stop      = taketime()
     var wait_time = timestep - (stop-start)
     if wait_time > 0 then
       C.usleep([int](wait_time*1e6))
     end
 
-    print_boxes(store)
-    --drawStore(store)
+    drawStore(store)
+    --print_boxes(store)
   end
 
   C.printf('        -+-+- CODE: mainLoop() -+- Start Free\n')
