@@ -1,0 +1,20 @@
+Hey,
+
+Sorry for the delay.
+I have attached Spheres.zip.
+Each text file is a new state of the time evolving system. (not necessarily the next time step)
+Each text file has the format:
+xval1
+yval1
+zval1
+xval2
+yval2
+zval2
+...
+
+Each coordinate is on a new line, and each coordinate dimension is always x then y then z. All files have the same number of spheres, and are written in the same order I believe.
+
+Hope this is useful. Let me know if you have any problems or need more data
+
+Best,
+Jonathan

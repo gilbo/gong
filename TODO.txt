@@ -64,7 +64,7 @@ Boolean Ops?
 
 Assignments of Examples:
 Gilbert
-  Planks / Bullet
+X Planks / Bullet
   Boolean Ops (Cork? Carve? LibIGL?)
 
 Michael
@@ -74,7 +74,7 @@ Michael
 Unassigned
   Cloth Self-collision / UNC Gamma http://gamma.cs.unc.edu/CAMA/cama.pdf (seems to tightly couple collission detection and resolution...)
   Point in Tetgrid?
-  Sphere-Uniform
+X Sphere-Uniform
   PSAAP Shadow
 
 

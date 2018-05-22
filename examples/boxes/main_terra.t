@@ -23,7 +23,7 @@ local assert    = G.cassert
 ------------------------------------------------------------------------------
 -- Sim Constants / Parameters
 
-local debug_draw            = true
+local debug_draw            = false
 
 local timestep              = 1/60
 local inv_timestep          = 1/timestep
@@ -194,13 +194,13 @@ local terra loadBoxesRoundTower( store : API.Store )
                    v3(200,100,200)
                  )
     -- projectile box
-    boxes:loadrow( v3(20,14,0),   -- position
+    boxes:loadrow( v3(20,14.5,0),   -- position
                    q4(0,0,0,1),   -- rotation
                    v3(-60,-30,0), -- linear velocity
                    v3(0,0,0),     -- angular velocity
                    v3(0,0,0),     -- force
                    v3(0,0,0),     -- torque
-                   num(15),       -- mass
+                   num(18),       -- mass
                    v3(2,7,5)      -- dims
                  )
     for k=0,n_levels do
@@ -405,7 +405,7 @@ local terra drawStore( store : API.Store )
   draw_boxes(store)
 
   vdb.vend()
-  C.getchar()
+  --C.getchar()
 end
 
 local terra mainLoop()
@@ -413,8 +413,8 @@ local terra mainLoop()
   var store       = API.NewStore()
   C.printf('        -+-+- CODE: mainLoop() -+- into loadBoxes()\n')
   --loadBoxesSlantGround(store)
-  loadBoxesSimpleStack(store)
-  --loadBoxesRoundTower(store)
+  --loadBoxesSimpleStack(store)
+  loadBoxesRoundTower(store)
 
     vdb.vbegin()
     vdb.frame()
