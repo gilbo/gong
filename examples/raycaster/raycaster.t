@@ -13,16 +13,16 @@ local Rays         = G.NewTable('Rays')
 Rays:NewField('origin',     vec3)
 Rays:NewField('direction',  vec3)
 Rays:NewField('tMax',       floattype)
+local RayHits = G.NewTable('RayHits')
+RayHits:NewField('ray', Rays)
+RayHits:NewField('hit', G.bool)
+
 local Verts        = G.NewTable('Verts')
 local Tris         = G.NewTable('Tris')
 
 Verts:NewField('pos', vec3)
 --Tris:NewField('v',   G.vector(Verts, 3), { keyrep = keyT })
 Tris:NewField('v',   G.vector(Verts, 3))
-
-local BoolIntersections = G.NewTable('BoolIntersections')
-							:NewField('ray', Rays)
-							:SetPrimaryKey('ray')
 
 --local BoolIntersections = G.NewTable('BoolIntersections'):NewField('ray', Rays)
 
@@ -87,13 +87,11 @@ local gong function is_isct_raytri( ray : Rays, tri : Tris ) : {G.bool, vec3, G.
     end
 end
 
-local gong join find_raytri_iscts_bool( r : Rays, t : Tris )
-  var hit,barys,t_dist = is_isct_raytri(r,t)
+local gong join find_raytri_iscts_bool(rh : RayHits, t : Tris )
+  var hit,barys,t_dist = is_isct_raytri(rh.ray,t)
   where hit
 do
-	merge x in BoolIntersections do
-	    --x.count = x.count + 1
-	else emit { ray=r } in BoolIntersections end
+  rh.hit or= true
 end
 
 local gong join find_raytri_iscts( r : Rays, t : Tris )

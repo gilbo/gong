@@ -28,11 +28,25 @@ void MeshLoad( Store store, uint32_t n_vert, uint32_t n_tri,
 void RayLoad( Store store, uint32_t n_rays,
                float* origin, float* direction, float* tMax )
 {
-  store.Rays().beginload(n_rays);
-    store.Rays().origin().load(reinterpret_cast<vec3*>(origin), 3*sizeof(float));
-    store.Rays().direction().load(reinterpret_cast<vec3*>(direction), 3*sizeof(float));
-    store.Rays().tMax().load(tMax, sizeof(float));
-  store.Rays().endload();
+  auto raystore = store.Rays();
+  raystore.beginload(n_rays);
+    raystore.origin().load(reinterpret_cast<vec3*>(origin), 3*sizeof(float));
+      raystore.direction().load(reinterpret_cast<vec3*>(direction), 3*sizeof(float));
+      raystore.tMax().load(tMax, sizeof(float));
+  raystore.endload();
+
+  void* zeros = malloc(n_rays*sizeof(bool));
+
+  std::vector<uint32_t> sequentialIndices;
+  sequentialIndices.resize(n_rays);
+  for (int i = 0; i < n_rays; ++i) sequentialIndices[i] = i;
+
+  auto rayhitstore = store.RayHits();
+  rayhitstore.beginload(n_rays);
+    rayhitstore.ray().load(sequentialIndices.data(),sizeof(uint32_t));
+    rayhitstore.hit().load((bool*)zeros,sizeof(bool));
+  rayhitstore.endload();
+  free(zeros);
 }
 
 
@@ -66,47 +80,49 @@ void RayLoadRFF( Store store, std::string filename )
 
 void MeshIsctPrintBoolIntersection( Store store )
 {
-  
-  uint32_t n_isct       = store.BoolIntersections().size();
+  auto hStore = store.RayHits();
+  uint32_t n_isct   = hStore.size();
   printf("Num ray tri intersections: %u\n", n_isct);
-  uint32_t* r           = store.BoolIntersections().ray().readwrite_lock();
+  uint32_t* r       = hStore.ray().read_lock();
+  bool* h           = hStore.hit().read_lock();
   for(uint32_t k=0; k<n_isct; k++) {
-    printf("%u: ray %u\n", k, r[k]);
+    printf("%u: ray %u\n", r[k], (uint32_t)h[r[k]]);
   }
-  store.BoolIntersections().ray().readwrite_unlock();
+  hStore.ray().read_unlock();
+  hStore.hit().read_unlock();
 }
 
 void MeshIsctPrintRayTriIntersection( Store store )
 {
-  
-  uint32_t n_isct       = store.RayTriIntersections().size();
+  auto iStore = store.RayTriIntersections();
+  uint32_t n_isct       = iStore.size();
   printf("Num ray tri intersections: %u\n", n_isct);
-  uint32_t* t           = store.RayTriIntersections().tri().readwrite_lock();
-  uint32_t* r           = store.RayTriIntersections().ray().readwrite_lock();
+  uint32_t* t           = iStore.tri().read_lock();
+  uint32_t* r           = iStore.ray().read_lock();
   for(uint32_t k=0; k<n_isct; k++) {
     printf("%u: ray %u / tri %u\n", k, r[k], t[k]);
   }
-  store.RayTriIntersections().ray().readwrite_unlock();
-  store.RayTriIntersections().tri().readwrite_unlock();
+  iStore.ray().read_unlock();
+  iStore.tri().read_unlock();
   
 }
 
 void MeshIsctPrintFullIntersection( Store store )
 {
-  
-  uint32_t n_isct       = store.FullIntersections().size();
+  auto iStore = store.FullIntersections();
+  uint32_t n_isct       = iStore.size();
   printf("Num ray tri intersections: %u\n", n_isct);
-  uint32_t* tri          = store.FullIntersections().tri().readwrite_lock();
-  uint32_t* r           = store.FullIntersections().ray().readwrite_lock();
-  float* t              = store.FullIntersections().t().readwrite_lock();
-  float* b              = (float*)store.FullIntersections().barys().readwrite_lock();
+  uint32_t* r           = iStore.ray().read_lock();
+  uint32_t* tri         = iStore.tri().read_lock();
+  float* t              = iStore.t().read_lock();
+  float* b              = (float*)iStore.barys().read_lock();
   for(uint32_t k=0; k<n_isct; k++) {
-    printf("%u: ray %u / tri %u: %f (%f, %f, %f)\n", k, r[k], tri[k], t[k], b[k*3+0],b[k*3+1],b[k*3+2]);
+    printf("ray %u: %u / tri %u: %f (%f, %f, %f)\n", k, r[k], tri[k], t[k], b[k*3+0],b[k*3+1],b[k*3+2]);
   }
-  store.FullIntersections().ray().readwrite_unlock();
-  store.FullIntersections().tri().readwrite_unlock();
-  store.FullIntersections().t().readwrite_unlock();
-  store.FullIntersections().barys().readwrite_unlock();
+  iStore.ray().read_unlock();
+  iStore.tri().read_unlock();
+  iStore.t().read_unlock();
+  iStore.barys().read_unlock();
   
 }
 
