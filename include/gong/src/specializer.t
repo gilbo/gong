@@ -30,6 +30,7 @@ local Functions   = require 'gong.src.functions'
 local is_macro    = Macro.is_macro
 local is_quote    = Macro.is_quote
 local is_constant = Global.is_constant
+local is_global   = Global.is_global
 local is_function = Functions.is_function
 local is_builtin  = Functions.is_builtin
 
@@ -100,6 +101,7 @@ local ADT A
     -- Literals and other Atoms
           Var         { name  : Symbol }
         | LuaObj      { obj   : any }
+        | Global      { obj   : Glob }
         | NumLiteral  { value : number,       type      : Type }
         | BoolLiteral { value : boolean }
     -- Data Constructors
@@ -130,6 +132,7 @@ local ADT A
 
   extern Type     is_type
   extern Symbol   is_symbol
+  extern Glob     is_global
   extern any      function(obj) return true end
 
   extern id_str   is_id_str
@@ -486,6 +489,9 @@ end
 local function luaval_to_ast(luav, anchor)
   if is_constant(luav) then
     return constant_to_ast(luav:getvalue(), luav:type(), anchor)
+
+  elseif is_global(luav) then
+    return A.Global(luav, anchor.srcinfo)
 
   -- default table case
   elseif type(luav) == 'table' or type(luav) == 'string' then

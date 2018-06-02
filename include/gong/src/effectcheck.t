@@ -18,6 +18,8 @@ local Schemata    = require 'gong.src.schemata'
 local Macro       = require 'gong.src.macro'
 local Global      = require 'gong.src.global'
 local Functions   = require 'gong.src.functions'
+local is_table    = Schemata.is_table
+local is_global   = Global.is_global
 
 local newlist   = terralib.newlist
 
@@ -41,7 +43,10 @@ local ADT E
          | Reduce   { op   : redop,
                       dst  : Type,        path : PathToken* }
          | Read     { src  : Type,        path : PathToken* }
-         | Print    {}
+         | ReduceG  { op   : redop,
+                      dst  : Glob,        path : PathToken* }
+         | ReadG    { src  : Glob,        path : PathToken* }
+         | Print      {}
         attributes {                                    srcinfo : SrcInfo }
 
   PathToken = FieldToken { name : id_str }
@@ -50,6 +55,7 @@ local ADT E
   extern redop    function(obj) return redop_token_set[obj] end
 
   extern Type     is_type
+  extern Glob     is_global
 
   extern id_str   is_id_str
   extern SrcInfo  function(obj) return SrcInfo.check(obj) end
@@ -195,6 +201,10 @@ function Context:add_effect(eff, opt)
     if not self:try_read(eff, eff.src:table(), eff.path) then
       err = true end
 
+  elseif E.ReadG.check(eff) then
+    if not self:try_read(eff, eff.src, eff.path) then
+      err = true end
+
   elseif E.Print.check(eff) then
     -- always fine
 
@@ -291,14 +301,19 @@ function Context:add_effect(eff, opt)
     -- we checked on the merge already
     assert(self._emit_tables[eff.dst], "INTERNAL")
 
-  elseif E.Reduce.check(eff) then
+  elseif E.Reduce.check(eff) or E.ReduceG.check(eff) then
     if not self:in_joindo() then
       err = true
       self:error(eff,
         "reductions are only allowed inside join do blocks")
     else
-      if not self:try_reduce(eff, eff.dst:table(), eff.path) then
-        err = true end
+      if E.Reduce.check(eff) then
+        if not self:try_reduce(eff, eff.dst:table(), eff.path) then
+          err = true end
+      elseif E.ReduceG.check(eff) then
+        if not self:try_reduce(eff, eff.dst, eff.path) then
+          err = true end
+      else INTERNAL_ERR('impossible case') end
     end
 
   elseif E.Write.check(eff) then
@@ -343,10 +358,14 @@ function Context:_INTERNAL_gettbl(tbl)
     end
   end
 
-  for _,f in ipairs(tbl:fields()) do
-    p[f:name()]       = {}
-    expand_field(p[f:name()], f:type())
-  end
+  if is_table(tbl) then
+    for _,f in ipairs(tbl:fields()) do
+      p[f:name()]       = {}
+      expand_field(p[f:name()], f:type())
+    end
+  elseif is_global(tbl) then
+    expand_field(p, tbl:type())
+  else INTERNAL_ERR('impossible case') end
 
   return p
 end
@@ -375,6 +394,7 @@ function Context:_INTERNAL_getpath(tbl, path)
 
   return terminals
 end
+
 local function access_template(self,eff,tbl,path, new_mode)
   local ctxt    = self
   local fs      = self:_INTERNAL_getpath(tbl, path)
@@ -587,6 +607,8 @@ function AST.Assignment:effectcheck(ctxt)
     lval            = lval.base
     ctxt:add_effect(  E.Write( lval.type, path, self.srcinfo ),
                       { mergeexpr = lval } )
+  elseif AST.GlobalWrite.check(lval) then
+    ctxt:error(lval, "Assignment to globals in joins is not allowed")
   elseif ctxt:in_noassign() then
     -- check that we're not trying to assign to a variable defined
     -- outside the no-assignment scope
@@ -619,6 +641,10 @@ function AST.Reduction:effectcheck(ctxt)
     lval            = lval.base
     ctxt:add_effect(  E.Reduce( self.op, lval.type, path, self.srcinfo ),
                       { mergeexpr = lval } )
+  elseif AST.GlobalWrite.check(lval) then
+    local path      = get_readwrite_path(lval, ctxt)
+    ctxt:add_effect(  E.ReduceG( self.op, lval.base, path, self.srcinfo ))
+    lval            = nil
   elseif ctxt:in_noassign() then
     -- check that we're not trying to reduce to a variable defined
     -- outside the no-assignment scope
@@ -636,7 +662,7 @@ function AST.Reduction:effectcheck(ctxt)
                        "let-expression or a merge-statement)")
     end
   end
-  lval:effectcheck(ctxt)
+  if lval then lval:effectcheck(ctxt) end
   self.rval:effectcheck(ctxt)
 end
 
@@ -713,6 +739,15 @@ end
 function AST.TableWrite:effectcheck(ctxt)
   INTERNAL_ERR('Should Never Call Directly')
 end
+function AST.GlobalRead:effectcheck(ctxt)
+  local path        = get_readwrite_path(self, ctxt)
+  ctxt:add_effect(    E.ReadG( self.base, path, self.srcinfo ))
+  self.base:effectcheck(ctxt)
+end
+function AST.GlobalWrite:effectcheck(ctxt)
+  INTERNAL_ERR('Should Never Call Directly')
+end
+
 
 --------------------------------------
 

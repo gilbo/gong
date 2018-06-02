@@ -115,6 +115,14 @@ function Context:Reduce(dsttype, op, row, path, rval)
   return self._W:Reduce(self:StorePtr(), dsttype, op, row, path, rval)
 end
 
+function Context:ReadGlobal(glob, path)
+  return self._W:ReadGlobal(self:StorePtr(), glob, path)
+end
+
+function Context:ReduceGlobal(glob, op, path, rval)
+  return self._W:ReduceGlobal(self:StorePtr(), glob, op, path, rval)
+end
+
 function Context:Insert(dsttype, vals)
   return self._W:Insert(self:StorePtr(), dsttype, vals)
 end
@@ -465,6 +473,10 @@ function AST.Reduction:codegen(ctxt)
     local path    = codegen_all(self.lval.path, ctxt)
     local dst     = self.lval.base.type
     return ctxt:Reduce(dst, self.op, row, path, rval)
+  elseif AST.GlobalWrite.check(self.lval) then
+    local path    = codegen_all(self.lval.path, ctxt)
+    local glob    = self.lval.base
+    return ctxt:ReduceGlobal(glob, self.op, path, rval)
   else
     local lval, stmts   = reduction_lval_unwind(self.lval, ctxt)
     local op            = self.op
@@ -593,6 +605,14 @@ function AST.TableRead:codegen(ctxt)
   return ctxt:Read(dst, row, path)
 end
 function AST.TableWrite:codegen(ctxt)
+  INTERNAL_ERR('Should Never Call Directly')
+end
+function AST.GlobalRead:codegen(ctxt)
+  local path          = codegen_all(self.path, ctxt)
+  local glob          = self.base
+  return ctxt:ReadGlobal(glob, path)
+end
+function AST.GlobalWrite:codegen(ctxt)
   INTERNAL_ERR('Should Never Call Directly')
 end
 

@@ -24,6 +24,7 @@ local Functions   = require 'gong.src.functions'
 local is_macro    = Macro.is_macro
 local is_quote    = Macro.is_quote
 local is_constant = Global.is_constant
+local is_global   = Global.is_global
 local is_function = Functions.is_function
 local is_builtin  = Functions.is_builtin
 
@@ -108,6 +109,8 @@ local ADT A
         | RecordRead  { base  : Expr,         arg     : id_str  }
         | TableRead   { base  : Expr,         path : PathToken* }
         | TableWrite  { base  : Expr,         path : PathToken* }
+        | GlobalRead  { base  : Glob,         path : PathToken* }
+        | GlobalWrite { base  : Glob,         path : PathToken* }
     -- Basic building up of conditions and terms
         | BinaryOp    { op    : binop,
                         lhs   : Expr,         rhs       : Expr  }
@@ -136,6 +139,7 @@ local ADT A
 
   extern Type     is_type
   extern Symbol   is_symbol
+  extern Glob     is_global
   extern BuiltIn  is_builtin
   extern FuncObj  is_function
 
@@ -957,6 +961,12 @@ function AST.LuaObj:typecheck(ctxt)
   end
 end
 
+function AST.Global:typecheck(ctxt)
+  local obj       = self.obj
+
+  return A.GlobalRead(obj, newlist(), obj:type(), self.srcinfo)
+end
+
 function AST.Var:typecheck(ctxt)
   local typ       = assert(ctxt:gettype( self.name ),
                            'INTERNAL: bad variable referent')
@@ -1219,6 +1229,10 @@ function AST.Lookup:typecheck(ctxt)
           local path    = base.path:copy()
           path:insert( A.PathIndex(args, self.srcinfo) )
           return A.TableRead(base.base, path, typ, self.srcinfo)
+        elseif A.GlobalRead.check(base) then
+          local path    = base.path:copy()
+          path:insert( A.PathIndex(args, self.srcinfo) )
+          return A.GlobalRead(base.base, path, typ, self.srcinfo)
         else
           return A.TensorIndex(base, args, typ, self.srcinfo)
         end
@@ -1245,6 +1259,10 @@ function AST.Lookup:typecheck(ctxt)
               local path    = base.path:copy()
               path:insert( A.PathField(f.name, self.srcinfo) )
               return A.TableRead(base.base, path, f.type, self.srcinfo)
+            elseif A.GlobalRead.check(base) then
+              local path    = base.path:copy()
+              path:insert( A.PathField(f.name, self.srcinfo) )
+              return A.GlobalRead(base.base, path, f.type, self.srcinfo)
             else
               return A.RecordRead(base, f.name, f.type, self.srcinfo)
             end
@@ -1559,6 +1577,10 @@ end
 function A.TableRead:lvalcheck(ctxt)
   -- base is a row-type value, which needn't further be an l-value
   return A.TableWrite(self.base, self.path, self.type, self.srcinfo)
+end
+
+function A.GlobalRead:lvalcheck(ctxt)
+  return A.GlobalWrite(self.base, self.path, self.type, self.srcinfo)
 end
 
 function A.TensorIndex:lvalcheck(ctxt)

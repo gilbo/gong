@@ -80,6 +80,9 @@ Exports.is_quote      = Macro.is_quote
 Exports.Constant      = Global.NewConstant
 Exports.is_constant   = Global.is_constant
 
+Exports.Global        = Global.NewGlobal
+Exports.is_global     = Global.is_global
+
 Exports.is_function   = Functions.is_function
 Exports.is_builtin    = Functions.is_builtin
 Exports.is_join       = Functions.is_join

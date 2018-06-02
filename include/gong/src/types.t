@@ -737,9 +737,9 @@ local function check_luaval(lval, typ)
     return checktensor(lval,1)
 
   elseif typ:is_record() then
-    if type(v) ~= 'table' then return false end
+    if type(lval) ~= 'table' then return false end
     for _,p in ipairs(typ.fields) do
-      if not check_luaval(v[p.name], p.type) then return false end
+      if not check_luaval(lval[p.name], p.type) then return false end
     end
     return true
 

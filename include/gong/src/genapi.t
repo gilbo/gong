@@ -23,11 +23,13 @@ local newlist       = terralib.newlist
 -- Generate Basic Library
 -------------------------------------------------------------------------------
 
-local function table_join_closure(tables, joins)
+local function table_join_closure(tables, joins, globals)
   local TABLES          = {}
   local JOINS           = {}
+  local GLOBALS         = {}
   for _,tbl in ipairs(tables) do TABLES[tbl] = true end
   for _,j   in ipairs(joins)  do JOINS[j]    = true end
+  for _,g   in ipairs(globals)do GLOBALS[g]  = true end
 
   -- form closure of all tables refered to in joins
   for _,j   in ipairs(joins) do
@@ -39,6 +41,10 @@ local function table_join_closure(tables, joins)
         TABLES[e.dst:table()]   = true
       elseif E.Merge.check(e) then
         TABLES[e.dst:table()]   = true
+      elseif E.ReadG.check(e) then
+        GLOBALS[e.src]          = true
+      elseif E.ReduceG.check(e) then
+        GLOBALS[e.dst]          = true
       end
     end
   end
@@ -67,11 +73,12 @@ local function table_join_closure(tables, joins)
   for t,_ in pairs(init_tables) do add_table(t) end
 
   -- read out those lists
-  local tables, joinfuncs = newlist(), newlist()
-  for t,_ in pairs(TABLES) do tables:insert(t) end
-  for j,_ in pairs(JOINS)  do joinfuncs:insert(j) end
+  local tables, joinfuncs, globals = newlist(), newlist(), newlist()
+  for t,_ in pairs(TABLES)  do tables:insert(t)     end
+  for j,_ in pairs(JOINS)   do joinfuncs:insert(j)  end
+  for g,_ in pairs(GLOBALS) do globals:insert(g)    end
 
-  return tables, joinfuncs
+  return tables, joinfuncs, globals
 end
 
 local compile_lib_err_msg = [[
@@ -87,7 +94,6 @@ Must supply named arguments to CompileLibrary{}:
 function Exports.CompileLibrary(args)
   if type(args) ~= 'table' or
      (args.prefix and type(args.prefix) ~= 'string') or
-     not terralib.israwlist(args.tables) or
      not terralib.israwlist(args.joins) or
      not ((
             type(args.c_obj_file) == 'string' and
@@ -102,6 +108,11 @@ function Exports.CompileLibrary(args)
     error(compile_lib_err_msg, 2)
   end
 
+  local argtbl  = {}; for k,v in pairs(args) do argtbl[k] = v end
+  args          = argtbl
+  args.tables   = args.tables or {}
+  args.globals  = args.globals or {}
+
   if (args.terra_out and args.c_obj_file) or
      (args.c_header_file and args.cpp_header_file)
   then
@@ -112,7 +123,8 @@ function Exports.CompileLibrary(args)
   end
 
   -- form a closure to make sure we generate everything we need
-  local tables, joins   = table_join_closure(args.tables, args.joins)
+  local tables, joins, globals =
+        table_join_closure(args.tables, args.joins, args.globals)
 
   -- go through the joins and modify table features
   -- to ensure the needed functionality
@@ -143,7 +155,8 @@ function Exports.CompileLibrary(args)
   end
 
   -- generate wrapper
-  local W               = GenerateDataWrapper(prefix, tables, indices)
+  local W               = GenerateDataWrapper(prefix, tables, indices,
+                                                      globals)
 
   -- Assemble all the structs and funcs to expose
   local FUNCS, STRUCTS, HIERARCHY =
@@ -286,6 +299,23 @@ function Exports.GenTerraAPI(hierarchy)
           FLD.ReadWriteUnlock(self.store)
         end
       end
+    end
+  end
+
+  for gname,GBL in pairs(ROOT.globals) do
+    local GWrap           = terralib.types.newstruct(gname)
+    GWrap.entries:insert{ field='store', type=Store }
+    Store.methods[gname]  = terra( self : &Store ) : GWrap
+      return [GWrap]({ @self })
+    end
+    Store.methods[gname]:setname(gname)
+
+    local gtype           = GBL.Read:gettype().returntype
+    terra GWrap:read() : gtype
+      return GBL.Read(self.store)
+    end
+    terra GWrap:write( v : gtype )
+      GBL.Write(self.store, v)
     end
   end
 
@@ -626,6 +656,28 @@ function Exports.GenCppAPI(prefix, structs, funcs, hierarchy)
     CPP:insertall {
    '  };',
    '  _'..tname..' '..tname..'() { return _'..tname..'(store); }',
+   '  ',
+    }
+  end
+
+  for gname,GBL in pairs(ROOT.globals) do
+    CPP:insertall {
+   '  class _'..gname..' {',
+   '  private:',
+   '    '..prefix..'Store store;',
+   '  public:',
+   '    _'..gname..'('..prefix..'Store store_) : store(store_) {}',
+   '    ',
+    }
+    CPP:insertall {
+      tmethod('    ', 'read', GBL.Read),
+      tmethod('    ', 'write', GBL.Write),
+   '    ',
+    }
+
+    CPP:insertall {
+   '  };',
+   '  _'..gname..' '..gname..'() { return _'..gname..'(store); }',
    '  ',
     }
   end

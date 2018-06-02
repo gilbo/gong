@@ -44,10 +44,11 @@ local verbosity = require('gong.src.verbosity').get_verbosity()
     of what we're trying to do, and then to do it.
   
   Here is a grammatical summary of the abstract data model
-    <Schema>  ::= (<Table> `;`)*
+    <Schema>  ::= (<Table> `;`)* (<Global> *)
     <Table>   ::= <name> `{` <Field>* `}`
     <Field>   ::= <name> `:` <Type>
     <Index>   ::= <name> `:` <Field>+ `->` <Table>
+    <Global>  ::= <name> `:` <Type>
     <Type>    ::= <primitive>
                 | `row(` <Table> `)`
                 | `tensor(` <Type> `,` <num>+ `)`
@@ -59,12 +60,16 @@ local verbosity = require('gong.src.verbosity').get_verbosity()
     Table       |-->    CTable
     Field       |-->    Column*  (we use a naive layout right now)
     Index       |-->    CIndex
+    Global      |-->    CGlobal
 
   Specifically, a CStore, and CTable look like the following
 
     CStore {
       <table_name_0>  : CTable_0
       <table_name_1>  : CTable_1
+      ...
+      <global_name_0> : <type_0>
+      <global_name_1> : <type_1>
       ...
     }
     
@@ -416,6 +421,16 @@ local function GenerateWrapperStructs(prefix, W)
     W._type_reverse[CIndex] = Index
   end
 
+  -- Add Globals in
+  for iGlobal,Global in ipairs(W._globals) do
+    local GlobalName        = Global:name()..'_global'..(iGlobal-1)
+    local CGlobal           = Global:type():terratype()
+
+    CStore.entries:insert { '_'..GlobalName, CGlobal }
+    W._c_cache[Global]      = { ctype = CGlobal, name = '_'..GlobalName }
+    W._type_reverse[CGlobal] = Global
+  end
+
   CStore.entries:insertall {
     { '_error_msg',     rawstring },
     { '_error_buf',     int8[ERR_BUF_LEN] },
@@ -588,6 +603,19 @@ local function InstallStructMethods(prefix, W)
       emit quote
         this.[idxname]:init( this )
       end
+    end for iGlobal, Global in ipairs(W._globals) do
+      local globname          = W._c_cache[Global].name
+      local initval           = Global:initval()
+      if initval then
+        initval               = T.lua_to_terraval(initval, Global:type())
+        -- MUST convert to a constant to ensure proper
+        -- inlining of the value in the Terra code
+        initval               = terralib.constant(Global:type():terratype(),
+                                                  initval)
+        emit quote
+          this.[globname]     = [initval]
+        end
+      end
     end end
   end
   terra CStore:destroy()
@@ -612,12 +640,17 @@ local function InstallStructMethods(prefix, W)
   end
 end
 
-local function NewWrapper(prefix, schema_tables, schema_indices)
+local function NewWrapper(prefix,
+  schema_tables,
+  schema_indices,
+  schema_globals
+)
   prefix = (prefix and prefix..'_') or ''
 
   local W = setmetatable({
     _tables         = schema_tables:copy(),
     _indices        = schema_indices:copy(),
+    _globals        = schema_globals:copy(),
     _c_cache        = {},
     _type_reverse   = {},
     _func_cache     = {},
@@ -948,6 +981,49 @@ function Wrapper:Reduce(storeptr, tbltype, op, rowsym, path, rval)
     end
   else
     return quote [stmts]; REDUCE_OP(op, lookup, rval) end
+  end
+end
+
+local function prelude_global(self, storeptr, Global, path)
+  local globname            = self._c_cache[Global].name
+  local globvar_expr        = `storeptr.[globname]
+  local val, stmts, typ     = apply_path(globvar_expr, Global:type(), path)
+
+  return val, stmts, typ, Global
+end
+
+function Wrapper:ReadGlobal(storeptr, glob, path)
+  local read_val, stmts     = prelude_global(self, storeptr, glob, path)
+
+  if #stmts == 0 then
+    return read_val
+  else
+    return quote [stmts] in [read_val] end
+  end
+end
+
+function Wrapper:WriteGlobal(storeptr, glob, path, rval)
+  local gvar, stmts         = prelude_global(self, storeptr, glob, path)
+
+  return quote [stmts]; [gvar] = [rval] end
+end
+
+function Wrapper:ReduceGlobal(storeptr, glob, op, path, rval)
+  local gvar, stmts, typ    = prelude_global(self, storeptr, glob, path)
+  local REDUCE_OP           = CodeGen.REDUCE_OP
+
+  if typ:is_tensor() then
+    local btyp              = typ:basetype()
+    local Nd                = typ._n_entries
+    return quote
+      [stmts]
+      var rhs = [rval]
+      for k=0,Nd do
+        REDUCE_OP(op, gvar.d[k], rhs.d[k])
+      end
+    end
+  else
+    return quote [stmts]; REDUCE_OP(op, gvar, rval) end
   end
 end
 
@@ -1372,7 +1448,36 @@ function Wrapper:GenExternCAPI(prefix, export_funcs)
     add_func_note("")
   end
 
-return FUNCS, STRUCTS, HIERARCHY
+  -- Global Data Access
+
+  HIERARCHY.globals = {}
+  for iGlobal,Global in ipairs(W._globals) do
+    local gname               = Global:name()
+    local gbl_cname           = W._c_cache[Global].name
+    local gtype               = Global:type():terratype()
+
+    HIERARCHY.globals[gname]  = {}
+
+    -- Build Schema Note
+    add_func_note("/*")
+    add_func_note("Global "..gname.." : "..tostring(gtype))
+    add_func_note("*/")
+
+    -- Read/Write access to the global
+    add_func('Read_'..gname, HIERARCHY.globals[gname], 'Read',
+    terra( hdl : ExtStore ) : gtype
+      var store = to_store(hdl)
+      return [ W:ReadGlobal( store, Global, newlist() ) ]
+    end)
+    add_func('Write_'..gname, HIERARCHY.globals[gname], 'Write',
+    terra( hdl : ExtStore, val : gtype )
+      var store = to_store(hdl)
+      return [ W:WriteGlobal( store, Global, newlist(), val ) ]
+    end)
+    add_func_note("")
+  end
+
+  return FUNCS, STRUCTS, HIERARCHY
 end
 
 

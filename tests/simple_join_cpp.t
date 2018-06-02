@@ -108,7 +108,7 @@ end
 local compile_code =
   os.execute("c++ -o simple_prog simple_prog.cpp simple_gong.o")
 if compile_code ~= 0 then
-  cleanup()
+  --cleanup()
   error("Failed to Compile")
 end
 local exec_code = os.execute("./simple_prog")
