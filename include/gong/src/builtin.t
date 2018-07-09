@@ -36,18 +36,40 @@ local newlist         = terralib.newlist
 -- Builtin Functions
 -------------------------------------------------------------------------------
 
---
+
 B.assert  = NewBuiltIn{
   name        = 'assert',
   luafunc     = assert,
-  typecheck   = function(args,ast,ctxt) error('assert unimplemented')
+  typecheck   = function(args,ast,ctxt)
+      if #args ~= 1 then
+        ctxt:error(ast, "assert expects exactly one argument "..
+                        "(instead got "..#args..")")
+      else
+        local typ = args[1].type
+        if typ ~= T.error and typ ~= T.bool then
+          ctxt:error(ast, "expected a boolean value as the test for "..
+                          "this assert statement")
+        end
+      end 
+      return nil -- this should be a statement, in other words
     end,
-  effectcheck = function(args,ast,ctxt) error('assert unimplemented')
+  effectcheck = function(args,ast,ctxt) return newlist() end,
+  codegen     = function(args,ast,ctxt)
+      -- ASSUMING ON THE CPU FOR NOW
+      local loc_str = tostring(ast.srcinfo)
+      local msg     = loc_str..": assertion failed!\n"
+      local test    = args[1]
+      return quote
+        if not [test] then
+          C.fprintf(C.stderr,msg)
+          terralib.traceback(nil)
+          C.abort()
+        end
+      end
     end,
-  codegen     = function(args,ast,ctxt) error('assert unimplemented')
-    end,
-}--]]
+}
 
+-------------------------------------------
 
 local function unary_arg_builtin(nm)
   local cpu_fn    = assert(C[nm])
@@ -147,6 +169,7 @@ B.exp2  = unary_arg_builtin('exp2')
 B.atan2 = binary_arg_builtin('atan2')
 
 
+-------------------------------------------
 
 B.abs = NewBuiltIn {
   name          = 'abs',
@@ -189,7 +212,7 @@ local function printSingle(typ, e, args)
     return "%s"
   elseif  typ:is_float() then
     args:insert(e)
-    return "%f"
+    return "%g"
   elseif  typ:is_signed() then
     args:insert(e)
     if typ == T.int64 then  return "%ld"
@@ -280,7 +303,150 @@ B.print = NewBuiltIn {
       local fmtstr = print_spec:concat('')
 
       local printf = C.printf
-      return quote [defs]; printf(fmtstr, print_args) end
+      local printquote = quote [defs]; printf(fmtstr, print_args) end
+      return printquote
+    end,
+}
+
+
+-------------------------------------------
+-- bitwise
+
+
+-- Bitwise: and or not ^ << >>
+-- . ^ .   is an xor btw
+
+local function binary_bitop(nm, gen)
+  local is_shift  = (nm == 'lshift') or (nm == 'rshift')
+  local b         = NewBuiltIn {
+    name = nm,
+    typecheck = function(args,ast,ctxt)
+        if #args ~= 2 then
+          ctxt:error(ast, nm.." expects exactly 2 argument "..
+                              "(instead got "..#args..")")
+          return T.error
+        end
+
+        local ltyp, rtyp = args[1].type, args[2].type
+        if is_shift then
+          if not rtyp:is_primitive() or not rtyp:is_integral() then
+            ctxt:error(args[2], nm.." expects an integer to shift by")
+            return T.error
+          end
+        elseif ltyp ~= rtyp then
+          ctxt:error(ast, nm.." expects argument types to be exactly "..
+                              "the same, without coercion")
+          return T.error
+        end
+
+        if not ltyp:is_primitive() or not ltyp:is_integral() then
+          ctxt:error(ast, nm.." expects arguments to be single, integer "..
+                              "values, signed or unsigned")
+          return T.error
+        end
+
+        return ltyp
+      end,
+    effectcheck = function() return newlist() end,
+    codegen     = function(args, ast, ctxt)
+        local a0, a1    = args[1], args[2]
+        return gen(a0,a1)
+      end,
+  }
+  return b
+end
+
+B.bitand  = binary_bitop('bitand',  function(x,y) return `x and y end)
+B.bitor   = binary_bitop('bitor',   function(x,y) return `x or y end)
+B.bitxor  = binary_bitop('bitxor',  function(x,y) return `x ^ y end)
+B.lshift  = binary_bitop('lshift',  function(x,y) return `x << y end)
+B.rshift  = binary_bitop('rshift',  function(x,y) return `x >> y end)
+B.bitnot  = NewBuiltIn {
+  name          = 'bitnot',
+  typecheck = function(args,ast,ctxt)
+      if #args ~= 1 then
+        ctxt:error(ast, "bitnot expects exactly 1 argument "..
+                        "(instead got "..#args..")")
+        return T.error
+      end
+
+      local typ = args[1].type
+      if not typ:is_primitive() or not typ:is_integral() then
+        ctxt:error(ast, "bitnot expects the argument to be an integer")
+        return T.error
+      end
+      return typ
+    end,
+  effectcheck = function() return newlist() end,
+  codegen     = function(args, ast, ctxt)
+      local a = args[1]
+      return `not a
+    end,
+}
+
+
+-- This should be replaced by intrinsics whenever possible on the target
+local split64 = macro(function(x)
+  return quote
+    var a   = x
+    var hi  = x >> 32
+    var lo  = x - (hi << 32)
+  in lo, hi end
+end)
+local terra pure_lohi_mul( x : uint64, y : uint64 )
+  var xlo, xhi    = split64(x)
+  var ylo, yhi    = split64(y)
+
+  -- final = (final_hi << 64) + final_lo
+  --       = (x_hi << 32 + x_lo) * (y_hi << 32 + y_lo)
+  --       =   (x_hi * y_hi) << 64
+  --         + (x_hi * y_lo) << 32
+  --         + (x_lo * y_hi) << 32
+  --         + (x_lo * y_lo)
+  var xy_hihi     = xhi*yhi
+  var xy_lohi     = xlo*yhi
+  var xy_hilo     = xhi*ylo
+  var xy_lolo     = xlo*ylo
+  var A           = xy_lohi
+  var B           = xy_hilo
+  -- note: (2^32 - 1)*(2^32 - 1) == 2^64 - (2^33 - 1)
+  --       this gives us the guarantee that the multiplication result
+  --       can fit
+  var Alo,Ahi     = split64(A)
+  var Blo,Bhi     = split64(B)
+  var carry       = (Alo + Blo + (xy_lolo >> 32)) >> 32
+
+  var final_lo    = x*y
+  var final_hi    = xy_hihi + Ahi + Bhi + carry
+  return final_lo, final_hi
+end
+
+B.mul_lohi = NewBuiltIn {
+  name          = 'mul_lohi',
+  typecheck = function(args,ast,ctxt)
+      if #args ~= 2 then
+        ctxt:error(ast, "mul_lohi expects exactly 2 arguments "..
+                        "(instead got "..#args..")")
+        return T.error
+      end
+
+      local ltyp, rtyp = args[1].type, args[2].type
+      if ltyp ~= T.uint64 then
+        ctxt:error(args[1], "mul_lohi expects a uint64 argument")
+        return T.error
+      elseif rtyp ~= T.uint64 then
+        ctxt:error(args[2], "mul_lohi expects a uint64 argument")
+        return T.error
+      end
+      return T.record { {'_0', T.uint64}, {'_1', T.uint64} }
+    end,
+  effectcheck = function() return newlist() end,
+  codegen     = function(args, ast, ctxt)
+      local x,y   = args[1], args[2]
+      local ttype = ast.type:terratype()
+      return quote
+        var lo,hi = pure_lohi_mul(x,y)
+      in [ttype]({ lo, hi }) end
     end,
 }
 

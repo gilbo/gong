@@ -8,6 +8,7 @@ local Util        = require 'gong.src.util'
 local SrcInfo     = Util.SrcInfo
 local is_id_str   = Util.is_id_str
 local is_int      = Util.is_int
+local is_numdata  = Util.is_numdata
 local T           = require 'gong.src.types'
 local pratt       = require 'gong.src.pratt'
 
@@ -103,6 +104,7 @@ local ADT A
                         rm_name   : id_str?,  rm_body   : Block? }
         | ExprStmt    { expr      : Expr }
         | ReturnStmt  { exprs     : Expr* }
+        | BreakStmt   {}
     -- Basic Structural Statements
         | IfStmt      { cases     : IfCase*,  else_body : Block? }
         | DoStmt      { body      : Block }
@@ -123,7 +125,7 @@ local ADT A
   Expr =
     -- Literals and other Atoms
           Var         { name  : id_str }
-        | NumLiteral  { value : number,       type      : GongType }
+        | NumLiteral  { value : numdata,      type      : GongType }
         | BoolLiteral { value : boolean }
         | String      { value : string }
     -- Basic building up of conditions and terms
@@ -157,11 +159,13 @@ local ADT A
     return type(obj) == 'string' and redop_token_set[obj]
   end
 
-  extern LuaType  is_func
+  LuaType = { func : LuaExpr, srcinfo : SrcInfo }
+  extern LuaExpr  is_func
   extern LuaTable is_func
 
   extern GongType function(obj) return T.is_type(obj) end
 
+  extern numdata  is_numdata
   extern id_str   is_id_str
   extern SrcInfo  function(obj) return SrcInfo.check(obj) end
 end
@@ -213,6 +217,12 @@ function lang.func_name(P)
     namestr = namestr..'.'..nextname
   end
   return namestr, { nametuple }
+end
+
+function lang.luatype(P)
+  local info      = P:srcinfo()
+  local func      = P:luaexpr()
+  return A.LuaType(func, info)
 end
 
 
@@ -503,6 +513,9 @@ function lang.stmt(P, is_join_filter)
     until         not P:nextif(',')
     return A.ReturnStmt(exprs, info)
 
+  elseif  P:nextif('break') then
+    return A.BreakStmt(info)
+
   elseif  P:nextif('emit') then
     local openinfo  = P:srcinfo()
                       P:expect('{')
@@ -561,7 +574,7 @@ function lang.stmt(P, is_join_filter)
     -- part 2: maybe a type
     local typ       = nil
     if #names == 1 and P:nextif(':') then
-      typ           = P:luaexpr()
+      typ           = P:luatype()
     end
 
     -- part 3: rhs
@@ -646,8 +659,8 @@ function lang.quot(P)
 end
 
 function lang.func(P)
-  local info        = P:srcinfo()
                       P:expect('function')
+  local info        = P:srcinfo()
   local name, tuple = nil, nil
   if P:matches('(')
   then name         = P:gen_anon_name()
@@ -662,15 +675,15 @@ function lang.func(P)
                       P:expectmatch(')','(',openparen.linenumber)
   end
   local rettype   = ( P:nextif(':')
-                    and P:luaexpr() ) or nil
+                    and P:luatype() ) or nil
   local body        = P:block()
                       P:expectmatch('end','function', info.linenumber)
   return A.Function(name, args, rettype, body, info), tuple
 end
 
 function lang.join(P)
-  local info        = P:srcinfo()
                       P:expectname('join')
+  local info        = P:srcinfo()
   local name, tuple = nil, nil
   if P:matches('(')
   then name         = P:gen_anon_name()
@@ -695,7 +708,7 @@ function lang.argdecl(P)
   local info        = P:srcinfo()
   local name        = P:id_str()
                       P:expect(':')
-  local typ         = P:luaexpr()
+  local typ         = P:luatype()
   return A.ArgDecl(name, typ, info)
 end
 

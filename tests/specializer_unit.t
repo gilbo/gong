@@ -248,7 +248,7 @@ test_ast_match( vecmat,
   }}
 })
 
-local noop = {}
+local noop = {junk=true}
 local gong function retone()
   noop
   return retzero() + 1

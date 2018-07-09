@@ -204,7 +204,7 @@ end, 'expected positive integer size')
 test.eq(T.terra_to_luaval(T.lua_to_terraval(42, T.int32), T.int32), 42)
 test.eq(T.terra_to_luaval(T.lua_to_terraval(42, T.float), T.float), 42)
 test.eq(T.terra_to_luaval(T.lua_to_terraval(42, T.double), T.double), 42)
-test.eq(T.terra_to_luaval(T.lua_to_terraval(42, T.uint64), T.uint64), 42)
+test.eq(T.terra_to_luaval(T.lua_to_terraval(42, T.uint64), T.uint64), 42ULL)
 
 test.eq(T.terra_to_luaval(T.lua_to_terraval(true, T.bool), T.bool), true)
 test.eq(T.terra_to_luaval(T.lua_to_terraval(false, T.bool), T.bool), false)

@@ -7,6 +7,7 @@ local T = Exports
 local Util          = require 'gong.src.util'
 local is_id_str     = Util.is_id_str
 local is_pos_int    = Util.is_pos_int
+local is_numdata    = Util.is_numdata
 local memoize       = Util.memoize
 local memoize_from  = Util.memoize_from
 local memolist      = Util.memolist
@@ -314,6 +315,7 @@ function lift_type_from_lua(luaval, errdepth)
 
   error('expected a type', errdepth)
 end
+T._INTERNAL_lift_type_from_lua = lift_type_from_lua
 
 Type.__index = function(tbl, key)
   if is_pos_int(key) then -- tensor extension
@@ -672,7 +674,11 @@ end
 local function terra_to_luaval(tval, typ)
   if typ:is_primitive() then
     if typ:is_numeric() then
-      return tonumber(tval)
+      if typ == T.int64 or typ == T.uint64 then
+        return tval
+      else
+        return tonumber(tval)
+      end
     elseif typ:is_logical() then -- can be tricky
       if type(tval) == 'cdata' then
         return not (tval == 0)
@@ -717,8 +723,8 @@ end
 
 local function check_luaval(lval, typ)
   if typ:is_primitive() then
-    return (typ:is_numeric() and type(lval) == 'number') or
-           (typ:is_logical() and type(lval) == 'boolean') 
+    return (typ:is_numeric() and is_numdata(lval)) or
+           (typ:is_logical() and type(lval) == 'boolean')
 
   elseif typ:is_tensor() then
     local bt    = typ:basetype()
@@ -750,7 +756,11 @@ end
 
 local function lua_to_terraval(lval, typ)
   if typ:is_primitive() then
-    return lval -- luajit/terra will handle correctly
+    if (typ == T.int64 or typ == T.uint64) and
+       type(lval) == 'number'
+    then return terralib.new(typ:terratype(), lval)
+    else return lval
+    end
 
   elseif typ:is_tensor() then
     local tval    = terralib.new(typ:terratype())

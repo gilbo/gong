@@ -2,7 +2,7 @@ import 'gong'
 local test    = require 'tests.test'
 
 local G       = gong.stdlib
-local assert  = --G.assert
+local assert  = G.assert
 
 ------------------------------------------------------------------------------
 

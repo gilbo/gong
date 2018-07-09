@@ -130,6 +130,14 @@ local function is_pos_int(obj)
 end
 Exports.is_pos_int = is_pos_int
 
+local function is_numdata(obj)
+  local t = type(obj)
+  if t == 'cdata' then
+    local tt = terralib.typeof(obj)
+    return terralib.types.istype(tt) and tt:isintegral()
+  else return t == 'number' end
+end
+Exports.is_numdata = is_numdata
 
 -------------------------------------------------------------------------------
 -- Symbol Objects

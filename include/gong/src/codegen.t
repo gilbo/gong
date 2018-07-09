@@ -416,6 +416,9 @@ function AST.ReturnStmt:codegen(ctxt)
     return [expr]
   end
 end
+function AST.BreakStmt:codegen(ctxt)
+  return quote break end
+end
 function AST.BuiltInStmt:codegen(ctxt)
   local args      = codegen_all(self.args, ctxt)
   local call      = self.builtin._codegen(args, self, ctxt)
@@ -592,11 +595,11 @@ function AST.TensorIndex:codegen(ctxt)
     local off         = offset
     offset            = `[off] + [ strides[k] ] * [ args[k] ]
   end
-  return `base.d[ offset ]
+  return `[base].d[ offset ]
 end
 function AST.RecordRead:codegen(ctxt)
   local base          = self.base:codegen(ctxt)
-  return `base.[ self.arg ]
+  return `[base].[ self.arg ]
 end
 function AST.TableRead:codegen(ctxt)
   local row           = self.base:codegen(ctxt)

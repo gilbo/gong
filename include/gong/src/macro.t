@@ -4,7 +4,6 @@ package.loaded["gong.src.macro"] = Exports
 
 local newlist = terralib.newlist
 
-
 -------------------------------------------------------------------------------
 -- Macros & Quotes
 -------------------------------------------------------------------------------
@@ -48,6 +47,17 @@ function Quote:gettype()
 end
 function Quote:is_statement()
   return self._is_stmt
+end
+function Quote:is_value()
+  return self._ast:is_literal()
+end
+function Quote:get_value()
+  if self._ast:is_literal()
+  then
+    return self._ast.value
+  else
+    error('cannot get value of a non-value quote', 2)
+  end
 end
 
 

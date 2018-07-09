@@ -15,7 +15,10 @@ local NewSymbol   = Util.NewSymbol
 local is_symbol   = Util.is_symbol
 local is_id_str   = Util.is_id_str
 local is_int      = Util.is_int
+local is_numdata  = Util.is_numdata
 local INTERNAL_ERR  = Util.INTERNAL_ERR
+
+local is_gong_obj   = Specializer.is_gong_obj
 
 local Schemata    = require 'gong.src.schemata'
 local Macro       = require 'gong.src.macro'
@@ -42,11 +45,12 @@ Exports.binop_token_set     = binop_token_set
 Exports.unop_token_set      = unop_token_set
 Exports.redop_token_set     = redop_token_set
 
-local function is_gong_obj(obj)
-  return is_macro(obj) or is_quote(obj) or type(obj) == 'string'
-                       or is_function(obj) or is_builtin(obj)
-                       or is_type(obj)
-end
+--local function is_gong_obj(obj)
+--  return is_macro(obj) or is_quote(obj) or type(obj) == 'string'
+--                       or is_function(obj) or is_builtin(obj)
+--                       or is_type(obj)
+--                       or terralib.israwlist(obj)
+--end
 local gong_obj_err_msg = "expected a string, Gong Macro, Quote, or Function"
 
 local ADT A
@@ -78,6 +82,7 @@ local ADT A
                         rm_name   : Symbol?,  rm_body   : Block? }
         | KeepStmt    { arg       : Expr }
         | ReturnStmt  { expr      : Expr }
+        | BreakStmt   {}
         | BuiltInStmt { builtin   : BuiltIn,  args      : Expr* }
     -- Binding & Assignment
         | Assignment  { lval      : Expr,     rval      : Expr  }
@@ -98,7 +103,7 @@ local ADT A
     -- Literals and other Atoms
           Var         { name  : Symbol }
         | LuaObj      { }               -- intermediate use only
-        | NumLiteral  { value : number }
+        | NumLiteral  { value : numdata }
         | BoolLiteral { value : boolean }
     -- Data Constructors
         | RecordExpr  { exprs : Expr* }
@@ -143,10 +148,19 @@ local ADT A
   extern BuiltIn  is_builtin
   extern FuncObj  is_function
 
+  extern numdata  is_numdata
   extern id_str   is_id_str
   extern SrcInfo  function(obj) return SrcInfo.check(obj) end
 end
 Exports.AST = A
+
+
+function A.Function:is_literal()    return false  end
+function A.Join:is_literal()        return false  end
+function A.Stmt:is_literal()        return false  end
+function A.Expr:is_literal()        return false  end
+function A.NumLiteral:is_literal()  return true   end
+function A.BoolLiteral:is_literal() return true   end
 
 
 -------------------------------------------------------------------------------
@@ -157,10 +171,11 @@ Context.__index = Context
 
 local function NewContext()
   local ctxt = setmetatable({
-    env       = terralib.newenvironment(nil),
-    diag      = terralib.newdiagnostics(),
-    _rettype  = T.error,
-    _joinargs = newlist(),
+    env           = terralib.newenvironment(nil),
+    diag          = terralib.newdiagnostics(),
+    _rettype      = T.error,
+    _joinargs     = newlist(),
+    _loop_count   = 0,
   }, Context)
   return ctxt
 end
@@ -230,6 +245,10 @@ function Context:getjoinargs()
   return unpack(self._joinargs)
 end
 
+function Context:in_loop()    return self._loop_count ~= 0            end
+function Context:enter_loop() self._loop_count = self._loop_count + 1 end
+function Context:leave_loop() self._loop_count = self._loop_count - 1 end
+
 
 -------------------------------------------------------------------------------
 --[[                              Entry Point                              ]]--
@@ -248,7 +267,7 @@ end
 
 -- here we can bend some of the rules a bit...
 local function special_coercions(ast, targettype, ctxt)
-  if A.NumLiteral.check(ast) then
+  if A.NumLiteral.check(ast) and type(ast.value) ~= 'cdata' then
     local val = ast.value
     if not targettype:is_tensor() and targettype:is_integral() then
       if not is_int(val) then return end
@@ -605,6 +624,13 @@ function AST.ReturnStmt:typecheck(ctxt)
   return A.ReturnStmt(expr, self.srcinfo)
 end
 
+function AST.BreakStmt:typecheck(ctxt)
+  if not ctxt:in_loop() then
+    ctxt:error(self, "unexpected 'break' outside of any loop")
+  end
+  return A.BreakStmt(self.srcinfo)
+end
+
 ---------------------------------------
 
 
@@ -676,8 +702,10 @@ function AST.ForLoop:typecheck(ctxt)
   end
 
   ctxt:enterblock()
+  ctxt:enter_loop()
   ctxt:settype(itername, itertype)
   local body      = self.body:typecheck(ctxt)
+  ctxt:leave_loop()
   ctxt:leaveblock()
   return A.ForLoop(itername, lo, hi, stride, body, self.srcinfo)
 end
@@ -710,7 +738,8 @@ function AST.Assignment:typecheck(ctxt)
     -- Function Call Case:
     if #rvals == 1 then
       local fcall = rvals[1]
-      if not A.FuncCall.check(fcall) then count_mismatch()
+      if not A.FuncCall.check(fcall) and not A.BuiltInCall.check(fcall) then
+        count_mismatch()
       else
         local nret = (fcall.type:is_tuple() and #fcall.type.fields) or 1
         if fcall.type == T.error then -- no-op
@@ -847,7 +876,8 @@ function AST.DeclStmt:typecheck(ctxt)
     -- Function Call Case:
     elseif #rvals == 1 and rvals[1].type ~= T.error then
       local fcall = rvals[1]
-      if not A.FuncCall.check(fcall) then count_mismatch()
+      if not A.FuncCall.check(fcall) and not A.BuiltInCall.check(fcall) then
+        count_mismatch()
       else
         local nret = (fcall.type:is_tuple() and #fcall.type.fields) or 1
         if #names ~= nret then
@@ -956,6 +986,15 @@ function AST.LuaObj:typecheck(ctxt)
   elseif is_quote(obj) and not obj:is_statement() then
     local expr    = obj._ast
     return expr
+--  elseif terralib.israwlist(obj) then
+--    -- construct a specialized-AST expr with the Lua sub-objects inlined
+--    -- and then just recurse into that node as if it was there all along
+--    local exprs   = newlist()
+--    for i,e in ipairs(obj) do
+--      exprs[i]    = AST.LuaObj(e, self.srcinfo)
+--    end
+--    local ls_expr = AST.ListExpr(exprs, self.srcinfo)
+--    return ls_expr:typecheck(ctxt)
   else
     return A.LuaObj(T.internal(obj), self.srcinfo)
   end

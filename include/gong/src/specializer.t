@@ -11,30 +11,31 @@ package.loaded["gong.src.specializer"] = Exports
 --    Specialization also converts parsed names into symbols.
 -------------------------------------------------------------------------------
 
-local Parser      = require('gong.src.parser')
-local AST         = Parser.AST
-local T           = require 'gong.src.types'
-local is_type     = T.is_type
-local Util        = require 'gong.src.util'
-local SrcInfo     = Util.SrcInfo
-local NewSymbol   = Util.NewSymbol
-local is_symbol   = Util.is_symbol
-local is_id_str   = Util.is_id_str
-local is_int      = Util.is_int
-local INTERNAL_ERR  = Util.INTERNAL_ERR
+local Parser          = require('gong.src.parser')
+local AST             = Parser.AST
+local T               = require 'gong.src.types'
+local is_type         = T.is_type
+local Util            = require 'gong.src.util'
+local SrcInfo         = Util.SrcInfo
+local NewSymbol       = Util.NewSymbol
+local is_symbol       = Util.is_symbol
+local is_id_str       = Util.is_id_str
+local is_int          = Util.is_int
+local is_numdata      = Util.is_numdata
+local INTERNAL_ERR    = Util.INTERNAL_ERR
 
-local Schemata    = require 'gong.src.schemata'
-local Macro       = require 'gong.src.macro'
-local Global      = require 'gong.src.global'
-local Functions   = require 'gong.src.functions'
-local is_macro    = Macro.is_macro
-local is_quote    = Macro.is_quote
-local is_constant = Global.is_constant
-local is_global   = Global.is_global
-local is_function = Functions.is_function
-local is_builtin  = Functions.is_builtin
+local Schemata        = require 'gong.src.schemata'
+local Macro           = require 'gong.src.macro'
+local Global          = require 'gong.src.global'
+local Functions       = require 'gong.src.functions'
+local is_macro        = Macro.is_macro
+local is_quote        = Macro.is_quote
+local is_constant     = Global.is_constant
+local is_global       = Global.is_global
+local is_function     = Functions.is_function
+local is_builtin      = Functions.is_builtin
 
-local newlist   = terralib.newlist
+local newlist         = terralib.newlist
 
 -------------------------------------------------------------------------------
 --                                    AST                                    --
@@ -80,6 +81,7 @@ local ADT A
                         rm_name   : Symbol?,  rm_body   : Block? }
         | ExprStmt    { expr      : Expr }
         | ReturnStmt  { exprs     : Expr* }
+        | BreakStmt   {}
     -- Basic Structural Statements
         | IfStmt      { cases     : IfCase*,  else_body : Block? }
         | DoStmt      { body      : Block }
@@ -102,7 +104,7 @@ local ADT A
           Var         { name  : Symbol }
         | LuaObj      { obj   : any }
         | Global      { obj   : Glob }
-        | NumLiteral  { value : number,       type      : Type }
+        | NumLiteral  { value : numdata,      type      : Type }
         | BoolLiteral { value : boolean }
     -- Data Constructors
         | RecordExpr  { names : id_str*,      exprs     : Expr* }
@@ -135,6 +137,7 @@ local ADT A
   extern Glob     is_global
   extern any      function(obj) return true end
 
+  extern numdata  is_numdata
   extern id_str   is_id_str
   extern SrcInfo  function(obj) return SrcInfo.check(obj) end
 end
@@ -213,8 +216,8 @@ local function luaeval(expr, anchor, ctxt, default)
   end
 end
 
-local function eval_type_annotation(annotation, anchor, ctxt)
-  local typ = luaeval(annotation, anchor, ctxt, T.error)
+local function eval_type_annotation(annotation, ctxt)
+  local typ = luaeval(annotation.func, annotation, ctxt, T.error)
 
   -- promote Gong tables into row types
   if Schemata.is_table(typ) then
@@ -236,7 +239,7 @@ local function eval_type_annotation(annotation, anchor, ctxt)
   -- handle other promotions of non-types into types
 
   if not T.is_type(typ) then
-    ctxt:error(anchor, "Expected type but found "..type(typ))
+    ctxt:error(annotation, "Expected type but found "..type(typ))
     typ = T.error
   end
   return typ
@@ -276,7 +279,7 @@ end
 function AST.Function:specialize(ctxt)
   local args      = specialize_all(self.args, ctxt)
   local rettype   = ( self.rettype and
-                      eval_type_annotation(self.rettype, self, ctxt) ) or nil
+                      eval_type_annotation(self.rettype, ctxt) ) or nil
   local body      = self.body:specialize(ctxt)
 
   return A.Function(self.name, args, rettype, body, self.srcinfo)
@@ -292,7 +295,7 @@ end
 
 function AST.ArgDecl:specialize(ctxt)
   local name      = introsym(self.name, ctxt)
-  local typ       = eval_type_annotation(self.type, self, ctxt)
+  local typ       = eval_type_annotation(self.type, ctxt)
   return A.ArgDecl(name, typ, self.srcinfo)
 end
 
@@ -370,6 +373,10 @@ function AST.ReturnStmt:specialize(ctxt)
   return A.ReturnStmt(exprs, self.srcinfo)
 end
 
+function AST.BreakStmt:specialize(ctxt)
+  return A.BreakStmt(self.srcinfo)
+end
+
 ----------------------------------------
 
 function AST.IfCase:specialize(ctxt)
@@ -417,7 +424,7 @@ function AST.DeclStmt:specialize(ctxt)
   for _,nm in ipairs(self.names) do
     names:insert( introsym(nm, ctxt) ) end
   local typ       = ( self.type and
-                      eval_type_annotation(self.type, self, ctxt) ) or nil
+                      eval_type_annotation(self.type, ctxt) ) or nil
 
   return A.DeclStmt(names, typ, rvals, self.srcinfo)
 end
@@ -476,9 +483,19 @@ local function constant_to_ast(cval, typ, anchor)
 end
 
 local function lua_primitive_to_ast(luav, anchor)
-  if type(luav) == 'number' then
-    local typ = ( is_int(luav) and T.int32 ) or T.double
-    return A.NumLiteral(luav, typ, anchor.srcinfo)
+  if type(luav) == 'cdata' and is_numdata(luav) then
+    -- we can extract a type
+    local ttype = terralib.typeof(luav)
+    local gtype = T._INTERNAL_lift_type_from_lua(ttype, 1)
+    local tval  = T.lua_to_terraval(luav, gtype)
+    return A.NumLiteral(tval, gtype, anchor.srcinfo)
+  elseif type(luav) == 'number' then
+    local typ = T.double
+    if is_int(luav) and luav < math.pow(2,31) and luav > -math.pow(2,31) then
+      typ = T.int32
+    end
+    local tval  = T.lua_to_terraval(luav, typ)
+    return A.NumLiteral(tval, typ, anchor.srcinfo)
   elseif type(luav) == 'boolean' then
     return A.BoolLiteral(luav, anchor.srcinfo)
   else
@@ -493,12 +510,22 @@ local function luaval_to_ast(luav, anchor)
   elseif is_global(luav) then
     return A.Global(luav, anchor.srcinfo)
 
+  -- list case...
+  elseif terralib.israwlist(luav) and #luav > 0 then
+    local exprs   = newlist()
+    for i,e in ipairs(luav) do
+      exprs[i]    = luaval_to_ast(e, anchor)
+    end
+    return A.ListExpr(exprs, anchor.srcinfo)
+
   -- default table case
   elseif type(luav) == 'table' or type(luav) == 'string' then
     return A.LuaObj(luav, anchor.srcinfo)
 
   -- primitive value
-  elseif type(luav) == 'number' or type(luav) == 'boolean' then
+  elseif ( type(luav) == 'cdata' and is_numdata(luav) ) or
+         type(luav) == 'number' or type(luav) == 'boolean'
+  then
     return lua_primitive_to_ast(luav, anchor)
 
   -- failure case
@@ -511,7 +538,9 @@ local function is_gong_obj(obj)
   return is_macro(obj) or is_quote(obj) or type(obj) == 'string'
                        or is_function(obj) or is_builtin(obj)
                        or is_type(obj)
+                       or terralib.israwlist(obj)
 end
+Exports.is_gong_obj = is_gong_obj
 
 
 -------------------------------------------------------------------------------

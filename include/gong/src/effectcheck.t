@@ -542,6 +542,8 @@ function AST.ReturnStmt:effectcheck(ctxt)
   ctxt.return_flag  = true
   ctxt:add_effect(  E.Return(self.expr.type, self.srcinfo) )
 end
+function AST.BreakStmt:effectcheck(ctxt)
+end
 
 function AST.MergeStmt:effectcheck(ctxt)
   if ctxt:in_mergeblock() then
@@ -742,7 +744,6 @@ end
 function AST.GlobalRead:effectcheck(ctxt)
   local path        = get_readwrite_path(self, ctxt)
   ctxt:add_effect(    E.ReadG( self.base, path, self.srcinfo ))
-  self.base:effectcheck(ctxt)
 end
 function AST.GlobalWrite:effectcheck(ctxt)
   INTERNAL_ERR('Should Never Call Directly')

@@ -53,6 +53,7 @@ local function DOUBLE(v) return { value = v, type = G.double } end
 local function FLOAT(v) return { value = v, type = G.float } end
 local function INT(v) return { value = v, type = G.int32 } end
 local function BOOL(v) return { value = v } end
+local LUATYPE = {func=function()end}
 
 ------------------------------------------------------------------------------
 
@@ -62,8 +63,8 @@ end
 test_ast_match( retzero,
 {
   name = 'retzero',
-  args = { { name = 'a', type = function()end },
-           { name = 'b', type = function()end }, },
+  args = { { name = 'a', type = LUATYPE },
+           { name = 'b', type = LUATYPE }, },
   body = { stmts = {
     { exprs = { INT(0) } },
   }}
@@ -88,7 +89,7 @@ end
 test_ast_match( domath,
 {
   name = 'domath',
-  args = { { name = 'x', type = function()end } },
+  args = { { name = 'x', type = LUATYPE } },
   body = { stmts = {
     { names = {'y'},
       type  = nil,
@@ -174,10 +175,10 @@ end
 test_ast_match( annotate,
 {
   name = 'annotate',
-  args = { { name = 'x', type = function()end } },
+  args = { { name = 'x', type = LUATYPE } },
   body = { stmts = {
     { names = {'y'},
-      type  = function()end,
+      type  = LUATYPE,
       rvals = { DOUBLE(0) } },
     { lvals = {{name = 'y'}},
       rvals = {{  base = { base = {name = 'G'},
@@ -185,7 +186,7 @@ test_ast_match( annotate,
                   args = {{name = 'x'}},
               }} },
     { names = {'z'},
-      type  = function()end,
+      type  = LUATYPE,
       rvals = {{name = 'y'}} },
     { exprs = {{name = 'z'}} },
   }}
@@ -201,7 +202,7 @@ end
 test_ast_match( vecmat,
 {
   name = 'vecmat',
-  args = { { name = 'A', type = function()end } },
+  args = { { name = 'A', type = LUATYPE } },
   body = { stmts = {
     { names = {'x'},
       type  = nil,
@@ -272,10 +273,10 @@ test_ast_match( doubleassign,
   args = {},
   body = { stmts = {
     { names = {'x'},
-      type  = function()end,
+      type  = LUATYPE,
       rvals = { INT(0) } },
     { names = {'y'},
-      type  = function()end,
+      type  = LUATYPE,
       rvals = { INT(0) } },
     { lvals = {{name = 'x'}, {name = 'y'}},
       rvals = { INT(1), INT(2) } },
@@ -292,7 +293,7 @@ end
 test_ast_match( swapfields,
 {
   name = 'swapfields',
-  args = {{name='obj', type=function()end }},
+  args = {{name='obj', type=LUATYPE }},
   body = { stmts = {
     { names = {'temp'},
       type  = nil,
@@ -310,8 +311,8 @@ end
 test_ast_match( tensorindexing,
 {
   name = 'tensorindexing',
-  args = {{name='m', type=function()end },
-          {name='x', type=function()end }},
+  args = {{name='m', type=LUATYPE },
+          {name='x', type=LUATYPE }},
   body = { stmts = {
     { exprs = {{
         names = {'i','j'},
