@@ -106,7 +106,7 @@ local function cleanup()
 end
 
 local compile_code =
-  os.execute("c++ -o simple_prog simple_prog.cpp simple_gong.o")
+  os.execute("c++ -std=c++11 -o simple_prog simple_prog.cpp simple_gong.o")
 if compile_code ~= 0 then
   --cleanup()
   error("Failed to Compile")

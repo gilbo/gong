@@ -105,7 +105,7 @@ local function cleanup()
 end
 
 local compile_code =
-  os.execute("cc -o simple_prog simple_prog.c simple_gong.o")
+  os.execute("cc -std=c99 -o simple_prog simple_prog.c simple_gong.o")
 if compile_code ~= 0 then
   cleanup()
   error("Failed to Compile")
