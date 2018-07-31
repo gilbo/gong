@@ -20,17 +20,23 @@ local is_table      = Schemata.is_table
 local is_field      = Schemata.is_field
 local is_index      = Schemata.is_index
 
-local StdContainers = require 'gong.src.stdcontainers'
-local vector        = StdContainers.vector
-
 local CodeGen       = require 'gong.src.codegen'
+
+-----------------------------------------
 
 local C             = require 'gong.src.c'
 local assert        = C.assert
 
-local newlist       = terralib.newlist
+local StdContainers = require 'gong.src.stdcontainers'
+local vector        = StdContainers.vector
 
-local verbosity = require('gong.src.verbosity').get_verbosity()
+local PARAMETER     = (require 'gong.src.params').get_param
+local verbosity     = require('gong.src.verbosity').get_verbosity()
+
+local GPU_ENABLED   = PARAMETER('GPU_ENABLED')
+local GPU_Datastore = require 'gong.src.gpu_datastore'
+
+local newlist       = terralib.newlist
 
 -------------------------------------------------------------------------------
 
