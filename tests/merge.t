@@ -90,6 +90,19 @@ local terra loadstore( store : API.Store, N : int32 )
   C.printf("  Load done\n")
 end
 
+local terra abclive( store : API.Store, k : uint )
+  var OUT   = store:OUT()
+  var l     = OUT:is_live():read_lock()[k]
+  var a     = OUT:a():read_lock()[k]
+  var b     = OUT:b():read_lock()[k]
+  var c     = OUT:count():read_lock()[k]
+  OUT:is_live():read_unlock()
+  OUT:a():read_unlock()
+  OUT:b():read_unlock()
+  OUT:count():read_unlock()
+  return a, b, c, l
+end
+
 local terra exec()
   var store       = API.NewStore()
   var A           = store:A()
@@ -104,8 +117,8 @@ local terra exec()
     var n_OUT     = OUT:get_n_rows()
     var ALLOC     = OUT:get_n_alloc()
     if n_OUT ~= 10 then ERR("expected 10 contacts; got %d", n_OUT) end
-    for k = 0,ALLOC do if OUT:is_live():read(k) then
-      var a, b, c = OUT:a():read(k), OUT:b():read(k), OUT:count():read(k)
+    for k = 0,ALLOC do var a, b, c, live = abclive(store, k)
+    if live then
       if c ~= 1 then ERR("expected all counts to be 1, but got %d", c) end
     end end
   end
@@ -117,8 +130,8 @@ local terra exec()
     var n_OUT     = OUT:get_n_rows()
     var ALLOC     = OUT:get_n_alloc()
     if n_OUT ~= 10 then ERR("expected 10 contacts; got %d", n_OUT) end
-    for k = 0,ALLOC do if OUT:is_live():read(k) then
-      var a, b, c = OUT:a():read(k), OUT:b():read(k), OUT:count():read(k)
+    for k = 0,ALLOC do var a, b, c, live = abclive(store, k)
+    if live then
       if c ~= 2 then ERR("expected all counts to be 2, but got %d", c) end
     end end
   end
@@ -131,8 +144,8 @@ local terra exec()
     var n_OUT     = OUT:get_n_rows()
     var ALLOC     = OUT:get_n_alloc()
     if n_OUT ~= 5 then ERR("expected 5 contacts; got %d", n_OUT) end
-    for k = 0,ALLOC do if OUT:is_live():read(k) then
-      var a, b, c = OUT:a():read(k), OUT:b():read(k), OUT:count():read(k)
+    for k = 0,ALLOC do var a, b, c, live = abclive(store, k)
+    if live then
       if a==2 and b==2 then
         if c ~= 3 then
           ERR("expected (a=2,b=2) to have count 3, but got %d", c) end
@@ -157,8 +170,8 @@ local terra exec()
     var n_OUT     = OUT:get_n_rows()
     var ALLOC     = OUT:get_n_alloc()
     if n_OUT ~= 10 then ERR("expected 10 contacts; got %d", n_OUT) end
-    for k = 0,ALLOC do if OUT:is_live():read(k) then
-      var a, b, c = OUT:a():read(k), OUT:b():read(k), OUT:count():read(k)
+    for k = 0,ALLOC do var a, b, c, live = abclive(store, k)
+    if live then
       if c ~= 1 then ERR("expected all counts to be 1, but got %d", c) end
     end end
   end
@@ -171,8 +184,8 @@ local terra exec()
     var n_OUT     = OUT:get_n_rows()
     var ALLOC     = OUT:get_n_alloc()
     if n_OUT ~= 5 then ERR("expected 5 contacts; got %d", n_OUT) end
-    for k = 0,ALLOC do if OUT:is_live():read(k) then
-      var a, b, c = OUT:a():read(k), OUT:b():read(k), OUT:count():read(k)
+    for k = 0,ALLOC do var a, b, c, live = abclive(store, k)
+    if live then
       if a==2 and b==2 then
         if c ~= 2 then
           ERR("expected (a=2,b=2) to have count 2, but got %d", c) end
@@ -195,8 +208,8 @@ local terra exec()
     var n_OUT     = OUT:get_n_rows()
     var ALLOC     = OUT:get_n_alloc()
     if n_OUT ~= 10 then ERR("expected 10 contacts; got %d", n_OUT) end
-    for k = 0,ALLOC do if OUT:is_live():read(k) then
-      var a, b, c = OUT:a():read(k), OUT:b():read(k), OUT:count():read(k)
+    for k = 0,ALLOC do var a, b, c, live = abclive(store, k)
+    if live then
       if (a == 3 and b == 4) then
         if c ~= 2 then
           ERR("expected (a=3,b=4) to have count 2, but got %d", c)

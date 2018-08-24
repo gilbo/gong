@@ -80,11 +80,13 @@ int main() {
   printf("Size of Join Result: %d\n", Csize);
   if(Csize != 3) { ERR("bad join result size"); }
 
+  uint32_t *a = simple_ReadLock_C_a( store );
+  uint32_t *b = simple_ReadLock_C_b( store );
   for(int k=0; k<3; k++) {
-    int a = simple_Read_C_a( store, k );
-    int b = simple_Read_C_b( store, k );
-    printf("row %d: (%d,%d)\n", k, a, b);
+    printf("row %d: (%d,%d)\n", k, a[k], b[k]);
   }
+  simple_ReadUnLock_C_a( store );
+  simple_ReadUnLock_C_b( store );
 
   // cleanup
   simple_DestroyStore(store);

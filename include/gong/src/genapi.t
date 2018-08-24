@@ -90,6 +90,7 @@ Must supply named arguments to CompileLibrary{}:
   c_header_file   = 'string'  (filename for library header file)
   cpp_header_file = 'string'  (filename for library header file)
   terra_out       = bool,     (use instead of filenames to emit Terra API)
+  gpu             = bool,     (to also compile GPU versions of joins)
 ]]
 function Exports.CompileLibrary(args)
   if type(args) ~= 'table' or
@@ -130,10 +131,25 @@ function Exports.CompileLibrary(args)
   -- to ensure the needed functionality
   for _,j in ipairs(joins) do
     for _,eff in ipairs(j:_INTERNAL_geteffects()) do
+      local elastic_tbl = nil
       if E.Merge.check(eff) then
+        elastic_tbl = eff.dst
         eff.dst:table():_INTERNAL_ActivateMergeIndex()
+        if args.gpu then
+          error('merge on the GPU is currently unsupported', 2)
+        end
       elseif E.MergeRemove.check(eff) then
         eff.dst:table():_INTERNAL_ActivateMergeRemovals()
+      elseif E.Emit.check(eff) then
+        elastic_tbl = eff.dst
+      end
+
+      if elastic_tbl and args.gpu then
+        if not elastic_tbl:table()._size_func then
+          error("A size function must be set for the table '"..
+                elastic_tbl:table():name()..
+                "' by calling :setGPUSizeLinear() on the table", 2)
+        end
       end
     end
   end
@@ -154,13 +170,21 @@ function Exports.CompileLibrary(args)
     prefix              = 'C_'..prefix
   end
 
+  -- figure out if we're going to compile for gpu or not
+  local use_gpu = not not args.gpu
+
   -- generate wrapper
-  local W               = GenerateDataWrapper(prefix, tables, indices,
-                                                      globals)
+  local W               = GenerateDataWrapper{
+    prefix  = prefix,
+    tables  = tables,
+    indices = indices,
+    globals = globals,
+    use_gpu = use_gpu,
+  }
 
   -- Assemble all the structs and funcs to expose
   local FUNCS, STRUCTS, HIERARCHY =
-                          W:GenExternCAPI(prefix, joins)
+                          W:GenExternCAPI(prefix, joins, use_gpu)
 
   if verbosity > 3 then
     print("***GONG-GENERATED API FUNCTIONS***")
@@ -696,7 +720,12 @@ function Exports.GenCppAPI(prefix, structs, funcs, hierarchy)
     '#ifndef _'..prefix..'GONG_H_',
     '#define _'..prefix..'GONG_H_',
     '',
+    '#if __cplusplus > 199711L',
     '#include <cstdint>',
+    '#else',
+    '#include <stdint.h>',
+    '#endif',
+
     --'#define bool uint8_t',
     '',
   }

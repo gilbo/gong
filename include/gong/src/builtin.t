@@ -23,6 +23,7 @@ local NewBuiltIn      = Functions.NewBuiltIn
 local NewMacro        = Macro.NewMacro
 
 local C               = require 'gong.src.c'
+local GPU             = require 'gong.src.gpu_util'
 
 local newlist         = terralib.newlist
 
@@ -302,7 +303,7 @@ B.print = NewBuiltIn {
       print_spec:insert('\n')
       local fmtstr = print_spec:concat('')
 
-      local printf = C.printf
+      local printf = (ctxt:on_GPU() and GPU.printf) or C.printf
       local printquote = quote [defs]; printf(fmtstr, print_args) end
       return printquote
     end,

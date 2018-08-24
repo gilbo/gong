@@ -34,19 +34,22 @@ local newlist   = terralib.newlist
 local Context = {}
 Context.__index = Context
 
-local function NewContext(effects, StoreWrap)
+local function NewContext(effects, StoreWrap, for_gpu)
   local ctxt = setmetatable({
     env           = terralib.newenvironment(nil),
     _W            = StoreWrap,
     effects       = effects,
     _scan_args    = nil,
     _merge_rms    = {},
+    _on_gpu_flag  = for_gpu,
   }, Context)
   return ctxt
 end
 function Context:localenv()
   return self.env:localenv()
 end
+
+function Context:on_GPU() return self._on_gpu_flag end
 
 function Context:SetScanArgs(a1,a2)
   self._scan_args = newlist{a1,a2}
@@ -68,7 +71,7 @@ end
 
 function Context:GetTerraFunction(obj)
   if is_function(obj) then
-    return self._W:get_terra_function(obj)
+    return self._W:get_terra_function(obj, self:on_GPU())
   else INTERNAL_ERR('cannot get Terra function for object type') end
 end
 
@@ -78,6 +81,24 @@ function Context:StorePtr()
                                     'store' )
   self._store_ptr         = ptr
   return ptr
+end
+function Context:GPU_Tables_Ptr()
+  if self._gpu_tables_ptr then return self._gpu_tables_ptr end
+  if self:on_GPU() then
+    local ptr             = symbol( &(self._W:GPU_Tables_Struct()),
+                                    'gpu_tables' )
+    self._gpu_tables_ptr  = ptr
+    return ptr
+  else return nil end
+end
+function Context:GPU_Globals_Ptr()
+  if self._gpu_globals_ptr then return self._gpu_globals_ptr end
+  if self:on_GPU() then
+    local ptr             = symbol( &(self._W:GPU_Globals_Struct()),
+                                    'gpu_globals' )
+    self._gpu_globals_ptr = ptr
+    return ptr
+  else return nil end
 end
 function Context:NewSym(name, type)
   local ttype             = type:terratype()
@@ -92,44 +113,84 @@ function Context:GetSym(name)
   return self:localenv()[name]
 end
 
-function Context:Scan(srctype, row, code)
-  return self._W:Scan(self:StorePtr(), srctype, row, code)
-end
-function Context:DoubleScan(srctype, rowA, rowB, code)
-  return self._W:DoubleScan(self:StorePtr(), srctype, rowA, rowB, code)
+-- run before operations to ensure that data is in valid
+-- locations for the specified effects to occur.
+function Context:PrepareData( effects )
+  return self._W:PrepareData(self:StorePtr(), self:on_GPU(), effects)
 end
 
-function Context:Clear(dsttype)
-  return self._W:Clear(self:StorePtr(), dsttype)
+function Context:ScanAB(name, src0, row0, src1, row1, args, code)
+  if self:on_GPU() then
+    return self._W:GPU_ScanAB(name, self:StorePtr(),
+                              self:GPU_Tables_Ptr(), self:GPU_Globals_Ptr(),
+                              src0, row0, src1, row1, args, code)
+  else
+    return self._W:ScanAB(self:StorePtr(), src0, row0, src1, row1, code)
+  end
 end
+function Context:ScanAA(name, srctype, rowA, rowB, args, code)
+  if self:on_GPU() then
+    return self._W:GPU_ScanAA(name, self:StorePtr(),
+                              self:GPU_Tables_Ptr(), self:GPU_Globals_Ptr(),
+                              srctype, rowA, rowB, args, code)
+  else
+    return self._W:ScanAA(self:StorePtr(), srctype, rowA, rowB, code)
+  end
+end
+
+--function Context:Clear(dsttype)
+--  return self._W:Clear(self:StorePtr(), dsttype)
+--end
 
 function Context:Read(srctype, row, path)
-  return self._W:Read(self:StorePtr(), srctype, row, path)
+  if self:on_GPU() then
+    return self._W:GPU_Read(self:GPU_Tables_Ptr(), srctype, row, path)
+  else
+    return self._W:Read(self:StorePtr(), srctype, row, path) end
 end
 
 function Context:Write(dsttype, row, path, rval)
-  return self._W:Write(self:StorePtr(), dsttype, row, path, rval)
+  if self:on_GPU() then
+    return self._W:GPU_Write(self:GPU_Tables_Ptr(),
+                             dsttype, row, path, rval)
+  else
+    return self._W:Write(self:StorePtr(), dsttype, row, path, rval) end
 end
 
 function Context:Reduce(dsttype, op, row, path, rval)
-  return self._W:Reduce(self:StorePtr(), dsttype, op, row, path, rval)
+  if self:on_GPU() then
+    return self._W:GPU_Reduce(self:GPU_Tables_Ptr(),
+                              dsttype, op, row, path, rval)
+  else
+    return self._W:Reduce(self:StorePtr(), dsttype, op, row, path, rval) end
 end
 
 function Context:ReadGlobal(glob, path)
-  return self._W:ReadGlobal(self:StorePtr(), glob, path)
+  if self:on_GPU() then
+    return self._W:GPU_ReadGlobal(self:GPU_Globals_Ptr(), glob, path)
+  else
+    return self._W:ReadGlobal(self:StorePtr(), glob, path) end
 end
 
 function Context:ReduceGlobal(glob, op, path, rval)
-  return self._W:ReduceGlobal(self:StorePtr(), glob, op, path, rval)
+  if self:on_GPU() then
+    return self._W:GPU_ReduceGlobal(self:GPU_Globals_Ptr(),
+                                    glob, op, path, rval)
+  else
+    return self._W:ReduceGlobal(self:StorePtr(), glob, op, path, rval) end
 end
 
 function Context:Insert(dsttype, vals)
-  return self._W:Insert(self:StorePtr(), dsttype, vals)
+  if self:on_GPU() then
+    return self._W:GPU_Insert(self:GPU_Tables_Ptr(),
+                              dsttype, vals)
+  else
+    return self._W:Insert(self:StorePtr(), dsttype, vals) end
 end
 
-function Context:PreMerge(dsttype)
-  return self._W:PreMerge(self:StorePtr(), dsttype)
-end
+--function Context:PreMerge(dsttype)
+--  return self._W:PreMerge(self:StorePtr(), dsttype)
+--end
 
 function Context:PostMerge(dsttype, rm_var, rm_body)
   return self._W:PostMerge(self:StorePtr(), dsttype, rm_var, rm_body)
@@ -277,10 +338,19 @@ Exports.UNARY_OP      = UNARY_OP
 --[[                              Entry Point                              ]]--
 -------------------------------------------------------------------------------
 
-function Exports.codegen(name, ast, effects, StoreWrap)
-  local ctxt        = NewContext(effects, StoreWrap)
-  local func        = ast:codegen(ctxt)
+function Exports.codegen(args)
+  local name        = assert(args.name,     'INTERNAL: expect name')
+  local ast         = assert(args.ast,      'INTERNAL: expect ast')
+  local effects     = assert(args.effects,  'INTERNAL: expect effects')
+  local StoreWrap   = assert(args.storewrap,'INTERNAL: expect storewrap')
+  local for_gpu     = args.for_gpu
+                      assert(for_gpu~=nil,  'INTERNAL: expect for_gpu')
+
+  local ctxt        = NewContext(effects, StoreWrap, for_gpu)
+  local func        = ast:codegen(name, ctxt)
   func:setname(name)
+  --func:printpretty()
+  --func:compile()
   return func
 end
 
@@ -293,11 +363,16 @@ end
 --[[                            Top-Level Rules                            ]]--
 -------------------------------------------------------------------------------
 
-function AST.Function:codegen(ctxt)
+function AST.Function:codegen(name, ctxt)
   local fargs           = codegen_all(self.args, ctxt)
   local body            = self.body:codegen(ctxt)
   local rettyp          = self.rettype:terratype()
-  local args            = newlist{ ctxt:StorePtr() }
+  local args            = newlist()
+  if ctxt:on_GPU() then
+    args:insertall{ ctxt:GPU_Tables_Ptr(), ctxt:GPU_Globals_Ptr() }
+  else
+    args:insertall{ ctxt:StorePtr() }
+  end
   args:insertall(fargs)
 
   local func = terra( [args] ) : rettyp
@@ -306,16 +381,22 @@ function AST.Function:codegen(ctxt)
   return func
 end
 
-function AST.Join:codegen(ctxt)
+function AST.Join:codegen(name, ctxt)
   assert(#self.args >= 2 and self.args[1].type:is_row()
                          and self.args[2].type:is_row(), 'INTERNAL')
   local fargs           = codegen_all(self.args, ctxt)
   local typA, typB      = self.args[1].type, self.args[2].type
   local rowA, rowB      = fargs[1], fargs[2]
-  local innerargs       = newlist{ ctxt:StorePtr() }
+  local storeptr        = ctxt:StorePtr()
+  local innerargs       = newlist()
+  if ctxt:on_GPU() then
+    innerargs:insertall{ ctxt:GPU_Tables_Ptr(), ctxt:GPU_Globals_Ptr() }
+  else
+    innerargs:insert(storeptr)
+  end
   innerargs:insertall(fargs)
   for k=1,#self.args do fargs[k] = fargs[k+2] end
-  local outerargs       = newlist{ ctxt:StorePtr() }
+  local outerargs       = newlist{ storeptr }
   outerargs:insertall(fargs)
 
   ctxt:SetScanArgs(rowA,rowB)
@@ -323,34 +404,28 @@ function AST.Join:codegen(ctxt)
   local filter          = self.filter:codegen(ctxt)
   local doblock         = self.doblock:codegen(ctxt)
 
-  local emittbls        = {}
   local mergetbls       = {}
   for i,e in ipairs(ctxt.effects) do
-    if is_emit(e)   then emittbls[e.dst] = true   end
     if is_merge(e)  then mergetbls[e.dst] = true  end
   end
 
-  local innerloop = terra( [innerargs] ) : bool
+  local loopcall  = terra( [innerargs] ) : bool
     [filter]
     [doblock]
     return true
   end
+  local innerloop = quote loopcall( [innerargs] ) end
+
   local outerloop = terra( [outerargs] ) escape
-    -- clear out tables we're going to emit into
-    for dst,_ in pairs(emittbls) do emit( ctxt:Clear(dst) ) end
-    -- prepare any merge tables
-    for dst,_ in pairs(mergetbls) do emit( ctxt:PreMerge(dst) ) end
+    emit( ctxt:PrepareData( ctxt.effects ) )
+
     -- then do the main loops of the join
     if typA == typB then -- self-join
-      emit( ctxt:DoubleScan(typA, rowA, rowB, quote
-              innerloop( [innerargs] )
-            end))
+      emit( ctxt:ScanAA(name, typA, rowA, rowB, outerargs, innerloop) )
     else -- not a self-join
-      emit( ctxt:Scan(typA, rowA,
-              ctxt:Scan(typB, rowB, quote
-                innerloop( [innerargs] )
-              end)))
+      emit( ctxt:ScanAB(name, typA, rowA, typB, rowB, outerargs, innerloop) )
     end
+
     -- cleanup any merge tables
     for dst,_ in pairs(mergetbls) do
       local mstmt           = ctxt:GetMergeRemove(dst)
@@ -362,7 +437,7 @@ function AST.Join:codegen(ctxt)
       emit( ctxt:PostMerge(dst, rm_var, rm_body) )
     end
   end end
-  return outerloop, newlist{ innerloop }
+  return outerloop --, newlist{ innerloop }
 end
 
 function AST.ArgDecl:codegen(ctxt)
@@ -717,8 +792,14 @@ end
 function AST.FuncCall:codegen(ctxt)
   local args          = codegen_all(self.args, ctxt)
   local func          = ctxt:GetTerraFunction(self.func)
-  local storeptr      = ctxt:StorePtr()
-  return `func( storeptr, [args] )
+  if ctxt:on_GPU() then
+    local gpuptr      = ctxt:GPU_Tables_Ptr()
+    local globptr     = ctxt:GPU_Globals_Ptr()
+    return `func( gpuptr, globptr, [args] )
+  else
+    local storeptr      = ctxt:StorePtr()
+    return `func( storeptr, [args] )
+  end
 end
 
 -- WARNING: Destructive to names and dims lists

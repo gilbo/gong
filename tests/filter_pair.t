@@ -3,6 +3,8 @@ local test  = require 'tests.test'
 
 local G     = gong.stdlib
 
+local GPU_ON = not not terralib.cudacompile
+
 ------------------------------------------------------------------------------
 
 
@@ -26,6 +28,7 @@ local API = G.CompileLibrary {
   tables        = {},
   joins         = {filter_join},
   terra_out     = true,
+  gpu           = GPU_ON,
 }
 
 local C   = terralib.includecstring [[
@@ -47,77 +50,101 @@ local ERR = macro(function(err, ...)
   end
 end)
 
-local terra exec()
-  var store       = API.NewStore()
-  var A           = store:A()
-  var B           = store:B()
-  --var OUT         = store:OUT()
+local function gen_exec(use_gpu)
+  local terra exec()
+    var store       = API.NewStore()
+    var A           = store:A()
+    var B           = store:B()
+    --var OUT         = store:OUT()
 
-  var N = 6
-  A:beginload(N)
-  for k=0,N do
-    A:loadrow( k, false )
-  end
-  A:endload()
-  B:beginload(N)
-  for k=0,N do
-    B:loadrow( k )
-  end
-  B:endload()
-  CHECK_ERR(store)
-  C.printf("  Load done\n")
-  do
-    store:filter_join(1, 0)
-    CHECK_ERR(store)
-    var n_A     = A:getsize()
-    if n_A ~= 6 then ERR("expected 6 vals; got %d", n_A) end
-    for k = 0,n_A do
-      var a, b = A:id():read(k), A:hit():read(k)
-      if not b then ERR("expected all hits, but got miss on %d", a) end
+    var N = 6
+    A:beginload(N)
+    for k=0,N do
+      A:loadrow( k, false )
     end
-  end
-  C.printf("  Join 1 done\n")
-  -- repeat the same join, get same result
-  do
-    store:filter_join(1, 0)
-    CHECK_ERR(store)
-    var n_A     = A:getsize()
-    if n_A ~= 6 then ERR("expected 6 vals; got %d", n_A) end
-    for k = 0,n_A do
-      var a, b = A:id():read(k), A:hit():read(k)
-      if not b then ERR("expected all hits, but got miss on %d", a) end
+    A:endload()
+    B:beginload(N)
+    for k=0,N do
+      B:loadrow( k )
     end
-  end
-  C.printf("  Join 2 done\n")
-
-  -- "Clear"
-  A:beginload(N)
-  for k=0,N do
-    A:loadrow( k, false )
-  end
-  A:endload()
-
-  -- now do the join with a shift so that only one row persists
-  do
-    store:filter_join(2, -2)
+    B:endload()
     CHECK_ERR(store)
-    -- expected pairs (1,0),(2,2),(3,4)
-    var n_A     = A:getsize()
-    if n_A ~= 6 then ERR("expected 6 vals; got %d", n_A) end
-    for k = 0,n_A do
-      var a, b = A:id():read(k), A:hit():read(k)
-      if (a == 0 or a == 4 or a == 5) then
-          if b then ERR("expected miss on 0,4,5 but got hit on %d", a) end
-      else
-          if not b then ERR("expected hit on 1,2,3 but got hit on %d", a) end
+    C.printf("  Load done\n")
+    do
+      escape if use_gpu then emit quote
+        store:filter_join_GPU(1, 0)
+      end else emit quote
+        store:filter_join(1, 0)
+      end end end
+      CHECK_ERR(store)
+      var n_A     = A:getsize()
+      if n_A ~= 6 then ERR("expected 6 vals; got %d", n_A) end
+      var a, b = A:id():read_lock(), A:hit():read_lock()
+      for k = 0,n_A do
+        if not b[k] then
+          ERR("expected all hits, but got miss on %d", a[k]) end
       end
+      A:id():read_unlock(); A:hit():read_unlock()
     end
-  end
-  C.printf("  Join 3 done\n")
+    C.printf("  Join 1 done\n")
+    -- repeat the same join, get same result
+    do
+      escape if use_gpu then emit quote
+        store:filter_join_GPU(1, 0)
+      end else emit quote
+        store:filter_join(1, 0)
+      end end end
+      CHECK_ERR(store)
+      var n_A     = A:getsize()
+      if n_A ~= 6 then ERR("expected 6 vals; got %d", n_A) end
+      var a, b = A:id():read_lock(), A:hit():read_lock()
+      for k = 0,n_A do
+        if not b[k] then
+          ERR("expected all hits, but got miss on %d", a[k]) end
+      end
+      A:id():read_unlock(); A:hit():read_unlock()
+    end
+    C.printf("  Join 2 done\n")
 
-  store:destroy()
-  return 0
+    -- "Clear"
+    A:beginload(N)
+    for k=0,N do
+      A:loadrow( k, false )
+    end
+    A:endload()
+
+    -- now do the join with a shift so that only one row persists
+    do
+      escape if use_gpu then emit quote
+        store:filter_join_GPU(2, -2)
+      end else emit quote
+        store:filter_join(2, -2)
+      end end end
+      CHECK_ERR(store)
+      -- expected pairs (1,0),(2,2),(3,4)
+      var n_A     = A:getsize()
+      if n_A ~= 6 then ERR("expected 6 vals; got %d", n_A) end
+      var a, b = A:id():read_lock(), A:hit():read_lock()
+      for k = 0,n_A do
+        if (a[k] == 0 or a[k] == 4 or a[k] == 5) then
+            if b[k] then
+              ERR("expected miss on 0,4,5 but got hit on %d", a[k]) end
+        else
+            if not b[k] then
+              ERR("expected hit on 1,2,3 but got hit on %d", a[k]) end
+        end
+      end
+      A:id():read_unlock(); A:hit():read_unlock()
+    end
+    C.printf("  Join 3 done\n")
+
+    store:destroy()
+    return 0
+  end
+  return exec
 end
 
-test.eq(exec(), 0)
+test.eq(gen_exec(false)(), 0)
+test.eq(gen_exec(true)(), 0)
+
 

@@ -34,7 +34,7 @@ local PARAMETER     = (require 'gong.src.params').get_param
 local verbosity     = require('gong.src.verbosity').get_verbosity()
 
 local GPU_ENABLED   = PARAMETER('GPU_ENABLED')
-local GPU_Datastore = require 'gong.src.gpu_datastore'
+local GPU_DataStore = require 'gong.src.gpu_datastore'
 
 local newlist       = terralib.newlist
 
@@ -437,6 +437,11 @@ local function GenerateWrapperStructs(prefix, W)
     W._type_reverse[CGlobal] = Global
   end
 
+  if W._use_gpu then
+    local GW = W._gpu_wrapper
+    CStore.entries:insert { '_gpu_data', GW:GPU_Struct() }
+  end
+
   CStore.entries:insertall {
     { '_error_msg',     rawstring },
     { '_error_buf',     int8[ERR_BUF_LEN] },
@@ -449,7 +454,6 @@ local function GenerateWrapperStructs(prefix, W)
 end
 
 local function InstallStructMethods(prefix, W)
-
   local CStore                = W._c_cache[WRAPPER_ROOT].ctype
 
   for iIndex,Index in ipairs(W._indices) do
@@ -622,7 +626,9 @@ local function InstallStructMethods(prefix, W)
           this.[globname]     = [initval]
         end
       end
-    end end
+    end if W._use_gpu then emit quote
+      this._gpu_data:init()
+    end end end
   end
   terra CStore:destroy()
     var this        = self
@@ -642,28 +648,34 @@ local function InstallStructMethods(prefix, W)
           this.[tblname].[fname] = nil
         end
       end
-    end end
+    end if W._use_gpu then emit quote
+      this._gpu_data:destroy()
+    end end end
   end
 end
 
-local function NewWrapper(prefix,
-  schema_tables,
-  schema_indices,
-  schema_globals
-)
-  prefix = (prefix and prefix..'_') or ''
+local function NewWrapper(args)
+  local prefix = assert(args.prefix,'INTERNAL')..'_'
 
   local W = setmetatable({
-    _tables         = schema_tables:copy(),
-    _indices        = schema_indices:copy(),
-    _globals        = schema_globals:copy(),
+    _tables         = assert(args.tables,'INTERNAL'):copy(),
+    _indices        = assert(args.indices,'INTERNAL'):copy(),
+    _globals        = assert(args.globals,'INTERNAL'):copy(),
+    _use_gpu        = args.use_gpu, -- boolean
     _c_cache        = {},
     _type_reverse   = {},
     _func_cache     = {},
   }, Wrapper)
 
+  if W._use_gpu then
+    W._gpu_wrapper = GPU_DataStore.GenerateSubWrapper(args)
+  end
   GenerateWrapperStructs(prefix, W)
   InstallStructMethods(prefix, W)
+
+  if W._use_gpu then
+    GPU_DataStore.Install_Extensions(W._gpu_wrapper, W, WRAPPER_ROOT)
+  end
 
   return W
 end
@@ -674,15 +686,32 @@ Exports.GenerateDataWrapper = NewWrapper
 --[[                       Code Generation Interface                       ]]--
 -------------------------------------------------------------------------------
 
-function Wrapper:get_terra_function(f_obj)
+local function gpu_name(f_obj)
+  local name = f_obj:getname()
+  return name..'_GPU'
+end
+
+function Wrapper:get_terra_function(f_obj, for_gpu)
+  assert(for_gpu ~= nil, 'INTERNAL: expect non-nil gpu flag')
+  local name = f_obj:getname()
+  if for_gpu then name = gpu_name(f_obj) end
+
   if not self._func_cache[f_obj] then
-    local tfunc             = CodeGen.codegen(f_obj:getname(),
-                                              f_obj:_INTERNAL_getast(),
-                                              f_obj:_INTERNAL_geteffects(),
-                                              self)
-    self._func_cache[f_obj] = tfunc
+    self._func_cache[f_obj] = {}
   end
-  return self._func_cache[f_obj]
+  local token = (for_gpu and 'GPU') or 'CPU'
+
+  if not self._func_cache[f_obj][token] then
+    local tfunc = CodeGen.codegen {
+      name      = name,
+      ast       = f_obj:_INTERNAL_getast(),
+      effects   = f_obj:_INTERNAL_geteffects(),
+      storewrap = self,
+      for_gpu   = for_gpu,
+    }
+    self._func_cache[f_obj][token] = tfunc
+  end
+  return self._func_cache[f_obj][token]
 end
 
 -------------------------------------------------------------------------------
@@ -830,6 +859,26 @@ end
 function Wrapper:Store_Struct()
   return self._c_cache[WRAPPER_ROOT].ctype
 end
+function Wrapper:has_GPU_support()
+  return self._use_gpu
+end
+function Wrapper:GPU_Tables_Struct()
+  return self._gpu_wrapper:GPU_Tables_Struct()
+end
+function Wrapper:GPU_Globals_Struct()
+  return self._gpu_wrapper:GPU_Globals_Struct()
+end
+-- more pass-through to the gpu wrapper
+for _,nm in ipairs({'ScanAA','ScanAB',
+                    'Read','Write','Reduce',
+                    'ReadGlobal','ReduceGlobal',
+                    'Insert'})
+do
+  Wrapper['GPU_'..nm] = function(self, ...)
+    local fn = self._gpu_wrapper[nm]
+    return fn(self._gpu_wrapper, ...)
+  end
+end
 
 function Wrapper:Scan(storeptr, tbltype, rowsym, bodycode)
   local Table, tblname  = unpack_tbl(self, tbltype)
@@ -856,7 +905,14 @@ function Wrapper:Scan(storeptr, tbltype, rowsym, bodycode)
   end
 end
 
-function Wrapper:DoubleScan(storeptr, tbltype, row0sym, row1sym, bodycode)
+function Wrapper:ScanAB(storeptr, tbl0type, row0sym,
+                                  tbl1type, row1sym, bodycode)
+  return self:Scan(storeptr, tbl0type, row0sym,
+            self:Scan(storeptr, tbl1type, row1sym,
+              bodycode))
+end
+
+function Wrapper:ScanAA(storeptr, tbltype, row0sym, row1sym, bodycode)
   local Table, tblname  = unpack_tbl(self, tbltype)
 
   if Table._is_live then
@@ -1201,11 +1257,153 @@ function Wrapper:KeepRow(storeptr, tbltype, row)
 end
 
 -------------------------------------------------------------------------------
+--[[      Gong Internal Data Interface : Data Movement & Preparation       ]]--
+-------------------------------------------------------------------------------
+-- This function encapsulates data movement policy when mixing GPU
+-- and CPU execution, which needs to be in one place in order to
+-- reason about correctness of the policy.
+
+local Effects       = require 'gong.src.effectcheck'
+local is_scan       = Effects.Effects.Scan.check
+local is_emit       = Effects.Effects.Emit.check
+local is_merge      = Effects.Effects.Merge.check
+
+local is_overwrite  = Effects.Effects.OverWrite.check
+local is_write      = Effects.Effects.Write.check
+local is_reduce     = Effects.Effects.Reduce.check
+local is_read       = Effects.Effects.Read.check
+
+local is_reduce_global  = Effects.Effects.ReduceG.check
+local is_read_global    = Effects.Effects.ReadG.check
+
+function Wrapper:PrepareData(storeptr, for_gpu, effects)
+  local W = self
+
+  -- tables to put in emit or merge-mode
+  local emittbls        = {}
+  local mergetbls       = {}
+  -- whether to ensure global validity
+  local r_globals       = false -- true if rw_globals is true
+  local rw_globals      = false
+  for i,e in ipairs(effects) do
+    if     is_emit(e)          then emittbls[e.dst] = true 
+    elseif is_merge(e)         then mergetbls[e.dst] = true
+    elseif is_reduce_global(e) then rw_globals  = true
+                                    r_globals   = true
+    elseif is_read_global(e)   then r_globals   = true
+    end
+  end
+
+  -- fields
+  local read_tbls       = {}
+  local overwrite_tbls  = {}
+  local readwrite_tbls  = {}
+  for i,e in ipairs(effects) do
+    if emittbls[e.src] or emittbls[e.dst] or
+       mergetbls[e.src] or mergetbls[e.dst] then -- no-op
+
+    elseif is_read(e) then
+      local readcache       = read_tbls[e.src] or {}
+      read_tbls[e.src]      = readcache
+      -- for now, just focus on the first path element...
+      local fld = e.path[1].name
+      readcache[fld]        = true
+
+    elseif is_reduce(e) or is_write(e) then
+      local writecache      = readwrite_tbls[e.src] or {}
+      readwrite_tbls[e.dst] = writecache
+      -- for now, just focus on the first path element...
+      local fld = e.path[1].name
+      writecache[fld]       = true
+
+    elseif is_overwrite(e) then
+      local owcache         = overwrite_tbls[e.dst]
+      overwrite_tbls[e.dst] = owcache
+      -- for now, just focus on the first path element...
+      local fld = e.path[1].name
+      owcache[fld]          = true
+    end
+  end
+
+
+  -- CPU ONLY data preparation is much simpler...
+  if not W._use_gpu then
+    local code = newlist()
+
+    -- clear out tables we're going to emit into
+    for dst,_ in pairs(emittbls)  do
+      code:insert( self:Clear(storeptr, dst) )     end
+    -- prepare any merge tables
+    for dst,_ in pairs(mergetbls) do
+      code:insert( self:PreMerge(storeptr, dst) )  end
+
+    return quote [code] end
+
+
+  -- GPU ENABLED data preparation has to do a lot more
+  -- because of data movement and validity tracking
+  else
+    local code  = newlist()
+    local GW    = W._gpu_wrapper
+
+    -- moving the globals
+    if rw_globals then
+      code:insert( GW:PrepareReadWriteGlobals(storeptr, for_gpu) )
+    elseif r_globals then
+      code:insert( GW:PrepareReadGlobals(storeptr, for_gpu) )
+    end
+
+    -- First, consider an operation with no emits or merges.
+    --    This operation must move all data that is being read or
+    --    written to the correct processor.
+    --    Then, all of the data that is being written needs to be
+    --    invalidated everywhere else.
+    -- Second, consider an operation with emits
+    --    This operation must additionally clear the table
+    --    and overwrite the data, including potential re-allocations
+    --  **  These operations must invalidate the metadata  **
+
+    for dst,cache in pairs(overwrite_tbls) do
+      for fld,_ in pairs(cache) do
+        code:insert( GW:PrepareOverWrite(storeptr, dst, fld, for_gpu) )
+    end end
+    for dst,cache in pairs(readwrite_tbls) do
+      for fld,_ in pairs(cache) do
+        code:insert( GW:PrepareReadWrite(storeptr, dst, fld, for_gpu) )
+    end end
+    for src,cache in pairs(read_tbls) do
+      for fld,_ in pairs(cache) do
+        -- additionally guard against redundant code insertion for
+        -- fields already being read and written
+        if not readwrite_tbls[src] or not readwrite_tbls[src][fld] then
+          code:insert( GW:PrepareRead(storeptr, src, fld, for_gpu) )
+    end end end
+
+    -- clear out tables we're going to emit into
+    for dst,_ in pairs(emittbls)  do
+      code:insert( W._gpu_wrapper:Clear(storeptr, dst, for_gpu) )
+    end
+    assert(next(mergetbls) == nil, 'INTERNAL: unexpected merge -- unhandled')
+
+    -- if we are clearing any tables on the gpu,
+    -- then we need different finalization behavior...
+    local gpu_size_modify = for_gpu and (next(emittbls) ~= nil or
+                                         next(mergetbls) ~= nil)
+    code:insert( W._gpu_wrapper:PrepareFinal(storeptr, for_gpu,
+                                             gpu_size_modify) )
+
+    return quote [code] end
+  end
+end
+
+
+-------------------------------------------------------------------------------
 --[[                     Gong External Data Interface                      ]]--
 -------------------------------------------------------------------------------
 
-function Wrapper:GenExternCAPI(prefix, export_funcs)
+function Wrapper:GenExternCAPI(prefix, export_funcs, gpu_on)
   local W             = self
+  local GW            = W._gpu_wrapper
   prefix              = (prefix and prefix..'_') or ''
 
   local STRUCTS       = newlist()
@@ -1265,7 +1463,7 @@ function Wrapper:GenExternCAPI(prefix, export_funcs)
   add_func_note("/* Exported Joins */")
   HIERARCHY.joins = {}
   for _,jf in ipairs(export_funcs) do
-    local tfunc   = W:get_terra_function(jf)
+    local tfunc   = W:get_terra_function(jf, false)
     if verbosity > 3 then tfunc:printpretty(false) end
     local args    = newlist()
     local params  = tfunc:gettype().parameters
@@ -1279,6 +1477,26 @@ function Wrapper:GenExternCAPI(prefix, export_funcs)
     end)
   end
   add_func_note("")
+  if gpu_on then
+    add_func_note("/* Exported Joins (GPU versions) */")
+    for _,jf in ipairs(export_funcs) do
+      local tfunc   = W:get_terra_function(jf, true)
+      if verbosity > 3 then tfunc:printpretty(false) end
+      local args    = newlist()
+      local params  = tfunc:gettype().parameters
+      for i=2,#params do
+        args:insert( symbol(params[i]) )
+      end
+
+      local name = gpu_name(jf)
+      add_func(name, HIERARCHY.joins, name,
+      terra( hdl : ExtStore, [args] )
+        return tfunc( to_store(hdl), [args] )
+      end)
+    end
+    add_func_note("")
+  end
+
 
   -- Table Data Access
 
@@ -1319,6 +1537,8 @@ function Wrapper:GenExternCAPI(prefix, export_funcs)
     else
       add_func('GetSize_'..tname, HIERARCHY.tables[tname], 'GetSize',
       terra( hdl : ExtStore ) : SizeT
+        [ (gpu_on and GW:CPU_SizeRefresh(`to_store(hdl), T.row(Table)))
+                  or {} ]
         return to_store(hdl).[tbl_cname]:size()
       end)
     end
@@ -1332,6 +1552,8 @@ function Wrapper:GenExternCAPI(prefix, export_funcs)
       end
       store._load_counter     = 0
       store._load_col_counter = 0
+      [ (gpu_on and GW:CPU_PrepareLoadTable(store, T.row(Table)) )
+                or {} ]
       escape if Table._is_live then
         emit( W:_INTERNAL_ReserveRows(store, T.row(Table), size) )
       else emit quote
@@ -1402,6 +1624,8 @@ function Wrapper:GenExternCAPI(prefix, export_funcs)
         add_func('Read_'..tname..'_is_live', H_FIELDS['is_live'], 'Read',
         terra( hdl : ExtStore, row : KeyT ) : ftype
           var store = to_store(hdl)
+          [ (true and (`assert(false,'INTERNAL: simple Read deprecated')))
+                    or {} ]
           return [ W:_INTERNAL_is_live_read(store, T.row(Table), row) ]
         end)
       else
@@ -1417,11 +1641,15 @@ function Wrapper:GenExternCAPI(prefix, export_funcs)
         add_func('Read_'..tname..'_'..fname, H_FIELDS[fname], 'Read',
         terra( hdl : ExtStore, row : KeyT ) : ftype
           var store = to_store(hdl)
+          [ (true and (`assert(false,'INTERNAL: simple Read deprecated')))
+                    or {} ]
           return [ W:Read(store, T.row(Table), row, newlist{fname} ) ]
         end)
         add_func('Write_'..tname..'_'..fname, H_FIELDS[fname], 'Write',
         terra( hdl : ExtStore, row : KeyT, val : ftype )
           var store = to_store(hdl)
+          [ (true and (`assert(false,'INTERNAL: simple Write deprecated')))
+                    or {} ]
           return [ W:Write(store, T.row(Table), row, newlist{fname}, val ) ]
         end)
 
@@ -1429,7 +1657,10 @@ function Wrapper:GenExternCAPI(prefix, export_funcs)
         add_func('ReadWriteLock_'..tname..'_'..fname,
                  H_FIELDS[fname], 'ReadWriteLock',
         terra( hdl : ExtStore ) : &ftype
-          return to_store(hdl).[tbl_cname].[f_cname]
+          var store = to_store(hdl)
+          do [ (gpu_on and GW:PrepareReadWrite(store, T.row(Table),
+                                               fname, false) ) or {} ] end
+          return store.[tbl_cname].[f_cname]
         end)
         add_func('ReadWriteUnLock_'..tname..'_'..fname,
                  H_FIELDS[fname], 'ReadWriteUnlock',
@@ -1442,7 +1673,10 @@ function Wrapper:GenExternCAPI(prefix, export_funcs)
       add_func('ReadLock_'..tname..'_'..fname,
                H_FIELDS[fname], 'ReadLock',
       terra( hdl : ExtStore ) : &ftype
-        return to_store(hdl).[tbl_cname].[f_cname]
+        var store = to_store(hdl)
+        do [ (gpu_on and GW:PrepareRead(store, T.row(Table),
+                                        fname, false) ) or {} ] end
+        return store.[tbl_cname].[f_cname]
       end)
       add_func('ReadUnLock_'..tname..'_'..fname,
                H_FIELDS[fname], 'ReadUnlock',
@@ -1473,11 +1707,15 @@ function Wrapper:GenExternCAPI(prefix, export_funcs)
     add_func('Read_'..gname, HIERARCHY.globals[gname], 'Read',
     terra( hdl : ExtStore ) : gtype
       var store = to_store(hdl)
+      [ (gpu_on and GW:PrepareReadGlobals(store, false))
+                or {} ]
       return [ W:ReadGlobal( store, Global, newlist() ) ]
     end)
     add_func('Write_'..gname, HIERARCHY.globals[gname], 'Write',
     terra( hdl : ExtStore, val : gtype )
       var store = to_store(hdl)
+      [ (gpu_on and GW:PrepareReadWriteGlobals(store, false))
+                or {} ]
       return [ W:WriteGlobal( store, Global, newlist(), val ) ]
     end)
     add_func_note("")

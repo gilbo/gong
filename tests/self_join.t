@@ -4,6 +4,8 @@ local test  = require 'tests.test'
 
 local G     = gong.stdlib
 
+local GPU_ON = not not terralib.cudacompile
+
 ------------------------------------------------------------------------------
 
 
@@ -18,14 +20,18 @@ do
   emit { lhs=lhs, rhs=rhs } in OUT
 end
 
+if GPU_ON then
+  OUT:setGPUSizeLinear(1, A, 10)
+end
+
 
 ------------------------------------------------------------------------------
-
 
 local API = G.CompileLibrary {
   tables        = {},
   joins         = {self_join},
   terra_out     = true,
+  gpu           = GPU_ON,
 }
 
 local C   = terralib.includecstring [[
@@ -65,12 +71,33 @@ local terra exec()
   C.printf("got %d output rows\n", n_OUT)
   if n_OUT ~= 3 then
     store:destroy()
-    ERR("expected 3 contacts; got another number")
+    C.printf("expected 3 contacts; got %d\n", n_OUT)
+    ERR("bad result count")
   end
+  var lhs, rhs  = OUT:lhs():read_lock(), OUT:rhs():read_lock()
   for k=0,3 do
-    C.printf("row %d (lhs,rhs): %d %d\n", k, OUT:lhs():read(k),
-                                             OUT:rhs():read(k) )
+    C.printf("row %d (lhs,rhs): %d %d\n", k, lhs[k], rhs[k] )
   end
+  OUT:lhs():read_unlock(); OUT:rhs():read_unlock()
+
+  escape if GPU_ON then emit quote
+    C.printf("running gpu version now\n")
+    store:self_join_GPU()
+    CHECK_ERR(store)
+
+    var n_OUT       = OUT:getsize()
+    C.printf("got %d output rows\n", n_OUT)
+    if n_OUT ~= 3 then
+      store:destroy()
+      C.printf("expected 3 contacts; got %d\n", n_OUT)
+      ERR("bad result count")
+    end
+    lhs, rhs  = OUT:lhs():read_lock(), OUT:rhs():read_lock()
+    for k=0,3 do
+      C.printf("row %d (lhs,rhs): %d %d\n", k, lhs[k], rhs[k] )
+    end
+    OUT:lhs():read_unlock(); OUT:rhs():read_unlock()
+  end end end
 
   store:destroy()
 

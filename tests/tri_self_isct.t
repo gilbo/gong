@@ -5,6 +5,8 @@ local G = gong.stdlib
 --local keyT            = G.uint32
 local EPSILON         = 1.0e-7
 
+local GPU_ON = not not terralib.cudacompile
+
 ------------------------------------------------------------------------------
 
 local Verts           = G.NewTable('Verts')
@@ -19,6 +21,10 @@ local ETcontacts      = G.NewTable('ETcontacts')
 ETcontacts:NewField( 'edge',  Edges   )
 ETcontacts:NewField( 'tri',   Tris    )
 ETcontacts:NewField( 'pos',   G.vec3f )
+
+if GPU_ON then
+  ETcontacts:setGPUSizeLinear(1, Edges, 1, Tris, 10)
+end
 
 ------------------------------------------------------------------------------
 
@@ -79,6 +85,7 @@ local API = G.CompileLibrary {
   tables        = {},
   joins         = {find_et_iscts},
   terra_out     = true,
+  gpu           = GPU_ON,
 }
 
 local C   = terralib.includecstring [[
@@ -105,79 +112,95 @@ end)
 local Tvec3f  = G.vec3f:terratype()
 local Tv3     = G.vector(Verts,3):terratype()
 
-local terra exec()
-  var store       = API.NewStore()
-  var Verts       = store:Verts()
-  var Edges       = store:Edges()
-  var Tris        = store:Tris()
-  var ETcontacts  = store:ETcontacts()
+local function gen_exec(for_gpu)
+  local terra exec()
+    var store       = API.NewStore()
+    var Verts       = store:Verts()
+    var Edges       = store:Edges()
+    var Tris        = store:Tris()
+    var ETcontacts  = store:ETcontacts()
 
-  Verts:beginload(6)
-  Verts:loadrow([Tvec3f]( {arrayof(float,1,0,0)}  ))
-  Verts:loadrow([Tvec3f]( {arrayof(float,0,1,0)}  ))
-  Verts:loadrow([Tvec3f]( {arrayof(float,0,0,1)}  ))
-  Verts:loadrow([Tvec3f]( {arrayof(float,0,0,0)}  ))
-  Verts:loadrow([Tvec3f]( {arrayof(float,1,1,1)}  ))
-  Verts:loadrow([Tvec3f]( {arrayof(float,1,1,-1)} ))
-  Verts:endload()
-  CHECK_ERR(store)
+    Verts:beginload(6)
+    Verts:loadrow([Tvec3f]( {arrayof(float,1,0,0)}  ))
+    Verts:loadrow([Tvec3f]( {arrayof(float,0,1,0)}  ))
+    Verts:loadrow([Tvec3f]( {arrayof(float,0,0,1)}  ))
+    Verts:loadrow([Tvec3f]( {arrayof(float,0,0,0)}  ))
+    Verts:loadrow([Tvec3f]( {arrayof(float,1,1,1)}  ))
+    Verts:loadrow([Tvec3f]( {arrayof(float,1,1,-1)} ))
+    Verts:endload()
+    CHECK_ERR(store)
 
-  Edges:beginload(6)
-  Edges:loadrow(0,1)
-  Edges:loadrow(1,2)
-  Edges:loadrow(2,0)
-  Edges:loadrow(3,4)
-  Edges:loadrow(4,5)
-  Edges:loadrow(5,3)
-  Edges:endload()
-  CHECK_ERR(store)
+    Edges:beginload(6)
+    Edges:loadrow(0,1)
+    Edges:loadrow(1,2)
+    Edges:loadrow(2,0)
+    Edges:loadrow(3,4)
+    Edges:loadrow(4,5)
+    Edges:loadrow(5,3)
+    Edges:endload()
+    CHECK_ERR(store)
 
-  Tris:beginload(2)
-  Tris:loadrow([Tv3]( {arrayof(uint, 0,1,2)} ))
-  Tris:loadrow([Tv3]( {arrayof(uint, 3,4,5)} ))
-  Tris:endload()
-  CHECK_ERR(store)
+    Tris:beginload(2)
+    Tris:loadrow([Tv3]( {arrayof(uint, 0,1,2)} ))
+    Tris:loadrow([Tv3]( {arrayof(uint, 3,4,5)} ))
+    Tris:endload()
+    CHECK_ERR(store)
 
-  store:find_et_iscts()
-  CHECK_ERR(store)
+    escape if for_gpu then emit quote
+      store:find_et_iscts_GPU()
+    end else emit quote
+      store:find_et_iscts()
+    end end end
+    CHECK_ERR(store)
 
-  var n_contact   = ETcontacts:getsize()
-  C.printf("got %d contacts\n", n_contact)
-  if n_contact ~= 2 then
+    var n_contact   = ETcontacts:getsize()
+    C.printf("got %d contacts\n", n_contact)
+    if n_contact ~= 2 then
+      store:destroy()
+      ERR("expected 2 contacts; got another number")
+    end
+
+    var t, e, p   = ETcontacts:tri():read_lock(),
+                    ETcontacts:edge():read_lock(),
+                    ETcontacts:pos():read_lock()
+    var t0, t1    = t[0], t[1]
+    var e0, e1    = e[0], e[1]
+    var p0, p1    = p[0], p[1]
+    ETcontacts:tri():read_unlock()
+    ETcontacts:edge():read_unlock()
+    ETcontacts:pos():read_unlock()
+
+    C.printf("contact 0 (edge,tri,pos): %d %d %f %f %f\n", e0,t0,
+                  p0.d[0], p0.d[1], p0.d[2] )
+    C.printf("contact 1 (edge,tri,pos): %d %d %f %f %f\n", e1,t1,
+                  p1.d[0], p1.d[1], p1.d[2] )
+    if t0 == 1 then
+      t0, t1 = t1, t0
+      e0, e1 = e1, e0
+      p0, p1 = p1, p0
+    end
+    if t0 ~= 0 or e0 ~= 3 then
+      ERR("expected an intersection between tri 0 & edge 3")
+    elseif not IN_EPS(p0.d[0], 1.0/3.0) or
+           not IN_EPS(p0.d[1], 1.0/3.0) or
+           not IN_EPS(p0.d[2], 1.0/3.0)
+    then
+      ERR("expected intersection 2 at (0.3333,0.3333,0.3333)")
+    end
+    if t1 ~= 1 or e1 ~= 0 then
+      ERR("expeced an intersection between tri 1 & edge 2")
+    elseif p1.d[0] ~= 0.5 or p1.d[1] ~= 0.5 or p1.d[2] ~= 0.0 then
+      ERR("expected intersection 2 at (0.5,0.5,0.0)")
+    end
+
     store:destroy()
-    ERR("expected 2 contacts; got another number")
+    return 0
   end
-  var t0, t1      = ETcontacts:tri():read(0),   ETcontacts:tri():read(1)
-  var e0, e1      = ETcontacts:edge():read(0),  ETcontacts:edge():read(1)
-  var p0, p1      = ETcontacts:pos():read(0),   ETcontacts:pos():read(1)
-  C.printf("contact 0 (edge,tri,pos): %d %d %f %f %f\n", e0,t0,
-                p0.d[0], p0.d[1], p0.d[2] )
-  C.printf("contact 1 (edge,tri,pos): %d %d %f %f %f\n", e1,t1,
-                p1.d[0], p1.d[1], p1.d[2] )
-  if t0 == 1 then
-    t0, t1 = t1, t0
-    e0, e1 = e1, e0
-    p0, p1 = p1, p0
-  end
-  if t0 ~= 0 or e0 ~= 3 then
-    ERR("expected an intersection between tri 0 & edge 3")
-  elseif not IN_EPS(p0.d[0], 1.0/3.0) or
-         not IN_EPS(p0.d[1], 1.0/3.0) or
-         not IN_EPS(p0.d[2], 1.0/3.0)
-  then
-    ERR("expected intersection 2 at (0.3333,0.3333,0.3333)")
-  end
-  if t1 ~= 1 or e1 ~= 0 then
-    ERR("expeced an intersection between tri 1 & edge 2")
-  elseif p1.d[0] ~= 0.5 or p1.d[1] ~= 0.5 or p1.d[2] ~= 0.0 then
-    ERR("expected intersection 2 at (0.5,0.5,0.0)")
-  end
-
-  store:destroy()
-  return 0
+  return exec
 end
 
-test.eq(exec(), 0)
+test.eq(gen_exec(false)(), 0)
+test.eq(gen_exec(true)(), 0)
 
 
 ------------------------------------------------------------------------------

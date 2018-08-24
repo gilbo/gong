@@ -386,31 +386,100 @@ end
 -- Reduction Atomics...
 -------------------------------------------------------------------------------
 
-local terra reduce_max_int32(address : &int32, operand : int32)
-  terralib.asm(terralib.types.unit,
-    "red.global.max.s32 [$0], $1;","l,r",true,address,operand)
-end
-local terra reduce_min_int32(address : &int32, operand : int32)
-  terralib.asm(terralib.types.unit,
-    "red.global.min.s32 [$0], $1;","l,r",true,address,operand)
-end
+-- ADD REDUCE
 local terra reduce_add_int32(address : &int32, operand : int32)
   terralib.asm(terralib.types.unit,
     "red.global.add.s32 [$0], $1;","l,r",true,address,operand)
-end
-
-local terra reduce_max_uint32(address : &uint32, operand : uint32)
-  terralib.asm(terralib.types.unit,
-    "red.global.max.u32 [$0], $1;","l,r",true,address,operand)
-end
-local terra reduce_min_uint32(address : &uint32, operand : uint32)
-  terralib.asm(terralib.types.unit,
-    "red.global.min.u32 [$0], $1;","l,r",true,address,operand)
 end
 local terra reduce_add_uint32(address : &uint32, operand : uint32)
   terralib.asm(terralib.types.unit,
     "red.global.add.u32 [$0], $1;","l,r",true,address,operand)
 end
+local terra reduce_add_int64(address : &int64, operand : int64)
+  terralib.asm(terralib.types.unit,
+    "red.global.add.s64 [$0], $1;","l,l",true,address,operand)
+end
+local terra reduce_add_uint64(address : &uint64, operand : uint64)
+  terralib.asm(terralib.types.unit,
+    "red.global.add.u64 [$0], $1;","l,l",true,address,operand)
+end
+local terra reduce_add_float(address : &float, operand : float)
+  terralib.asm(terralib.types.unit,
+    "red.global.add.f32 [$0], $1;","l,f",true,address,operand)
+end
+-- Need to use fallback for 64-bit on the dev GPU
+
+
+-- MIN/MAX REDUCE
+local terra reduce_max_int32(address : &int32, operand : int32)
+  terralib.asm(terralib.types.unit,
+    "red.global.max.s32 [$0], $1;","l,r",true,address,operand)
+end
+local terra reduce_max_uint32(address : &uint32, operand : uint32)
+  terralib.asm(terralib.types.unit,
+    "red.global.max.u32 [$0], $1;","l,r",true,address,operand)
+end
+local terra reduce_max_int64(address : &int64, operand : int64)
+  terralib.asm(terralib.types.unit,
+    "red.global.max.s64 [$0], $1;","l,l",true,address,operand)
+end
+local terra reduce_max_uint64(address : &uint64, operand : uint64)
+  terralib.asm(terralib.types.unit,
+    "red.global.max.u64 [$0], $1;","l,l",true,address,operand)
+end
+local terra reduce_max_float(address : &float, operand : float)
+  terralib.asm(terralib.types.unit,
+    "red.global.max.f32 [$0], $1;","l,f",true,address,operand)
+end
+
+local terra reduce_min_int32(address : &int32, operand : int32)
+  terralib.asm(terralib.types.unit,
+    "red.global.min.s32 [$0], $1;","l,r",true,address,operand)
+end
+local terra reduce_min_uint32(address : &uint32, operand : uint32)
+  terralib.asm(terralib.types.unit,
+    "red.global.min.u32 [$0], $1;","l,r",true,address,operand)
+end
+local terra reduce_min_int64(address : &int64, operand : int64)
+  terralib.asm(terralib.types.unit,
+    "red.global.min.s64 [$0], $1;","l,l",true,address,operand)
+end
+local terra reduce_min_uint64(address : &uint64, operand : uint64)
+  terralib.asm(terralib.types.unit,
+    "red.global.min.u64 [$0], $1;","l,l",true,address,operand)
+end
+local terra reduce_min_float(address : &float, operand : float)
+  terralib.asm(terralib.types.unit,
+    "red.global.min.f32 [$0], $1;","l,f",true,address,operand)
+end
+
+
+local terra reduce_and_b32(address : &uint32, operand : uint32)
+  terralib.asm(terralib.types.unit,
+    "red.global.and.b32 [$0], $1;","l,r",true,address,operand)
+end
+local terra reduce_or_b32(address : &uint32, operand : uint32)
+  terralib.asm(terralib.types.unit,
+    "red.global.or.b32 [$0], $1;","l,r",true,address,operand)
+end
+local terra reduce_and_b64(address : &uint64, operand : uint64)
+  terralib.asm(terralib.types.unit,
+    "red.global.and.b64 [$0], $1;","l,l",true,address,operand)
+end
+local terra reduce_or_b64(address : &uint64, operand : uint64)
+  terralib.asm(terralib.types.unit,
+    "red.global.or.b64 [$0], $1;","l,l",true,address,operand)
+end
+
+
+
+--[[
+    op:      .and, .or, .xor,
+             .add, .inc, .dec,
+             .min, .max
+    type:    .b32, .b64, .u32, .u64, .s32, .s64, .f32, .f64
+
+--]]
 
 --[[
 -- doubt this will work right
@@ -427,20 +496,20 @@ end)
 --]]
 
 -- presumably this should work too?
-local terra reduce_max_f32(address : &float, operand : float)
-  terralib.asm(terralib.types.unit,
-    "red.global.max.f32 [$0], $1;","l,f",true,address,operand)
-end
+--local terra reduce_max_f32(address : &float, operand : float)
+--  terralib.asm(terralib.types.unit,
+--    "red.global.max.f32 [$0], $1;","l,f",true,address,operand)
+--end
+--
+---- presumably this should work too?
+--local terra reduce_min_f32(address : &float, operand : float)
+--  terralib.asm(terralib.types.unit,
+--    "red.global.min.f32 [$0], $1;","l,f",true,address,operand)
+--end
 
--- presumably this should work too?
-local terra reduce_min_f32(address : &float, operand : float)
-  terralib.asm(terralib.types.unit,
-    "red.global.min.f32 [$0], $1;","l,f",true,address,operand)
-end
-
-local atomic_add_float =
-  terralib.intrinsic("llvm.nvvm.atomic.load.add.f32.p0f32",
-                     {&float,float} -> {float})
+--local atomic_add_float =
+--  terralib.intrinsic("llvm.nvvm.atomic.load.add.f32.p0f32",
+--                     {&float,float} -> {float})
 
 local terra atomic_add_uint32(address : &uint32, operand : uint32) : uint32
   return terralib.asm(terralib.types.uint64,
@@ -450,10 +519,10 @@ local terra atomic_add_uint64(address : &uint64, operand : uint64) : uint64
   return terralib.asm(terralib.types.uint64,
     "atom.global.add.u64 $0, [$1], $2;","=l,l,l",true,address,operand)
 end
-local terra reduce_add_uint64(address : &uint64, operand : uint64)
-  terralib.asm(terralib.types.unit,
-    "red.global.add.u64 [$0], $1;","l,l",true,address,operand)
-end
+--local terra reduce_add_uint64(address : &uint64, operand : uint64)
+--  terralib.asm(terralib.types.unit,
+--    "red.global.add.u64 [$0], $1;","l,l",true,address,operand)
+--end
 
 
 -------------------------------------------------------------------------------
@@ -549,38 +618,69 @@ end)
 
 
 -- Intrinsic atomic reductions:
-Exports.atomic_add_float        = atomic_add_float
-Exports.atomic_max_int32        = reduce_max_int32
-Exports.reduce_min_int32        = reduce_min_int32
+-- Addition
 Exports.reduce_add_int32        = reduce_add_int32
-Exports.atomic_max_uint32       = reduce_max_uint32
-Exports.reduce_min_uint32       = reduce_min_uint32
 Exports.reduce_add_uint32       = reduce_add_uint32
+Exports.reduce_add_int64        = reduce_add_int64
+Exports.reduce_add_uint64       = reduce_add_uint64
+Exports.reduce_add_float        = reduce_add_float
+Exports.reduce_add_double       = generate_slow_atomic_64(add,double)
+
+Exports.reduce_max_int32        = reduce_max_int32
+Exports.reduce_max_uint32       = reduce_max_uint32
+Exports.reduce_max_int64        = reduce_max_int64
+Exports.reduce_max_uint64       = reduce_max_uint64
+Exports.reduce_max_float        = reduce_max_float
+Exports.reduce_max_double       = generate_slow_atomic_64(max,double)
+
+Exports.reduce_min_int32        = reduce_min_int32
+Exports.reduce_min_uint32       = reduce_min_uint32
+Exports.reduce_min_int64        = reduce_min_int64
+Exports.reduce_min_uint64       = reduce_min_uint64
+Exports.reduce_min_float        = reduce_min_float
+Exports.reduce_min_double       = generate_slow_atomic_64(min,double)
+
+Exports.reduce_and_b32          = reduce_and_b32
+Exports.reduce_or_b32           = reduce_or_b32
+Exports.reduce_and_b64          = reduce_and_b64
+Exports.reduce_or_b64           = reduce_or_b64
+
+
+--Exports.reduce_add_int32        = reduce_add_int32
+--Exports.atomic_add_float        = atomic_add_float
+--Exports.reduce_max_int32        = reduce_max_int32
+--Exports.reduce_min_int32        = reduce_min_int32
+--Exports.reduce_add_int32        = reduce_add_int32
+--Exports.atomic_max_uint32       = reduce_max_uint32
+--Exports.reduce_min_uint32       = reduce_min_uint32
+--Exports.reduce_add_uint32       = reduce_add_uint32
 --Exports.reduce_and_b32          = reduce_and_b32
 --Exports.reduce_or_b32           = reduce_or_b32
 
-Exports.reduce_add_uint64       = reduce_add_uint64
+--Exports.reduce_add_uint64       = reduce_add_uint64
 
 -- Slow operations:
 Exports.atomic_add_uint32       = atomic_add_uint32
 Exports.atomic_add_uint64       = atomic_add_uint64
-Exports.atomic_add_double_SLOW  = generate_slow_atomic_64(add,double)
+--Exports.atomic_add_double_SLOW  = generate_slow_atomic_64(add,double)
 
 Exports.atomic_mul_float_SLOW   = generate_slow_atomic_32(mul,float)
 Exports.atomic_mul_double_SLOW  = generate_slow_atomic_64(mul,double)
 Exports.atomic_mul_int32_SLOW   = generate_slow_atomic_32(mul,int32)
+Exports.atomic_mul_uint32_SLOW  = generate_slow_atomic_32(mul,uint32)
+Exports.atomic_mul_int64_SLOW   = generate_slow_atomic_64(mul,int64)
 Exports.atomic_mul_uint64_SLOW  = generate_slow_atomic_64(mul,uint64)
 
-Exports.atomic_div_float_SLOW   = generate_slow_atomic_32(div,float)
-Exports.atomic_div_double_SLOW  = generate_slow_atomic_64(div,double)
+--Exports.atomic_div_float_SLOW   = generate_slow_atomic_32(div,float)
+--Exports.atomic_div_double_SLOW  = generate_slow_atomic_64(div,double)
 
-Exports.atomic_min_uint64_SLOW  = generate_slow_atomic_64(min,uint64)
-Exports.atomic_min_double_SLOW  = generate_slow_atomic_64(min,double)
-Exports.atomic_min_float_SLOW   = generate_slow_atomic_32(min,float)
+--Exports.atomic_min_uint64_SLOW  = generate_slow_atomic_64(min,uint64)
+--Exports.atomic_min_double_SLOW  = generate_slow_atomic_64(min,double)
+--Exports.atomic_min_float_SLOW   = generate_slow_atomic_32(min,float)
 
-Exports.atomic_max_uint64_SLOW  = generate_slow_atomic_64(max,uint64)
-Exports.atomic_max_double_SLOW  = generate_slow_atomic_64(max,double)
-Exports.atomic_max_float_SLOW   = generate_slow_atomic_32(max,float)
+--Exports.atomic_max_uint64_SLOW  = generate_slow_atomic_64(max,uint64)
+--Exports.atomic_max_double_SLOW  = generate_slow_atomic_64(max,double)
+--Exports.atomic_max_float_SLOW   = generate_slow_atomic_32(max,float)
 
 -------------------------------------------------------------------------------
 -- Other exposed GPU instructions
@@ -812,7 +912,7 @@ Exports.NewReductionObj     = NewReductionObj
 
 -- recipe runs in order to reduce traffic to one global access per warp
 local reserve_idx = macro(function(tid, write_idx_ptr)
-  assert(write_idx_ptr:gettype() == &uint32, 'INTERNAL')
+  assert(write_idx_ptr:gettype() == &uint32, 'INTERNAL: bad ptr type')
   return quote
     -- first, figure out which threads are running this code
     var ballot        = warpballot_b32()

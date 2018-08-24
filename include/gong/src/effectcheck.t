@@ -33,21 +33,22 @@ Exports.redop_token_set     = redop_token_set
 
 local ADT E
   
-  Effect = Scan     { src  : Type }
-         | Filter   {}
-         | Emit     { dst  : Type } -- destination table
-         | Merge    { dst  : Type }
-         | MergeRemove { dst : Type }
-         | Return   { type : Type }
-         | Write    { dst  : Type,        path : PathToken* }
-         | Reduce   { op   : redop,
-                      dst  : Type,        path : PathToken* }
-         | Read     { src  : Type,        path : PathToken* }
-         | ReduceG  { op   : redop,
-                      dst  : Glob,        path : PathToken* }
-         | ReadG    { src  : Glob,        path : PathToken* }
-         | Print      {}
-        attributes {                                    srcinfo : SrcInfo }
+  Effect = Scan         { src  : Type }
+         | Filter       {}
+         | Emit         { dst  : Type } -- destination table
+         | Merge        { dst  : Type }
+         | MergeRemove  { dst : Type }
+         | Return       { type : Type }
+         | OverWrite    { dst  : Type,        path : PathToken* }
+         | Write        { dst  : Type,        path : PathToken* }
+         | Reduce       { op   : redop,
+                          dst  : Type,        path : PathToken* }
+         | Read         { src  : Type,        path : PathToken* }
+         | ReduceG      { op   : redop,
+                          dst  : Glob,        path : PathToken* }
+         | ReadG        { src  : Glob,        path : PathToken* }
+         | Print        {}
+        attributes      {                     srcinfo : SrcInfo }
 
   PathToken = FieldToken { name : id_str }
             | IndexToken { } -- assume all of the indices are hit for now

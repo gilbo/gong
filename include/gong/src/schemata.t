@@ -60,6 +60,7 @@ local function NewTable(name, options)
     _gong_record    = false,
     _mergeable      = false,
     _merge_removeable = false,
+    _size_func      = nil,
   }, DataTable)
 end
 Exports.NewTable    = NewTable
@@ -196,6 +197,46 @@ function DataTable:SetPrimaryKey(...)
 
   self._primary_key:insertall(fs)
   return self
+end
+
+function DataTable:setGPUSizeLinear(szA, tblA, szB, tblB, szOffset)
+  -- default swapping around
+  if     not tblA then szOffset = szA; szA = nil
+  elseif not tblB then szOffset = szB; szB = nil end
+  -- input validation
+  if     not is_pos_int(szOffset) and szOffset ~= 0 then
+    error('expected last argument to be a constant non-negative offset', 2)
+  end
+  if tblA then
+    if not is_table(tblA) then
+      error('expected 2nd argument to be a Schema table', 2)
+    elseif tblA._size_func then
+      error("expected table '"..tblA:name().."' to not have a sizing "..
+            "policy itself", 2)
+    elseif not is_pos_int(szA) and szA ~= 0 then
+      error("expected 1st argument to be a constant non-negative "..
+            "coefficient", 2)
+    end
+  end
+  if tblB then
+    if not is_table(tblA) then
+      error('expected 4th argument to be a Schema table', 2)
+    elseif tblA._size_func then
+      error("expected table '"..tblA:name().."' to not have a sizing "..
+            "policy itself", 2)
+    elseif not is_pos_int(szA) and szA ~= 0 then
+      error("expected 3rd argument to be a constant non-negative "..
+            "coefficient", 2)
+    end
+  end
+
+  rawset(self, '_size_func', {
+    tblA    = tblA,
+    szA     = szA or 0,
+    tblB    = tblB,
+    szB     = szB or 0,
+    offset  = szOffset
+  })
 end
 
 function DataTable:name()         return self._name               end

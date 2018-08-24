@@ -212,6 +212,10 @@ end)())
 
 gpu_time('merge_test', merge_test, N, N, randbuf, N_key, OUTSIZE)
 
+print('\nstart total timing\n')
+GPU.sync()
+local MEGA_START = terralib.currenttimeinseconds()
+
 gpu_time('inc_buf', inc_buf, N, N, buffer)
 gpu_time('inc_buf', inc_buf, N, N, buffer)
 gpu_time('inc_buf x 100', run_n_times, 100, inc_buf, N, N, buffer)
@@ -244,6 +248,10 @@ gpu_time('merge_test', merge_test, N, N, randbuf, N_key, OUTSIZE)
 gpu_time('merge_test x 100', run_n_times, 100,
                        merge_test, N, N, randbuf, N_key, OUTSIZE)
 gpu_time('merge_test', merge_test, N, N, randbuf, N_key, OUTSIZE)
+
+local MEGA_STOP = terralib.currenttimeinseconds()
+
+print('\ntotal timing  ', (MEGA_STOP - MEGA_START)*1e3, 'ms')
 
 randbuf:destroy()
 GPU.free(n_out)

@@ -81,11 +81,14 @@ int main() {
   std::cout << "Size of Join Result: " << Csize << std::endl;
   if(Csize != 3) { ERR("bad join result size"); }
 
+  uint32_t *a = store.C().a().read_lock();
+  uint32_t *b = store.C().b().read_lock();
   for(int k=0; k<3; k++) {
-    int a = store.C().a().read(k);
-    int b = store.C().b().read(k);
-    std::cout << "row " << k << ": (" << a << "," << b << ")" << std::endl;
+    std::cout << "row " << k << ": (" << a[k] << ","
+                                      << b[k] << ")" << std::endl;
   }
+  store.C().a().read_unlock();
+  store.C().b().read_unlock();
 
   // cleanup
   store.destroy();
