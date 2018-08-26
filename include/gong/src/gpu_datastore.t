@@ -583,6 +583,7 @@ local function NewSubWrapper(args)
     _c_cache        = {},
     _cv_cache       = {}, -- for the valid stuff
     _func_cache     = {},
+    _cuda_loaders   = newlist{ GPU.load_init_rand },
   }, GWrapper)
 
   -- cannot refer to data from _main_wrap in these calls
@@ -982,7 +983,9 @@ function GWrapper:ScanAB(name, storeptr, gpu_tblptr, gpu_globptr,
     end
   end
   gpu_kernel:setname(name..'_cudakernel')
-  gpu_kernel = GPU.simple_compile(gpu_kernel)
+  local loader = nil
+  gpu_kernel, loader = GPU.simple_compile(gpu_kernel)
+  self._cuda_loaders:insert(loader)
 
   -- code snippet that computes the number of threads to launch
   -- based on the storeptr values
@@ -1030,7 +1033,9 @@ function GWrapper:ScanAA(name, storeptr, gpu_tblptr, gpu_globptr,
     end
   end
   gpu_kernel:setname(name..'_cudakernel')
-  gpu_kernel = GPU.simple_compile(gpu_kernel)
+  local loader = nil
+  gpu_kernel, loader = GPU.simple_compile(gpu_kernel)
+  self._cuda_loaders:insert(loader)
 
   -- code snippet that computes the number of threads to launch
   -- based on the storeptr values

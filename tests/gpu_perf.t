@@ -17,6 +17,16 @@ local newlist = terralib.newlist
 
 ------------------------------------------------------------------------------
 
+GPU.load_init_rand()
+
+local function compile(...)
+  local fn, loader = GPU.simple_compile(...)
+  loader()
+  return fn
+end
+
+------------------------------------------------------------------------------
+
 
 local function empty(n)
   local e=newlist()
@@ -44,7 +54,7 @@ local terra inc_buf( N : uint32, buf : &uint32 )
     buf[tid] = buf[tid] + 1
   end
 end
-inc_buf = GPU.simple_compile(inc_buf)
+inc_buf = compile(inc_buf)
 
 local terra raw_reduce( N : uint32, buf : &uint32, res : &uint32 )
   var tid = [uint32](GPU.global_tid())
@@ -54,7 +64,7 @@ local terra raw_reduce( N : uint32, buf : &uint32, res : &uint32 )
     GPU.reduce_add_uint32(res, c)
   end
 end
-raw_reduce = GPU.simple_compile(raw_reduce)
+raw_reduce = compile(raw_reduce)
 -- using atomic instead of reduction doesn't seem to make any
 -- performance difference on my dev hardware
 
@@ -76,7 +86,7 @@ local terra block_reduce( N : uint32, buf : &uint32, res : &uint32 )
     [ redobj:reduce_block_sharedmem( local_tid, res ) ]
   end
 end
-block_reduce = GPU.simple_compile(block_reduce, {
+block_reduce = compile(block_reduce, {
   BLOCK_SIZE = REDBLOCK,
   SHARED_MEM = REDBLOCK,
 })
@@ -88,8 +98,40 @@ local terra write_rand( N : uint32, rand : GPU.RandBuffer, buf : &uint32 )
     buf[tid] = r
   end
 end
-write_rand = GPU.simple_compile(write_rand)
+write_rand = compile(write_rand)
 
+local terra unsafe_gather( N : uint32, rand : GPU.RandBuffer,
+                           buf_in : &uint32, buf_out : &uint32 )
+  var tid         = [uint32](GPU.global_tid())
+  if tid < N then
+    var rand_id = rand:rand(tid) % N
+    var val     = buf_in[rand_id]
+    buf_out[tid] = val
+  end
+end
+unsafe_gather = compile(unsafe_gather)
+
+local terra unsafe_scatter( N : uint32, rand : GPU.RandBuffer,
+                            buf_in : &uint32, buf_out : &uint32 )
+  var tid         = [uint32](GPU.global_tid())
+  if tid < N then
+    var rand_id = rand:rand(tid) % N
+    var val     = buf_in[tid]
+    buf_out[rand_id] = val
+  end
+end
+unsafe_scatter = compile(unsafe_scatter)
+
+local terra safe_scatter( N : uint32, rand : GPU.RandBuffer,
+                            buf_in : &uint32, buf_out : &uint32 )
+  var tid         = [uint32](GPU.global_tid())
+  if tid < N then
+    var rand_id = rand:rand(tid) % N
+    var val     = buf_in[tid]
+    GPU.reduce_add_uint32( &(buf_out[rand_id]), val )
+  end
+end
+safe_scatter = compile(safe_scatter)
 
 local terra reserve_test_kern( N : uint32, rand : GPU.RandBuffer,
                                buf_in : &uint32, out_count : &uint32,
@@ -106,7 +148,7 @@ local terra reserve_test_kern( N : uint32, rand : GPU.RandBuffer,
     end
   end
 end
-reserve_test_kern = GPU.simple_compile(reserve_test_kern)
+reserve_test_kern = compile(reserve_test_kern)
 
 local function reserve_test(n, N, rand, buf_in,
                             out_count, OUT_MAX, buf_out)
@@ -132,7 +174,7 @@ local terra randkeygen_kern( N : uint32, rand : GPU.RandBuffer,
     end
   end
 end
-randkeygen_kern = GPU.simple_compile(randkeygen_kern)
+randkeygen_kern = compile(randkeygen_kern)
 --[[
 local terra prefix_sum_1_kern( --N : uint32, --rand : GPU.RandBuffer,
                                N_key : uint32, count_buf : &uint32,
@@ -150,7 +192,7 @@ local terra prefix_sum_1_kern( --N : uint32, --rand : GPU.RandBuffer,
     end
   end
 end
-prefix_sum_1_kern = GPU.simple_compile(prefix_sum_1_kern)
+prefix_sum_1_kern = compile(prefix_sum_1_kern)
 --]]
 
 local merge_cache = {}
@@ -198,6 +240,7 @@ local globval = (terra()
 end)()
 print('globval... ', globval)
 
+gpu_time('unsafe_gather', unsafe_gather, N, N, randbuf, buffer, buf_out)
 gpu_time('write_rand', write_rand, N, N, randbuf, buffer)
 gpu_time('reserve_test', reserve_test, N, N, randbuf, buffer,
                                           n_out, OUTSIZE, buf_out)
@@ -242,6 +285,24 @@ gpu_time('reserve_test x 100', run_n_times, 100,
                                           n_out, OUTSIZE, buf_out)
 gpu_time('reserve_test', reserve_test, N, N, randbuf, buffer,
                                           n_out, OUTSIZE, buf_out)
+
+gpu_time('unsafe_gather', unsafe_gather, N, N, randbuf, buffer, buf_out)
+gpu_time('unsafe_gather', unsafe_gather, N, N, randbuf, buffer, buf_out)
+gpu_time('unsafe_gather x 100', run_n_times, 100,
+                          unsafe_gather, N, N, randbuf, buffer, buf_out)
+gpu_time('unsafe_gather', unsafe_gather, N, N, randbuf, buffer, buf_out)
+
+gpu_time('unsafe_scatter', unsafe_scatter, N, N, randbuf, buffer, buf_out)
+gpu_time('unsafe_scatter', unsafe_scatter, N, N, randbuf, buffer, buf_out)
+gpu_time('unsafe_scatter x 100', run_n_times, 100,
+                           unsafe_scatter, N, N, randbuf, buffer, buf_out)
+gpu_time('unsafe_scatter', unsafe_scatter, N, N, randbuf, buffer, buf_out)
+
+gpu_time('safe_scatter', safe_scatter, N, N, randbuf, buffer, buf_out)
+gpu_time('safe_scatter', safe_scatter, N, N, randbuf, buffer, buf_out)
+gpu_time('safe_scatter x 100', run_n_times, 100,
+                         safe_scatter, N, N, randbuf, buffer, buf_out)
+gpu_time('safe_scatter', safe_scatter, N, N, randbuf, buffer, buf_out)
 
 gpu_time('merge_test', merge_test, N, N, randbuf, N_key, OUTSIZE)
 gpu_time('merge_test', merge_test, N, N, randbuf, N_key, OUTSIZE)

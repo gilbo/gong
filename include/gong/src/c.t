@@ -50,24 +50,12 @@ cuda_include..
 //#include <limits.h>
 #include <math.h>
 //#include <time.h>
-
-FILE * __get_seam_c__stdout() { return stdout; }
-FILE * __get_seam_c__stdin()  { return stdin; }
-FILE * __get_seam_c__stderr() { return stderr; }
 ]]..
 sys_time
 )
 
 -- mass export the c code
 for k,v in pairs(C) do Exports[k] = v end
-
--- expose the std file handles
-local stdout = C.__get_seam_c__stdout()
-local stdin  = C.__get_seam_c__stdin()
-local stderr = C.__get_seam_c__stderr()
-Exports.stdout = stdout
-Exports.stdin  = stdin
-Exports.stderr = stderr
 
 
 -------------------------------------------------------------------------------
@@ -87,7 +75,8 @@ local assert = macro(function(test,errstr,...)
   if errstr then err = err .. errstr .. "\n" end
   return quote
     if not test then
-      C.fprintf(stderr,err,[{...}])
+      C.fflush(C.stdout)
+      C.fprintf(C.stderr, err,[{...}])
       terralib.traceback(nil)
       C.abort()
     end

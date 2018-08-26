@@ -169,7 +169,23 @@ local function batch_compile(fn_inputs)
   if V.is_PTXverbose() then
     print("Compiling GPU kernels!")
   end
-  local kernels = terralib.cudacompile(terra_fns, V.is_PTXverbose())
+  local kernels, CUDA_load_fn = terralib.cudacompile(
+    terra_fns,
+    V.is_PTXverbose(),
+    nil, -- version unspecified
+    false -- defer CUDA loading
+  )
+
+  local ERR_BUF_SIZE = 2048
+  local cudaloader = terra()
+    var error_buf : int8[ERR_BUF_SIZE]
+    var retcode = CUDA_load_fn(nil,nil,error_buf,ERR_BUF_SIZE)
+    if 0 ~= retcode then
+      C.printf("CUDA LOAD ERROR: %s\n", error_buf)
+      terralib.traceback(nil)
+      C.exit(retcode)
+    end
+  end
 
 
   -- Package the compiled code in wrapper functions
@@ -222,15 +238,15 @@ local function batch_compile(fn_inputs)
     wrapped_fns[orig_name] = wrapper
   end
 
-  return wrapped_fns
+  return wrapped_fns, cudaloader
 end
 
 local function simple_compile(fn, options)
-  local name    = fn:getname()
-  local blob    = {fn=fn}
+  local name                    = fn:getname()
+  local blob                    = {fn=fn}
   for k,v in pairs(options or {}) do blob[k] = v end
-  local kernel  = batch_compile({ [name] = blob })[name]
-  return kernel
+  local kernels, cudaloader     = batch_compile({ [name] = blob })
+  return kernels[name], cudaloader
 end
 
 Exports.batch_compile   = batch_compile
@@ -796,9 +812,10 @@ local terra init_rand_buffer( buffer : GPU_RandBuffer, seed : uint32 )
     buffer._buf[tid]  = seed
   end
 end
-init_rand_buffer    = batch_compile({
-                        init_rand_buffer = { fn = init_rand_buffer }
-                      }).init_rand_buffer
+local init_rand_buffer, load_init_rand = simple_compile(init_rand_buffer)
+--init_rand_buffer    = batch_compile({
+--                        init_rand_buffer = { fn = init_rand_buffer }
+--                      }).init_rand_buffer
 
 local terra NewRandBuffer( seed : uint32 ) : GPU_RandBuffer
   var buf : GPU_RandBuffer
@@ -827,6 +844,7 @@ end)
 
 Exports.RandBuffer      = GPU_RandBuffer
 Exports.NewRandBuffer   = NewRandBuffer
+Exports.load_init_rand  = load_init_rand
 
 
 -------------------------------------------------------------------------------

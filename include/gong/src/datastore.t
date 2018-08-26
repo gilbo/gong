@@ -1439,24 +1439,6 @@ function Wrapper:GenExternCAPI(prefix, export_funcs, gpu_on)
 
   HIERARCHY.Store           = ExtStore
 
-  -- NewStore, DestroyStore, GetError
-
-  add_func_note("/* New and Destroy Store; Error Handling */")
-  add_func('NewStore', HIERARCHY, 'NewStore',
-  terra() : ExtStore
-    var store     = alloc_ptr(CStore, 1)
-    store:init()
-    return to_hdl(store)
-  end)
-  add_func('DestroyStore', HIERARCHY, 'DestroyStore',
-  terra( hdl : ExtStore )
-    to_store(hdl):destroy()
-  end)
-  add_func('GetError', HIERARCHY, 'GetError',
-  terra( hdl : ExtStore ) : rawstring
-    return to_store(hdl):get_error()
-  end)
-  add_func_note("")
 
   -- Exported Joins & Functions
 
@@ -1496,6 +1478,40 @@ function Wrapper:GenExternCAPI(prefix, export_funcs, gpu_on)
     end
     add_func_note("")
   end
+
+
+  -- extra initialization patch in
+
+  local init_CUDA = quote end
+  if gpu_on then
+    local terra do_cuda_init()
+      escape for _,initfn in ipairs(GW._cuda_loaders) do emit quote
+        initfn()
+      end end end
+    end
+    init_CUDA = quote do_cuda_init() end
+  end
+
+  -- NewStore, DestroyStore, GetError
+
+  add_func_note("/* New and Destroy Store; Error Handling */")
+  add_func('NewStore', HIERARCHY, 'NewStore',
+  terra() : ExtStore
+    [init_CUDA]
+    var store     = alloc_ptr(CStore, 1)
+    store:init()
+    return to_hdl(store)
+  end)
+  add_func('DestroyStore', HIERARCHY, 'DestroyStore',
+  terra( hdl : ExtStore )
+    to_store(hdl):destroy()
+  end)
+  add_func('GetError', HIERARCHY, 'GetError',
+  terra( hdl : ExtStore ) : rawstring
+    return to_store(hdl):get_error()
+  end)
+  add_func_note("")
+
 
 
   -- Table Data Access
