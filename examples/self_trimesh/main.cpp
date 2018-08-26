@@ -121,18 +121,19 @@ public:
   uint32_t    tri_v[3];
   vec3        tri_pos[3];
 
-  IsctObj(Store store, uint32_t e, uint32_t t, vec3 pos)
-  : edge_id(e), tri_id(t), isct_pos(pos)
+  IsctObj(Store store, uint32_t ei, uint32_t ti, vec3 i_pos,
+                       uint32_t *e_hd, uint32_t *e_tl, tri3 *tv, vec3 *pos)
+  : edge_id(ei), tri_id(ti), isct_pos(i_pos)
   {
-    edge_v[0]   = store.Edges().tl().read(e);
-    edge_v[1]   = store.Edges().hd().read(e);
-    tri3 t_v    = store.Tris().v().read(t);
+    edge_v[0]     = e_tl[ei];
+    edge_v[1]     = e_hd[ei];
+    tri3 t_v      = tv[ti];
 
-    edge_pos[0] = store.Verts().pos().read(edge_v[0]);
-    edge_pos[1] = store.Verts().pos().read(edge_v[1]);
+    edge_pos[0]   = pos[edge_v[0]];
+    edge_pos[1]   = pos[edge_v[1]];
     for(int k=0; k<3; k++) {
       tri_v[k]    = t_v.d[k];
-      tri_pos[k]  = store.Verts().pos().read(t_v.d[k]);
+      tri_pos[k]  = pos[t_v.d[k]];
     }
   }
 };
@@ -163,9 +164,19 @@ void MeshIsctPrint( Store store )
   uint32_t* e           = store.ETcontacts().edge().readwrite_lock();
   uint32_t* t           = store.ETcontacts().tri().readwrite_lock();
   vec3*     isct_pos    = store.ETcontacts().pos().readwrite_lock();
+  //...
+  uint32_t *e_hd        = store.Edges().hd().readwrite_lock();
+  uint32_t *e_tl        = store.Edges().tl().readwrite_lock();
+  tri3     *t_v         = store.Tris().v().readwrite_lock();
+  vec3     *pos         = store.Verts().pos().readwrite_lock();
   for(uint32_t k=0; k<n_isct; k++) {
-    cout << IsctObj(store, e[k], t[k], isct_pos[k]);
+    cout << IsctObj(store, e[k], t[k], isct_pos[k], e_hd, e_tl, t_v, pos);
   }
+  store.Edges().hd().readwrite_unlock();
+  store.Edges().tl().readwrite_unlock();
+  store.Tris().v().readwrite_unlock();
+  store.Verts().pos().readwrite_unlock();
+  //...
   store.ETcontacts().edge().readwrite_unlock();
   store.ETcontacts().tri().readwrite_unlock();
   store.ETcontacts().pos().readwrite_unlock();
@@ -235,11 +246,15 @@ void MeshIsctCheck( Store store, string filename )
     set<IsctCheckItem>      found_iscts;
     uint32_t* e           = store.ETcontacts().edge().readwrite_lock();
     uint32_t* t           = store.ETcontacts().tri().readwrite_lock();
+    uint32_t* tl          = store.Edges().tl().readwrite_lock();
+    uint32_t* hd          = store.Edges().hd().readwrite_lock();
     for(uint32_t k=0; k<n_isct; k++) {
-      uint32_t e0         = store.Edges().tl().read(e[k]);
-      uint32_t e1         = store.Edges().hd().read(e[k]);
+      uint32_t e0         = tl[e[k]];
+      uint32_t e1         = hd[e[k]];
       found_iscts.insert( IsctCheckItem(t[k], e0, e1) );
     }
+    store.Edges().tl().readwrite_unlock();
+    store.Edges().hd().readwrite_unlock();
     store.ETcontacts().edge().readwrite_unlock();
     store.ETcontacts().tri().readwrite_unlock();
 
@@ -267,6 +282,16 @@ int main() {
     MeshEndLoad(store);
 
     store.find_et_iscts();
+
+    MeshIsctPrint(store);
+    MeshIsctCheck(store, "two_tri.check");
+  }
+
+  {
+    MeshLoadOFF(store, "two_tri.off");
+    MeshEndLoad(store);
+
+    store.find_et_iscts_GPU();
 
     MeshIsctPrint(store);
     MeshIsctCheck(store, "two_tri.check");

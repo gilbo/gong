@@ -3,6 +3,11 @@ local G = gong.stdlib
 
 local EPSILON         = 1.0e-7
 
+-- quick hack for control
+local USE_GPU = not not terralib.cudacompile
+print('USE GPU? ', USE_GPU)
+
+
 ------------------------------------------------------------------------------
 
 local function TriMesh()
@@ -27,14 +32,14 @@ end
 
 local Mesh            = TriMesh()
 
-local ETcontacts      = G.NewTable('ETcontacts', {
-                          join_policy = 'rebuild',
-                          -- i.e. destroy and rebuild the table
-                          -- every time a join emits into it.
-                        })
+local ETcontacts      = G.NewTable('ETcontacts')
                         :NewField( 'edge',  Mesh.Edges   )
                         :NewField( 'tri',   Mesh.Tris    )
                         :NewField( 'pos',   G.vec3f )
+
+if USE_GPU then
+  ETcontacts:setGPUSizeLinear(2, Mesh.Edges, 2, Mesh.Tris, 64)
+end
 
 ------------------------------------------------------------------------------
 
@@ -95,6 +100,7 @@ local API = G.CompileLibrary {
   joins           = {find_et_iscts},
   c_obj_file      = 'self_trimesh.o',
   cpp_header_file = 'self_trimesh.h',
+  gpu             = USE_GPU,
 }
 
 ------------------------------------------------------------------------------
