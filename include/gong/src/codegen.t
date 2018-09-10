@@ -138,10 +138,6 @@ function Context:ScanAA(name, srctype, rowA, rowB, args, code)
   end
 end
 
---function Context:Clear(dsttype)
---  return self._W:Clear(self:StorePtr(), dsttype)
---end
-
 function Context:Read(srctype, row, path)
   if self:on_GPU() then
     return self._W:GPU_Read(self:GPU_Tables_Ptr(), srctype, row, path)
@@ -188,21 +184,37 @@ function Context:Insert(dsttype, vals)
     return self._W:Insert(self:StorePtr(), dsttype, vals) end
 end
 
---function Context:PreMerge(dsttype)
---  return self._W:PreMerge(self:StorePtr(), dsttype)
---end
+function Context:PostEmit(dsttype)
+  if self:on_GPU() then
+    return self._W:GPU_PostEmit(self:StorePtr(), dsttype)
+  else return quote end end
+end
 
 function Context:PostMerge(dsttype, rm_var, rm_body)
-  return self._W:PostMerge(self:StorePtr(), dsttype, rm_var, rm_body)
+  if self:on_GPU() then
+    return self._W:GPU_PostMerge(self:StorePtr(), self:GPU_Tables_Ptr(),
+                                 dsttype, rm_var, rm_body)
+  else
+    return self._W:PostMerge(self:StorePtr(), dsttype, rm_var, rm_body)
+  end
 end
 
 function Context:MergeLookup(dsttype, row, key0, key1, body, else_vals)
-  return self._W:MergeLookup(self:StorePtr(), dsttype, row, key0, key1,
-                                                            body, else_vals)
+  if self:on_GPU() then
+    return self._W:GPU_MergeLookup(self:GPU_Tables_Ptr(), dsttype,
+                                   row, key0, key1, body, else_vals)
+  else
+    return self._W:MergeLookup(self:StorePtr(), dsttype,
+                               row, key0, key1, body, else_vals)
+  end
 end
 
 function Context:KeepRow(dsttype, row)
-  return self._W:KeepRow(self:StorePtr(), dsttype, row)
+  if self:on_GPU() then
+    return self._W:GPU_KeepRow(self:GPU_Tables_Ptr(), dsttype, row)
+  else
+    return self._W:KeepRow(self:StorePtr(), dsttype, row)
+  end
 end
 
 -------------------------------------------------------------------------------
@@ -404,9 +416,11 @@ function AST.Join:codegen(name, ctxt)
   local filter          = self.filter:codegen(ctxt)
   local doblock         = self.doblock:codegen(ctxt)
 
+  local emittbls        = {}
   local mergetbls       = {}
   for i,e in ipairs(ctxt.effects) do
-    if is_merge(e)  then mergetbls[e.dst] = true  end
+    if    is_merge(e) then mergetbls[e.dst] = true
+    elseif is_emit(e) then emittbls[e.dst]  = true end
   end
 
   local loopcall  = terra( [innerargs] ) : bool
@@ -435,6 +449,9 @@ function AST.Join:codegen(name, ctxt)
         rm_body             = mstmt.rm_body:codegen(ctxt)
       end
       emit( ctxt:PostMerge(dst, rm_var, rm_body) )
+    end
+    for dst,_ in pairs(emittbls) do
+      emit( ctxt:PostEmit(dst) )
     end
   end end
   return outerloop --, newlist{ innerloop }

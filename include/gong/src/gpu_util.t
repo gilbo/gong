@@ -41,6 +41,8 @@ local newlist       = terralib.newlist
 local WARPSIZE      = PARAMETER('WARPSIZE')
 local MAX_BLOCK_DIM = PARAMETER('GPU_MAX_BLOCK_DIM')
 
+local CUB           = require 'gong.src.cub_wrap'
+
 
 -------------------------------------------------------------------------------
 -- Threads, Grids, Blocks
@@ -100,10 +102,10 @@ local terra get_grid_dimensions(
     -- num_blocks should never be large enough to trip this assert
     -- probably something else would break first...
     C.assert(num_blocks / MAX_BLOCK_DIM < MAX_BLOCK_DIM,
-             'INTERNAL: way too threads on GPU launch')
+             'INTERNAL: way too many threads on GPU launch')
     -- fit the blocks into the squarest packing we can
     var N = [uint32] (C.ceil(C.sqrt( [double](num_blocks) )))
-    C.assert(N*N > num_blocks, 'INTERNAL')
+    C.assert(N*N >= num_blocks, 'INTERNAL')
     return { N, N, 1 }
   end
 end
@@ -249,6 +251,9 @@ local function simple_compile(fn, options)
   return kernels[name], cudaloader
 end
 
+-- collect routines in this file here
+local cudaloader_calls  = newlist()
+
 Exports.batch_compile   = batch_compile
 Exports.simple_compile  = simple_compile
 
@@ -291,7 +296,7 @@ Exports.printf = printf
 -- http://docs.nvidia.com/cuda/libdevice-users-guide/#axzz3CND85k3B
 local cuda_success, cuda_version =
   pcall(function() return cudalib.localversion() end)
-cuda_version = (cuda_success and cuda_version) or 30
+cuda_version = (cuda_success and cuda_version) or 32
 
 local externcall    = terralib.externfunction
 local libdevice     = terralib.cudahome..
@@ -314,6 +319,7 @@ local asin    = externcall("__nv_asin", double -> double)
 local tan     = externcall("__nv_tan",  double -> double)
 local atan    = externcall("__nv_atan", double -> double)
 local log     = externcall("__nv_log",  double -> double)
+local log2    = externcall("__nv_log2",  double -> double)
 local pow     = externcall("__nv_pow",  {double, double} -> double)
 local fmod    = externcall("__nv_fmod", {double, double} -> double)
 local floor   = externcall("__nv_floor", double -> double)
@@ -335,6 +341,7 @@ Exports.floor = floor
 Exports.ceil  = ceil
 Exports.fabs  = fabs
 Exports.log   = log
+Exports.log2  = log2
 Exports.pow   = pow
 Exports.fmod  = fmod
 
@@ -354,15 +361,30 @@ local terra warpballot_b32() : uint32
   return terralib.asm(terralib.types.uint32,
     "vote.ballot.b32 $0, 0xFFFFFFFF;","=r",false)
 end
+-- This instruction is now the correct safe one to use instead of warpballot
+--local terra activemask_b32() : uint32
+--  return terralib.asm(terralib.types.uint32,
+--    "activemask.b32 $0;","=r",false)
+--end
 
 -- lanes within the warp exchange values with each other
 -- Input: (1) a value to be sent to other lanes
 --        (2) the index (0-31) of which other lane to read from
 -- Output: the value sent by the indexed lane
-local terra shuffle_index_b32( input : uint32, idx : uint32 ) : uint32
+-- old unsynced version is unsafe
+local terra shuffle_index_b32(
+  input : uint32, idx : uint32, membermask : uint32 -- ignore last arg
+) : uint32
   return terralib.asm(terralib.types.uint32,
     "shfl.idx.b32 $0, $1, $2, 0x1F;","=r,r,r",false,input,idx)
 end
+--local terra shuffle_index_b32(
+--  input : uint32, idx : uint32, membermask : uint32
+--) : uint32
+--  return terralib.asm(terralib.types.uint32,
+--    "shfl.sync.idx.b32 $0, $1, $2, 0x1F $3;","=r,r,r,r",
+--    false,input,idx,membermask)
+--end
 
 -- input:   a bit-mask
 -- output:  the number of set (=1) bits in the mask
@@ -816,6 +838,7 @@ local init_rand_buffer, load_init_rand = simple_compile(init_rand_buffer)
 --init_rand_buffer    = batch_compile({
 --                        init_rand_buffer = { fn = init_rand_buffer }
 --                      }).init_rand_buffer
+cudaloader_calls:insert(load_init_rand)
 
 local terra NewRandBuffer( seed : uint32 ) : GPU_RandBuffer
   var buf : GPU_RandBuffer
@@ -844,7 +867,6 @@ end)
 
 Exports.RandBuffer      = GPU_RandBuffer
 Exports.NewRandBuffer   = NewRandBuffer
-Exports.load_init_rand  = load_init_rand
 
 
 -------------------------------------------------------------------------------
@@ -924,6 +946,209 @@ end
 
 Exports.NewReductionObj     = NewReductionObj
 
+
+-------------------------------------------------------------------------------
+-- Sorting on the GPU
+-------------------------------------------------------------------------------
+
+
+-- hack for now...
+local sort_tmp_alloc_Nseg   = global(uint64, 0, 'sort_tmp_alloc_Nseg')
+local sort_tmp_alloc_N      = global(uint64, 0, 'sort_tmp_alloc_N')
+local sort_tmp_alloc_B      = global(uint64, 0, 'sort_tmp_alloc_B')
+local sort_tmp_alloc_B_all  = global(uint64, 0, 'sort_tmp_alloc_B_all')
+local sort_tmp_buffer       = global(&opaque, nil, 'sort_tmp_buffer')
+
+local terra extra_space(N : uint64)
+  return 512*((N*4 - 1)/512 + 1)
+end
+local terra max_space(N : uint64, Nseg : uint64)
+  var n_bytes0 : uint64 = 0
+  var n_bytes1 : uint64 = 0
+  var n_bytes2 : uint64 = 0
+  cuda_check( CUB.cub_wrap_get_sort64_bytes(N, &n_bytes0) )
+  cuda_check( CUB.cub_wrap_get_prefix32_bytes(N, &n_bytes1) )
+  cuda_check( CUB.cub_wrap_get_seg_sort32_bytes(N, Nseg, &n_bytes2))
+  var maxB = n_bytes0
+  if n_bytes1 > maxB then maxB = n_bytes1 end
+  if n_bytes2 > maxB then maxB = n_bytes2 end
+  return maxB
+end
+
+local terra reserve_space(N : uint64, Nseg : uint64)
+  if N > sort_tmp_alloc_N or Nseg > sort_tmp_alloc_Nseg then
+    sort_tmp_alloc_N    = N
+    sort_tmp_alloc_Nseg = Nseg
+    sort_tmp_alloc_B    = max_space(N, Nseg)
+    --align maxB...
+    var allB            = 512*((sort_tmp_alloc_B - 1)/512 + 1)
+                        + 2*extra_space(N)
+    sort_tmp_alloc_B_all = allB
+    if sort_tmp_buffer ~= nil then
+      gpu_free(sort_tmp_buffer)
+    end
+    sort_tmp_buffer = gpu_malloc(sort_tmp_alloc_B_all)
+  end
+end
+
+local terra ALLOC_EXTRAu32(N : uint64) : {&uint32, &uint32}
+  var end_ptr = [&uint8](sort_tmp_buffer) + sort_tmp_alloc_B_all
+  var nB      = extra_space(N)
+  var X       = end_ptr - nB
+  var Y       = X - nB
+  return [&uint32](X), [&uint32](Y)
+end
+
+local terra sort64(N : uint64, maxBits : int32,
+                   key_in : &uint64, key_out : &uint64,
+                   val_in : &uint32, val_out : &uint32
+)
+  reserve_space(N,1)
+  cuda_check( CUB.cub_wrap_do_sort64( N, maxBits,
+                                      sort_tmp_buffer, sort_tmp_alloc_B,
+                                      key_in, key_out, val_in, val_out ) )
+end
+local terra sort32(N : uint64, maxBits : int32,
+                   key_in : &uint32, key_out : &uint32,
+                   val_in : &uint32, val_out : &uint32
+)
+  reserve_space(N,1)
+  cuda_check( CUB.cub_wrap_do_sort32( N, maxBits,
+                                      sort_tmp_buffer, sort_tmp_alloc_B,
+                                      key_in, key_out, val_in, val_out ) )
+end
+local terra seg_sort32( N : uint64, maxBits : int32,
+                        Nseg : uint64, segments : &uint32,
+                        key_in : &uint32, key_out : &uint32,
+                        val_in : &uint32, val_out : &uint32
+)
+  reserve_space(N,Nseg)
+  cuda_check(CUB.cub_wrap_do_seg_sort32(
+    N, maxBits, sort_tmp_buffer, sort_tmp_alloc_B,
+    Nseg, segments, key_in, key_out, val_in, val_out
+  ))
+end
+
+Exports.sort32      = sort32
+Exports.sort64      = sort64
+Exports.seg_sort32  = seg_sort32
+
+
+
+local terra prefix32(N : uint64, buf_in : &uint32, buf_out : &uint32)
+  reserve_space(N,1)
+  cuda_check( CUB.cub_wrap_do_prefix32( N, sort_tmp_buffer, sort_tmp_alloc_B,
+                                        buf_in, buf_out ) )
+end
+
+Exports.prefix32 = prefix32
+
+--
+
+-- Woah, this makes a big difference in execution time
+local terra read_nc_uint32(address : &uint32) : uint32
+  return terralib.asm(terralib.types.uint32,
+    "ld.global.nc.u32 $0, [$1];","=r,l",true,address)
+end
+local terra sort_helper0( N : uint64, idx : &uint32,
+                          key1_in : &uint32, key1_out : &uint32
+)
+  var tid = [uint32](global_tid())
+  if tid < N then
+    var i           = idx[tid]
+    -- gather key1 values
+    key1_out[tid]   = read_nc_uint32( key1_in + i )
+  end
+end
+local terra gen_segments( Nseg : int32, N : uint64,
+                          key0 : &uint32, seg_out : &uint32
+)
+  var tid = [uint32](global_tid())
+  if tid < Nseg then
+    -- special case: empty key array
+    if N == 0 then seg_out[tid] = 0; return end
+    
+    -- usual case
+    var id          = tid
+    -- binary search for the start of segment id
+    var lo, hi      = 0, N
+    -- loop invariant:
+    --      (key0[lo] <  id  or  lo == 0)
+    --  and (key0[hi] >= id  or  hi == N)
+    while lo+1 < hi do -- narrow down till lo+1 == hi
+      var mid       = (hi+lo)/2
+      var mval      = key0[mid]
+      if id > mval then
+        lo = mid
+      else
+        hi = mid
+      end
+    end
+    if lo == 0 then -- in this case, we might need to decrement hi
+      if id <= key0[0] then hi = 0 end
+    end
+    seg_out[id] = hi
+  end
+end
+local sort_helper0, sort_helper0_init = simple_compile(sort_helper0)
+local gen_segments, gen_segments_init = simple_compile(gen_segments)
+cudaloader_calls:insert(sort_helper0_init)
+cudaloader_calls:insert(gen_segments_init)
+--
+
+-- sorting according to a double-key
+local terra sort_32_32( N : uint64, maxKey : int32,
+                        key0_in : &uint32, key0_out : &uint32,
+                        key1_in : &uint32, key1_out : &uint32,
+                        seg_out  : &uint32,
+                        idxvals : &uint32 -- should be 0, 1, .., N to begin
+)
+  reserve_space(N, maxKey)
+  var idx_tmp, key_tmp      = ALLOC_EXTRAu32(N)
+  var maxBits               = [int]( C.ceil( C.log2(maxKey) ) )
+  -- sort on lower order key first
+  sort32( N, maxBits, key1_in, key1_out, idxvals, idx_tmp )
+  -- and gather the key0 results
+  sort_helper0( N, N, idx_tmp, key0_in, key1_out )
+  sort32( N, maxBits, key1_out, key0_out, idx_tmp, idxvals )
+  sort_helper0( N, N, idxvals, key1_in, key1_out )
+  gen_segments( maxKey, maxKey, N, key0_out, seg_out )
+end
+--]]
+
+Exports.sort_32_32    = sort_32_32
+Exports.gen_segments  = gen_segments
+
+
+local terra datashuffle_helper( N   : uint64,  n_bytes : uint32,
+                                idx : &uint32,
+                                din_ : &opaque, dout_ : &opaque )
+  var tid         = [uint32](global_tid())
+  var din         = [&uint32](din_)
+  var dout        = [&uint32](dout_)
+  var N_u32       = n_bytes >> 2
+  if tid < N*N_u32 then
+    var off       = tid % N_u32
+    var write_i   = tid / N_u32
+    var read_i    = idx[write_i]
+    var val       = din[N_u32 * read_i + off]
+    dout[N_u32 * write_i + off] = val
+  end
+end
+local datashuffle_helper,datashuffle_init = simple_compile(datashuffle_helper)
+cudaloader_calls:insert(datashuffle_init)
+
+local terra datashuffle( N   : uint64,  n_bytes : uint32,
+                         idx : &uint32,
+                         din : &opaque, dout : &opaque )
+  C.assert(n_bytes % 4 == 0,
+           'INTERNAL: simplifying; assuming 4-byte values on gpu')
+  var n_thread    = N * (n_bytes / 4)
+  datashuffle_helper(n_thread, N, n_bytes, idx, din, dout)
+end
+
+Exports.datashuffle   = datashuffle
+
 -------------------------------------------------------------------------------
 -- Write Buffer Control
 -------------------------------------------------------------------------------
@@ -933,16 +1158,16 @@ local reserve_idx = macro(function(tid, write_idx_ptr)
   assert(write_idx_ptr:gettype() == &uint32, 'INTERNAL: bad ptr type')
   return quote
     -- first, figure out which threads are running this code
-    var ballot        = warpballot_b32()
+    var activemask    = warpballot_b32() --activemask_b32()
     -- how many threads is that?
-    var write_count   = popc_b32(ballot)
+    var write_count   = popc_b32(activemask)
     -- this mask is 0 at this thread, and 1 at every lower-order bit
     var lower_mask    = [uint32]( ([uint64](1) << (tid%32)) - 1 )
     -- the number of lower-id active threads
-    var active_lower  = popc_b32(ballot and lower_mask)
+    var active_lower  = popc_b32(activemask and lower_mask)
     -- even if this thread isn't the leader, figure out which one is
     -- do this by finding the lowest-order 1 bit in the ballot
-    var leader_id     = clz_b32(brev_b32(ballot))
+    var leader_id     = clz_b32(brev_b32(activemask))
     var is_leader     = (active_lower == 0)
 
     var start_idx : uint32 = 0
@@ -950,20 +1175,57 @@ local reserve_idx = macro(function(tid, write_idx_ptr)
       start_idx       = atomic_add_uint32(write_idx_ptr, write_count)
     end
     -- scatter the starting value to all active threads
-    start_idx         = shuffle_index_b32(start_idx, leader_id)
+    start_idx         = shuffle_index_b32(start_idx, leader_id, activemask)
   in
     -- finally, return an index telling the thread where to write to
     start_idx + active_lower
   end
 end)
 
+-- recipe decrements the value once for every thread that executes it
+-- but coallesces those decrements for efficiency purposes
+local warp_dec_32 = macro(function(tid, write_idx_ptr)
+  assert(write_idx_ptr:gettype() == &uint32, 'INTERNAL: bad ptr type')
+  return quote
+    -- first, figure out which threads are running this code
+    var activemask    = warpballot_b32() --activemask_b32()
+    -- how many threads is that?
+    var dec_count     = popc_b32(activemask)
+    -- this mask is 0 at this thread, and 1 at every lower-order bit
+    var lower_mask    = [uint32]( ([uint64](1) << (tid%32)) - 1 )
+    -- the number of lower-id active threads
+    var active_lower  = popc_b32(activemask and lower_mask)
+    -- determine whether this thread is the leader
+    -- even if this thread isn't the leader, figure out which one is
+    -- do this by finding the lowest-order 1 bit in the ballot
+    --var leader_id     = clz_b32(brev_b32(activemask))
+    var is_leader     = (active_lower == 0)
+
+    if is_leader then -- decrement on behalf of the warp
+      reduce_add_uint32(write_idx_ptr, -dec_count)
+    end
+  end
+end)
+
+
+
 Exports.reserve_idx   = reserve_idx
+Exports.warp_dec_32   = warp_dec_32
 
 
 
 
+-------------------------------------------------------------------------------
+-- Collection of CUDA loading routines...
+-------------------------------------------------------------------------------
 
+local terra init_cudakernels() escape
+  for _,kf in ipairs(cudaloader_calls) do emit quote
+    kf()
+  end end
+end end
 
+Exports.init_cudakernels  = init_cudakernels
 
 
 

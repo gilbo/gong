@@ -33,6 +33,8 @@ local vector        = StdContainers.vector
 local PARAMETER     = (require 'gong.src.params').get_param
 local verbosity     = require('gong.src.verbosity').get_verbosity()
 
+local INDEX_REBUILD_FRACTION = PARAMETER('INDEX_REBUILD_FRACTION')
+
 local GPU_ENABLED   = PARAMETER('GPU_ENABLED')
 local GPU_DataStore = require 'gong.src.gpu_datastore'
 
@@ -85,14 +87,13 @@ local newlist       = terralib.newlist
       <col_name_0>    : &<type_0>
       <col_name_1>    : &<type_1>
       ...
-      // IF SETUP FOR MERGING/PRIMARY KEY
-      is_live         : &bool
     }
     If this table is setup for individual row deletion too, then...
     CTable_i {
       n_alloc         : Size_Type_i
       n_row           : Size_Type_i
       free_list       : Key_Type_i
+      is_compact      : bool
       (columns as before; one of these is used to hide the free-list)
       is_live_column  : &bool
     }
@@ -343,6 +344,21 @@ local function GeneralMergeIndex(Index, IndexName)
       end
     end
 
+    function CIdx.methods.ScanSorted(self, store, k0, k1, dst, body)
+      return quote
+        var SIZE          = store.[T0name]._size
+        var [dst]
+        for [k0] = 0, SIZE do
+          var v           = self._keys[k0]
+          for i=0,v:size() do
+            var [k1]      = v(i).k1
+            var [dst]     = &(v(i).dst)
+            [body]
+          end
+        end
+      end
+    end
+
     terra CIdx:rebuild( store : &CStore )
       self:clear(store)
       var ALLOC           = store.[Dname]._n_alloc
@@ -386,6 +402,8 @@ local function GenerateWrapperStructs(prefix, W)
         { '_n_alloc',     SizeT },
         { '_n_rows',      SizeT },
         { '_free_list',   KeyT },
+        { '_is_compact',  bool },
+        { '_is_sorted',   bool },
       }
       assert(#Table:primary_key() == 2, 'expect primary keys')
       local k0type          = Table:primary_key()[1]:type():terratype()
@@ -464,6 +482,7 @@ local function InstallStructMethods(prefix, W)
   -- Per-Table Methods
   for iTable,Table in ipairs(W._tables) do
     local CTable            = W._c_cache[Table].ctype
+    local KeyT              = Table:_INTERNAL_terra_key_type()
     local SizeT             = Table:_INTERNAL_terra_size_type()
     local MAXsize           = Table:_INTERNAL_terra_MAX_SIZE()
     local indices           = W._c_cache[Table].parallel_indices
@@ -471,18 +490,39 @@ local function InstallStructMethods(prefix, W)
     if Table._is_live then
       CTable.methods.n_rows = macro(function(self) return `self._n_rows end)
       CTable.methods.n_alloc = macro(function(self) return `self._n_alloc end)
+      CTable.methods.is_compact = macro(function(self)
+                                          return `self._is_compact end)
+      CTable.methods.is_sorted = macro(function(self)
+                                          return `self._is_sorted end)
 
       assert(#indices == 0, 'INTERNAL: expect no indices from is_live table')
-      local f0              = Table:primary_key()[1]
-      local f0name          = W._c_cache[f0].name
+      local f0, f1          = unpack(Table:primary_key())
+      local f0name, f1name  = W._c_cache[f0].name, W._c_cache[f1].name
+      local Tf0, Tf1        = f0:type():terratype(), f1:type():terratype()
 
+      local indices         = W._c_cache[Table].dst_indices
+      assert(#indices == 1, 'INTERNAL: expect exactly 1 index')
+      local Index           = indices[1]
+      local CIndex          = W._c_cache[Index].ctype
+      local iname           = W._c_cache[Index].name
+
+      local is_live_f = macro(function( store, k )
+        return W:_INTERNAL_is_live_read(store, T.row(Table), k)
+      end)
       terra CTable:alloc_more( store : &CStore, newalloc : SizeT )
         var this              = self
         var oldalloc          = self._n_alloc
         self._n_alloc         = newalloc
         assert(newalloc > oldalloc, 'INTERNAL: no need to alloc_more')
-        assert(self._free_list == oldalloc,
-               'INTERNAL: expected empty free-list')
+        if self._free_list ~= oldalloc then
+          var last_row        = oldalloc-1
+          assert(not is_live_f(store,last_row),
+                 ['INTERNAL: expect empty free-list OR '..
+                  'that the last alloced row is free'])
+          assert((this.[f0name])[last_row] == oldalloc,
+                 ['INTERNAL: expect last alloced row to be the end of '..
+                  'the free list'])
+        end
 
         -- basic reallocation of memory arrays
         escape for iField,Field in ipairs(Table:_INTERNAL_fields()) do
@@ -509,7 +549,120 @@ local function InstallStructMethods(prefix, W)
           (self.[f0name])[k] = k+1
           [ W:_INTERNAL_set_dead(store, T.row(Table), k) ]
         end
+        -- and now it's de-facto compact again
+        self._is_compact      = true
+        self._is_sorted       = true
       end
+      terra CTable:compact( store : &CStore )
+        var N_LIVE            = self._n_rows
+        -- strategy: scan the live field until we find the
+        --           last live row.  We'll work back from there
+        var live_count        = 0
+        var live_bound        = 0
+        while live_count < N_LIVE do
+          var live = is_live_f(store, live_bound)
+          if live then live_count = live_count + 1 end
+          live_bound = live_bound + 1
+        end
+        -- short-circuit
+        if live_bound - N_LIVE == 0 then
+          self._is_compact = true
+          return
+        end
+
+        var update_idx  = ([double](N_LIVE)/live_bound)
+                              >= INDEX_REBUILD_FRACTION
+
+        -- do the row copies we need in order to compact
+        var n_to_move         = live_bound - N_LIVE
+        var write             = 0
+        var read              = live_bound - 1
+        while n_to_move > 0 do
+          -- start by finding a row to copy and an empty slot to copy
+          -- it to
+          while is_live_f(store, write)    do write = write + 1 end
+          while not is_live_f(store, read) do read = read - 1 end
+          -- copy row
+          escape for iField,Field in ipairs(Table:_INTERNAL_fields()) do
+            local fname       = W._c_cache[Field].name
+            emit quote
+              (self.[fname])[write] = (self.[fname])[read]
+            end
+          end end
+          -- Make sure to set the written row as live
+          [ W:_INTERNAL_set_live(store, T.row(Table), write) ]
+          -- and repair the index incrementally
+          var k0, k1          = self.[f0name][read], self.[f1name][read]
+          var found, ptr      = store.[iname]:lookup(k0,k1)
+          assert(found, 'INTERNAL: bad index update on compaction')
+          @ptr                = write
+          -- and adjust all the pointers to continue
+          write               = write + 1
+          read                = read - 1
+          n_to_move           = n_to_move - 1
+        end
+
+        -- finally, we need to flush out the dead space
+        var ALLOC             = self._n_alloc
+        self._free_list       = N_LIVE
+        for k=N_LIVE, ALLOC do
+          (self.[f0name])[k] = k+1
+          [ W:_INTERNAL_set_dead(store, T.row(Table), k) ]
+        end
+        -- and now the storage is compact again
+        self._is_compact      = true
+        self._is_sorted       = false
+      end
+      terra CTable:sort( store : &CStore )
+        assert(self:is_compact(), 'INTERNAL: must be compact to sort')
+        var N_ALLOC           = self._n_alloc
+        -- strategy: create new arrays to dump the re-ordered rows into
+        --           and get the new locations by scanning over the index
+        var write : KeyT      = 0
+        var read : KeyT       = 0
+        escape
+          local k0, k1        = symbol(Tf0,'k0'), symbol(Tf1,'k1')
+          local dst           = symbol(&KeyT)
+          -- collect actions to perform for each field
+          local finits        = newlist()
+          local fcopies       = newlist()
+          local fswaps        = newlist()
+          for iField,Field in ipairs(Table:_INTERNAL_fields()) do
+            if Field ~= f0 and Field ~= f1 then
+              local fname     = W._c_cache[Field].name
+              local ftype     = Field:type():terratype()
+              local fsym      = symbol(&ftype, fname..'_newptr')
+              finits:insert(quote
+                var [fsym]    = alloc_ptr(ftype, N_ALLOC)
+              end)
+              fcopies:insert(quote
+                [fsym][write] = self.[fname][read]
+              end)
+              fswaps:insert(quote
+                C.free(self.[fname])
+                self.[fname]  = [fsym]
+              end)
+            end
+          end
+          -- do the loop that actually copies...
+          emit quote [finits] end
+          emit(CIndex.methods.ScanSorted((`store.[iname]), store, k0,k1,dst,
+          quote
+            read              = @dst
+            @dst              = write
+            -- note that we can overwrite the existing key arrays
+            -- as a special case because we can use the index as a
+            -- compressed reference for their values
+            self.[f0name][write]  = k0
+            self.[f1name][write]  = k1
+            [fcopies]
+            write             = write + 1
+          end))
+          emit quote [fswaps] end
+        end
+        self._is_sorted       = true
+      end
+
     else
       CTable.methods.size   = macro(function(self) return `self._size end)
 
@@ -583,6 +736,8 @@ local function InstallStructMethods(prefix, W)
           this.[tblname]._n_alloc     = MIN_INIT_SIZE
           this.[tblname]._n_rows      = 0
           this.[tblname]._free_list   = 0
+          this.[tblname]._is_compact  = true -- empty is compact
+          this.[tblname]._is_sorted   = true
         end
       else
         emit quote
@@ -790,18 +945,19 @@ function Wrapper:_INTERNAL_NewRow(storeptr, tbltype)
     local f0name        = W._c_cache[f0].name
 
     return quote
-      var row           = tbl_expr._free_list
+      var row             = tbl_expr._free_list
       if row == tbl_expr:n_alloc() then -- empty free list case
         tbl_expr:alloc_more(storeptr, tbl_expr:n_alloc() * 2)
       end
-      tbl_expr._n_rows  = tbl_expr._n_rows + 1
+      tbl_expr._n_rows    = tbl_expr._n_rows + 1
+      tbl_expr._is_sorted = false
 
       tbl_expr._free_list = (tbl_expr.[f0name])[row]
       [ W:_INTERNAL_set_live(storeptr, tbltype, row) ]
     in row end
   else
     return quote
-      var row           = tbl_expr:size()
+      var row             = tbl_expr:size()
       tbl_expr:resize(storeptr, row+1)
     in row end
   end
@@ -823,6 +979,8 @@ function Wrapper:_INTERNAL_DeleteRow(storeptr, tbltype, rowval)
     tbl_expr._free_list       = row
     [ W:_INTERNAL_set_dead(storeptr, tbltype, row) ]
     tbl_expr._n_rows          = tbl_expr._n_rows - 1
+    tbl_expr._is_compact      = false -- not compact now
+    tbl_expr._is_sorted       = false
   end
 end
 
@@ -833,8 +991,6 @@ function Wrapper:_INTERNAL_ReserveRows(storeptr, tbltype, n_rows)
 
   assert(Table._is_live, 'INTERNAL: expect is_live field for deletions')
   assert(#Table:primary_key() == 2, 'INTERNAL: expect 2 primary keys')
-  local f0              = Table:primary_key()[1]
-  local f0name          = W._c_cache[f0].name
 
   return quote
     tbl_expr:clear(storeptr)
@@ -849,6 +1005,30 @@ function Wrapper:_INTERNAL_ReserveRows(storeptr, tbltype, n_rows)
       [ W:_INTERNAL_set_live(storeptr, tbltype, k) ]
     end
     tbl_expr._n_rows    = N
+    -- this should result in a compact table
+    tbl_expr._is_compact  = true
+    tbl_expr._is_sorted   = false
+  end
+end
+
+function Wrapper:_INTERNAL_EnsureCompact(storeptr, tbltype)
+  local W               = self
+  local Table, tblname  = unpack_tbl(self, tbltype)
+  assert(Table._is_live, 'INTERNAL: only call EnsureCompact on mergables')
+  local tbl_expr        = `storeptr.[tblname]
+  return quote
+    if not tbl_expr:is_compact() then tbl_expr:compact(storeptr) end
+  end
+end
+
+function Wrapper:_INTERNAL_EnsureSorted(storeptr, tbltype)
+  local W               = self
+  local Table, tblname  = unpack_tbl(self, tbltype)
+  assert(Table._is_live, 'INTERNAL: only call EnsureSorted on mergables')
+  local tbl_expr        = `storeptr.[tblname]
+  return quote
+    [ W:_INTERNAL_EnsureCompact( storeptr, tbltype ) ]
+    if not tbl_expr:is_sorted() then tbl_expr:sort(storeptr) end
   end
 end
 
@@ -872,7 +1052,9 @@ end
 for _,nm in ipairs({'ScanAA','ScanAB',
                     'Read','Write','Reduce',
                     'ReadGlobal','ReduceGlobal',
-                    'Insert'})
+                    'Insert',
+                    'PostEmit', 'PostMerge',
+                    'MergeLookup', 'KeepRow', })
 do
   Wrapper['GPU_'..nm] = function(self, ...)
     local fn = self._gpu_wrapper[nm]
@@ -1383,7 +1565,11 @@ function Wrapper:PrepareData(storeptr, for_gpu, effects)
     for dst,_ in pairs(emittbls)  do
       code:insert( W._gpu_wrapper:Clear(storeptr, dst, for_gpu) )
     end
-    assert(next(mergetbls) == nil, 'INTERNAL: unexpected merge -- unhandled')
+    -- if we're going to merge into a table, then
+    -- prepare the merge...
+    for dst,_ in pairs(mergetbls) do
+      code:insert( W._gpu_wrapper:PreMerge(storeptr, dst, for_gpu) )
+    end
 
     -- if we are clearing any tables on the gpu,
     -- then we need different finalization behavior...
@@ -1544,12 +1730,22 @@ function Wrapper:GenExternCAPI(prefix, export_funcs, gpu_on)
     if Table._is_live then
       add_func('GetNRows_'..tname, HIERARCHY.tables[tname], 'GetNRows',
       terra( hdl : ExtStore ) : SizeT
+        [ (gpu_on and GW:CPU_SizeRefresh(`to_store(hdl), T.row(Table)))
+                  or {} ]
         return to_store(hdl).[tbl_cname]:n_rows()
       end)
       add_func('GetNAlloc_'..tname, HIERARCHY.tables[tname], 'GetNAlloc',
       terra( hdl : ExtStore ) : SizeT
+        [ (gpu_on and GW:CPU_SizeRefresh(`to_store(hdl), T.row(Table)))
+                  or {} ]
         return to_store(hdl).[tbl_cname]:n_alloc()
       end)
+      --add_func('MakeCompact_'..tname, HIERARCHY.tables[tname],
+      --         'MakeCompact',
+      --terra( hdl : ExtStore )
+      --  var store = to_store(hdl)
+      --  [ W:_INTERNAL_EnsureCompact(store, T.row(Table)) ]
+      --end)
     else
       add_func('GetSize_'..tname, HIERARCHY.tables[tname], 'GetSize',
       terra( hdl : ExtStore ) : SizeT
@@ -1600,6 +1796,7 @@ function Wrapper:GenExternCAPI(prefix, export_funcs, gpu_on)
         local Index     = indices[1]
         local iname     = W._c_cache[Index].name
         emit quote  store.[iname]:rebuild(store)  end
+        emit( GW:CPU_index_rebuild(store, Index) )
       end end
     end)
 
@@ -1632,6 +1829,18 @@ function Wrapper:GenExternCAPI(prefix, export_funcs, gpu_on)
 
       H_FIELDS[fname]       = {}
       local IS_LIVE         = (fname == 'is_live')
+      local IS_IDX_KEY      = false
+      local iname           = nil
+      local Index           = nil
+      if Table._is_live then
+        local f0,f1         = unpack(Table:primary_key())
+        IS_IDX_KEY          = (Field == f0  or  Field == f1)
+
+        local indices       = W._c_cache[Table].dst_indices
+        assert(#indices == 1, 'INTERNAL: expect exactly 1 index')
+        Index               = indices[1]
+        iname               = W._c_cache[Index].name
+      end
 
       -- Per-Row Point Access
 
@@ -1676,12 +1885,19 @@ function Wrapper:GenExternCAPI(prefix, export_funcs, gpu_on)
           var store = to_store(hdl)
           do [ (gpu_on and GW:PrepareReadWrite(store, T.row(Table),
                                                fname, false) ) or {} ] end
+          escape if IS_IDX_KEY then emit quote
+            store.[tbl_cname]._is_sorted = false
+          end end end
           return store.[tbl_cname].[f_cname]
         end)
         add_func('ReadWriteUnLock_'..tname..'_'..fname,
                  H_FIELDS[fname], 'ReadWriteUnlock',
         terra( hdl : ExtStore )
-          -- no-op
+          var store = to_store(hdl)
+          escape if IS_IDX_KEY then emit quote
+            store.[iname]:rebuild(store)
+            [ GW:CPU_index_rebuild(store, Index) ]
+          end end end
         end)
       end
 

@@ -18,10 +18,13 @@ local default_gpu_on = not not (terralib.cudacompile)
 local default_params = {
   -- expect to be modified parameters
   ['GPU_ENABLED']       = default_gpu_on,
+  ['DEBUG_GPU_MEM']     = false,
 
   -- potentially modifiable parameters
-  ['GPU_BLOCK_SIZE']    = 64,
+  ['GPU_BLOCK_SIZE']    = 128,
   ['GPU_RAND_BUF_SIZE'] = 1e6, -- 1 million * 4 bytes = 4MB storage
+  ['INDEX_REBUILD_FRACTION']  = 0.8,
+  ['RESIZE_FRACTION']   = 0.25,
 
   -- Constants that should almost certainly not be changed
   ['WARPSIZE']          = 32,
@@ -33,7 +36,10 @@ for k,v in pairs(default_params) do param_table[k] = v end
 
 
 function Exports.get_param(key)
-  return assert(param_table[key])
+  local val = param_table[key]
+  assert(val ~= nil, 'INTERNAL: expected parameter '..
+                     tostring(key)..' but it was undefined')
+  return val
 end
 
 function Exports.set_param(key,val)

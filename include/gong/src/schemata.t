@@ -80,14 +80,15 @@ DataField.__index     = DataField
 function DataField:__newindex(key, val)
   error("Cannot assign members to Data Field object", 2) end
 
-local function mark_ref(src, typ)
+local function mark_ref(src, typ, dsts)
   if typ:is_row() then
     typ:table()._reffed_by[src] = true
+    if dsts then dsts[typ:table()] = true end
   elseif typ:is_tensor() then
-    mark_ref(src, typ:basetype())
+    mark_ref(src, typ:basetype(), dsts)
   elseif typ:is_record() then
     for _,f in ipairs(typ.fields) do
-      mark_ref(src, f.type)
+      mark_ref(src, f.type, dsts)
     end
   end
 end
@@ -100,9 +101,13 @@ local function NewFieldInternal(params)
     _type     = assert(params.type),
     _parent   = assert(params.parent),
     _id       = assert(params.id),
+    _cpu_only = params.cpu_only
   }, DataField)
 
-  if f:type():has_rows() then mark_ref(f:table(), f:type()) end
+  if f:type():has_rows() then
+    local dsts = {}
+    mark_ref(f:table(), f:type(), dsts)
+  end
 
   return f
 end
@@ -276,6 +281,10 @@ end
 function DataTable:_INTERNAL_fields()
   return self._fields:copy()
 end
+function DataTable:_INTERNAL_GPU_fields()
+  return self._fields:filter(function(f)
+                                return not f:_INTERNAL_Cpu_Only() end)
+end
 
 function DataTable:_INTERNAL_ActivateMergeIndex()
   self:complete()
@@ -292,7 +301,8 @@ function DataTable:_INTERNAL_ActivateMergeIndex()
       name      = 'is_live',
       type      = T.bool,
       parent    = self,
-      id        = #self._fields + 1
+      id        = #self._fields + 1,
+      cpu_only  = true,
     }
     rawset(self, '_is_live', live_field)
     self._fields:insert(live_field)
@@ -362,6 +372,9 @@ function DataField:type()         return self._type           end
 function DataField:id()           return self._id             end
 function DataField:table()        return self._parent         end
 
+function DataField:_INTERNAL_Cpu_Only()
+  return self._cpu_only
+end
 
 function DataIndex:name()         return self._name               end
 function DataIndex:fullname()

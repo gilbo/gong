@@ -15,6 +15,9 @@ TODO: have an actual hello world program that can be run.
 
 ## More Details
 
+### CUDA Support
+Gong includes support for generating CUDA code.  However, the Terra installation must first have CUDA support.
+
 TODO: a Manual
 
 ## Examples

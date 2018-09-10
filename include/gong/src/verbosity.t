@@ -37,3 +37,7 @@ end
 function Exports.is_PTXverbose()
 	return Exports.get_verbosity() > 2
 end
+
+function Exports.is_PTXverbose()
+	return Exports.get_verbosity() > 2
+end

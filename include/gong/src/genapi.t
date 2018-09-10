@@ -133,14 +133,23 @@ function Exports.CompileLibrary(args)
     for _,eff in ipairs(j:_INTERNAL_geteffects()) do
       local elastic_tbl = nil
       if E.Merge.check(eff) then
+        if #( eff.dst:table():reflist() ) > 0 then
+          local src = eff.dst:table():reflist()[1]
+          error('cannot merge into a table that is being referenced:\n'..
+                "  '"..eff.dst:table():name().."' is referenced by '"..
+                src:name().."'")
+        end
         elastic_tbl = eff.dst
         eff.dst:table():_INTERNAL_ActivateMergeIndex()
-        if args.gpu then
-          error('merge on the GPU is currently unsupported', 2)
-        end
       elseif E.MergeRemove.check(eff) then
         eff.dst:table():_INTERNAL_ActivateMergeRemovals()
       elseif E.Emit.check(eff) then
+        if #( eff.dst:table():reflist() ) > 0 then
+          local src = eff.dst:table():reflist()[1]
+          error('cannot emit into a table that is being referenced:\n'..
+                "  '"..eff.dst:table():name().."' is referenced by '"..
+                src:name().."'")
+        end
         elastic_tbl = eff.dst
       end
 
@@ -275,6 +284,7 @@ function Exports.GenTerraAPI(hierarchy)
     else
       terra TWrap:get_n_rows() return TBL.GetNRows(self.store) end
       terra TWrap:get_n_alloc() return TBL.GetNAlloc(self.store) end
+      --terra TWrap:make_compact() TBL.MakeCompact(self.store) end
     end
     local loadarg         = symbol(TBL.BeginLoad:gettype().parameters[2])
     terra TWrap:beginload( [loadarg] )
@@ -640,6 +650,7 @@ function Exports.GenCppAPI(prefix, structs, funcs, hierarchy)
     else
       CPP:insert( tmethod('    ', 'n_rows', TBL.GetNRows) )
       CPP:insert( tmethod('    ', 'n_alloc', TBL.GetNAlloc) )
+      --CPP:insert( tmethod('    ', 'make_compact', TBL.MakeCompact) )
     end
     CPP:insertall {
       tmethod('    ', 'beginload', TBL.BeginLoad),

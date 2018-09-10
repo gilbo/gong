@@ -15,6 +15,8 @@ while i<=#arg do
     options.help = true
   elseif arg[i] == '--coverage' then
     options.coverage = true
+  elseif arg[i] == '--debug_gpu_mem' then
+    options.DEBUG_GPU_MEM = true
   else break end
   i = i+1
 end
@@ -34,9 +36,10 @@ local function printhelp()
 print([[
 gong [options] source_file.t
 OPTIONS:
-  --help        print this help message
-  --coverage    run with internal code coverage analysis on
-                (for gong developers, not users)
+  --help            print this help message
+  --coverage        run with internal code coverage analysis on
+                    (for gong developers, not users)
+  --debug_gpu_mem   compile with debug messages on gpu memory operations
 ]])
 end
 
@@ -77,6 +80,16 @@ package.terrapath = package.terrapath..';'..incdir_path..'/?.t'
 
 if options.coverage then
   require 'gong.src.coverage'
+  options.coverage = nil
+end
+
+-- load options if present
+if next(options) then
+  local PARAMS = require 'gong.src.params'
+  for nm,val in pairs(options) do
+    val = tonumber(val) or val
+    PARAMS.set_param(nm, val)
+  end
 end
 
 -- and we can launch the script safely now
