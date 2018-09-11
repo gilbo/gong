@@ -1796,7 +1796,9 @@ function Wrapper:GenExternCAPI(prefix, export_funcs, gpu_on)
         local Index     = indices[1]
         local iname     = W._c_cache[Index].name
         emit quote  store.[iname]:rebuild(store)  end
-        emit( GW:CPU_index_rebuild(store, Index) )
+        if gpu_on then
+          emit( GW:CPU_index_rebuild(store, Index) )
+        end
       end end
     end)
 
@@ -1896,7 +1898,7 @@ function Wrapper:GenExternCAPI(prefix, export_funcs, gpu_on)
           var store = to_store(hdl)
           escape if IS_IDX_KEY then emit quote
             store.[iname]:rebuild(store)
-            [ GW:CPU_index_rebuild(store, Index) ]
+            [ (gpu_on and GW:CPU_index_rebuild(store, Index)) or {} ]
           end end end
         end)
       end

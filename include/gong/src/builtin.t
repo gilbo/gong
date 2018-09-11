@@ -62,7 +62,7 @@ B.assert  = NewBuiltIn{
       local test    = args[1]
       return quote
         if not [test] then
-          C.fprintf(C.stderr,msg)
+          C.fprintf(C.stderr(),msg)
           terralib.traceback(nil)
           C.abort()
         end

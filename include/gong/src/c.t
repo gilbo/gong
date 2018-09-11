@@ -50,12 +50,40 @@ cuda_include..
 //#include <limits.h>
 #include <math.h>
 //#include <time.h>
+
+// These routines seem to be needed on some versions of Terra,
+// but not for all versions.  Go figure.
+
+FILE * __gong_get__stdout() { return stdout; }
+FILE * __gong_get__stdin()  { return stdin; }
+FILE * __gong_get__stderr() { return stderr; }
+
 ]]..
 sys_time
 )
 
 -- mass export the c code
 for k,v in pairs(C) do Exports[k] = v end
+
+Exports.__gong_get__stderr  = nil
+Exports.__gong_get__stdin   = nil
+Exports.__gong_get__stdout  = nil
+
+if Exports.stdout then
+  local terra stdout() return C.stdout end
+  local terra stdin()  return C.stdin  end
+  local terra stderr() return C.stderr end
+  Exports.stdout  = stdout
+  Exports.stdin   = stdin
+  Exports.stderr  = stderr
+else
+  local terra stdout() return C.__gong_get__stdout() end
+  local terra stdin()  return C.__gong_get__stdin()  end
+  local terra stderr() return C.__gong_get__stderr() end
+  Exports.stdout  = stdout
+  Exports.stdin   = stdin
+  Exports.stderr  = stderr
+end
 
 
 -------------------------------------------------------------------------------
@@ -75,8 +103,8 @@ local assert = macro(function(test,errstr,...)
   if errstr then err = err .. errstr .. "\n" end
   return quote
     if not test then
-      C.fflush(C.stdout)
-      C.fprintf(C.stderr, err,[{...}])
+      C.fflush(Exports.stdout())
+      C.fprintf(Exports.stderr(), err,[{...}])
       terralib.traceback(nil)
       C.abort()
     end

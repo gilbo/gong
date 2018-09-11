@@ -267,5 +267,7 @@ local function gen_exec(for_gpu)
 end
 
 test.eq(gen_exec(false)(), 0)
-test.eq(gen_exec(true)(), 0)
+if GPU_ON then
+  test.eq(gen_exec(true)(), 0)
+end
 
