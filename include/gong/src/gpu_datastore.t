@@ -1563,7 +1563,7 @@ function GWrapper:LoopGenAA(name, storeptr, gpu_tblptr, gpu_globptr,
                             tbltype, row0sym, row1sym, args, bodycode
 )
   local MW        = self._main_wrap
-  local loopgen   = MW._traversal:_INTERNAL_LoopGen( MW:GetAccAPI(), true )
+  local loopgen   = traversal:_INTERNAL_LoopGen( MW:GetAccAPI(), true )
   return loopgen( name, storeptr, gpu_tblptr, gpu_globptr,
                   nil, nil, row0sym, row1sym, args, bodycode )
 end
@@ -1574,7 +1574,7 @@ function GWrapper:LoopGenAB(name, storeptr, gpu_tblptr, gpu_globptr,
                             args, bodycode
 )
   local MW        = self._main_wrap
-  local loopgen   = MW._traversal:_INTERNAL_LoopGen( MW:GetAccAPI(), true )
+  local loopgen   = traversal:_INTERNAL_LoopGen( MW:GetAccAPI(), true )
   return loopgen( name, storeptr, gpu_tblptr, gpu_globptr,
                   nil, nil, row0sym, row1sym, args, bodycode )
 end
