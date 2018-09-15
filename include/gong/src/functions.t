@@ -3,9 +3,10 @@ local Exports = {}
 package.loaded["gong.src.functions"] = Exports
 
 
-local T         = require 'gong.src.types'
+local T           = require 'gong.src.types'
+local AccStructs  = require 'gong.src.acc_structs'
 
-local newlist   = terralib.newlist
+local newlist     = terralib.newlist
 
 
 -------------------------------------------------------------------------------
@@ -85,6 +86,37 @@ end
 
 function Join:argtypes()    return self._argtypes:copy()  end
 function Join:scantypes()   return self._scantypes:copy() end
+
+function Join:set_cpu_traversal(obj)
+  if self._cpu_traversal then
+    error("CPU traversal for join already set", 2)
+  end
+  if not AccStructs.is_traversal(obj) then
+    error("expected traversal as argument", 2)
+  end
+  if not obj:for_cpu() then
+    error("expected a CPU-valid traversal", 2)
+  end
+  self._cpu_traversal = obj
+end
+function Join:get_cpu_traversal()
+  return self._cpu_traversal
+end
+function Join:set_gpu_traversal(obj)
+  if self._gpu_traversal then
+    error("GPU traversal for join already set", 2)
+  end
+  if not AccStructs.is_traversal(obj) then
+    error("expected traversal as argument", 2)
+  end
+  if not obj:for_gpu() then
+    error("expected a GPU-valid traversal", 2)
+  end
+  self._gpu_traversal = obj
+end
+function Join:get_gpu_traversal()
+  return self._gpu_traversal
+end
 
 function Join:_INTERNAL_getast()
   return self._ast

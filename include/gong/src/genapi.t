@@ -15,6 +15,10 @@ local INTERNAL_ERR  = Util.INTERNAL_ERR
 local DataStore     = require 'gong.src.datastore'
 GenerateDataWrapper = DataStore.GenerateDataWrapper
 
+local AccStructs    = require 'gong.src.acc_structs'
+local scan_index              = AccStructs.scan_index
+local scan_scan_traversal     = AccStructs.scan_scan_traversal
+
 
 local newlist       = terralib.newlist
 
@@ -123,6 +127,27 @@ function Exports.CompileLibrary(args)
     error('expected compilation to specify at least one join to compile', 2)
   end
 
+  -- we must do this BEFORE computing the closure over tables,
+  -- because acceleration indices and traversals may rely on
+  -- additional functions and effects
+  for _,j in ipairs(args.joins) do
+    -- ensure a default traversal scheme if none has been specified
+    if not j:get_cpu_traversal() then
+      local left, right   = unpack(j:argtypes())
+      j:set_cpu_traversal(scan_scan_traversal {
+        left    = scan_index{ table = left:table()  },
+        right   = scan_index{ table = right:table() },
+      })
+    end
+    if not j:get_gpu_traversal() then
+      local left, right   = unpack(j:argtypes())
+      j:set_gpu_traversal(scan_scan_traversal {
+        left    = scan_index{ table = left:table()  },
+        right   = scan_index{ table = right:table() },
+      })
+    end
+  end
+
   -- form a closure to make sure we generate everything we need
   local tables, joins, globals =
         table_join_closure(args.tables, args.joins, args.globals)
@@ -130,6 +155,7 @@ function Exports.CompileLibrary(args)
   -- go through the joins and modify table features
   -- to ensure the needed functionality
   for _,j in ipairs(joins) do
+    -- effect-based modifications
     for _,eff in ipairs(j:_INTERNAL_geteffects()) do
       local elastic_tbl = nil
       if E.Merge.check(eff) then

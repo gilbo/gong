@@ -34,13 +34,14 @@ local newlist   = terralib.newlist
 local Context = {}
 Context.__index = Context
 
-local function NewContext(effects, StoreWrap, for_gpu)
+local function NewContext(effects, StoreWrap, traversal, for_gpu)
   local ctxt = setmetatable({
     env           = terralib.newenvironment(nil),
     _W            = StoreWrap,
     effects       = effects,
-    _scan_args    = nil,
+    _loop_args    = nil,
     _merge_rms    = {},
+    _traversal    = traversal,
     _on_gpu_flag  = for_gpu,
   }, Context)
   return ctxt
@@ -51,12 +52,12 @@ end
 
 function Context:on_GPU() return self._on_gpu_flag end
 
-function Context:SetScanArgs(a1,a2)
-  self._scan_args = newlist{a1,a2}
+function Context:SetLoopArgs(a1,a2)
+  self._loop_args = newlist{a1,a2}
 end
-function Context:GetScanArgs()
-  if self._scan_args then
-    return unpack(self._scan_args)
+function Context:GetLoopArgs()
+  if self._loop_args then
+    return unpack(self._loop_args)
   end
 end
 
@@ -119,22 +120,26 @@ function Context:PrepareData( effects )
   return self._W:PrepareData(self:StorePtr(), self:on_GPU(), effects)
 end
 
-function Context:ScanAB(name, src0, row0, src1, row1, args, code)
+function Context:LoopGenAB(name, src0, row0, src1, row1, args, code)
   if self:on_GPU() then
-    return self._W:GPU_ScanAB(name, self:StorePtr(),
-                              self:GPU_Tables_Ptr(), self:GPU_Globals_Ptr(),
-                              src0, row0, src1, row1, args, code)
+    return self._W:GPU_LoopGenAB(name, self:StorePtr(),
+                  self:GPU_Tables_Ptr(), self:GPU_Globals_Ptr(),
+                  self._traversal,
+                  src0, row0, src1, row1, args, code)
   else
-    return self._W:ScanAB(self:StorePtr(), src0, row0, src1, row1, code)
+    return self._W:LoopGenAB(self:StorePtr(),
+                             self._traversal, row0, row1, code)
   end
 end
-function Context:ScanAA(name, srctype, rowA, rowB, args, code)
+function Context:LoopGenAA(name, srctype, rowA, rowB, args, code)
   if self:on_GPU() then
-    return self._W:GPU_ScanAA(name, self:StorePtr(),
-                              self:GPU_Tables_Ptr(), self:GPU_Globals_Ptr(),
-                              srctype, rowA, rowB, args, code)
+    return self._W:GPU_LoopGenAA(name, self:StorePtr(),
+                  self:GPU_Tables_Ptr(), self:GPU_Globals_Ptr(),
+                  self._traversal,
+                  srctype, rowA, rowB, args, code)
   else
-    return self._W:ScanAA(self:StorePtr(), srctype, rowA, rowB, code)
+    return self._W:LoopGenAA(self:StorePtr(),
+                             self._traversal, rowA, rowB, code)
   end
 end
 
@@ -357,8 +362,9 @@ function Exports.codegen(args)
   local StoreWrap   = assert(args.storewrap,'INTERNAL: expect storewrap')
   local for_gpu     = args.for_gpu
                       assert(for_gpu~=nil,  'INTERNAL: expect for_gpu')
+  local traversal   = args.traversal
 
-  local ctxt        = NewContext(effects, StoreWrap, for_gpu)
+  local ctxt        = NewContext(effects, StoreWrap, traversal, for_gpu)
   local func        = ast:codegen(name, ctxt)
   func:setname(name)
   --func:printpretty()
@@ -411,7 +417,7 @@ function AST.Join:codegen(name, ctxt)
   local outerargs       = newlist{ storeptr }
   outerargs:insertall(fargs)
 
-  ctxt:SetScanArgs(rowA,rowB)
+  ctxt:SetLoopArgs(rowA,rowB)
 
   local filter          = self.filter:codegen(ctxt)
   local doblock         = self.doblock:codegen(ctxt)
@@ -435,9 +441,10 @@ function AST.Join:codegen(name, ctxt)
 
     -- then do the main loops of the join
     if typA == typB then -- self-join
-      emit( ctxt:ScanAA(name, typA, rowA, rowB, outerargs, innerloop) )
+      emit( ctxt:LoopGenAA(name, typA, rowA, rowB, outerargs, innerloop) )
     else -- not a self-join
-      emit( ctxt:ScanAB(name, typA, rowA, typB, rowB, outerargs, innerloop) )
+      emit( ctxt:LoopGenAB(name, typA, rowA,
+                                 typB, rowB, outerargs, innerloop) )
     end
 
     -- cleanup any merge tables
@@ -490,7 +497,7 @@ function AST.MergeStmt:codegen(ctxt)
     ctxt:AddMergeRemove(self)
   end
   local up_var    = ctxt:NewSym(self.up_name, self.dst)
-  local k0, k1    = ctxt:GetScanArgs()
+  local k0, k1    = ctxt:GetLoopArgs()
   local up_body   = self.up_body:codegen(ctxt)
   local new_vals  = nil
   if self.new_emit then

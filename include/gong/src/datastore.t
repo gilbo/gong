@@ -854,13 +854,21 @@ function Wrapper:get_terra_function(f_obj, for_gpu)
   if not self._func_cache[f_obj] then
     self._func_cache[f_obj] = {}
   end
-  local token = (for_gpu and 'GPU') or 'CPU'
+  local token     = (for_gpu and 'GPU') or 'CPU'
+
+  local traversal = nil
+  if f_obj.get_cpu_traversal and not for_gpu then
+    traversal     = f_obj:get_cpu_traversal()
+  elseif f_obj.get_gpu_traversal and for_gpu then
+    traversal     = f_obj:get_gpu_traversal()
+  end
 
   if not self._func_cache[f_obj][token] then
     local tfunc = CodeGen.codegen {
       name      = name,
       ast       = f_obj:_INTERNAL_getast(),
       effects   = f_obj:_INTERNAL_geteffects(),
+      traversal = traversal,
       storewrap = self,
       for_gpu   = for_gpu,
     }
@@ -1049,7 +1057,7 @@ function Wrapper:GPU_Globals_Struct()
   return self._gpu_wrapper:GPU_Globals_Struct()
 end
 -- more pass-through to the gpu wrapper
-for _,nm in ipairs({'ScanAA','ScanAB',
+for _,nm in ipairs({'LoopGenAA','LoopGenAB',
                     'Read','Write','Reduce',
                     'ReadGlobal','ReduceGlobal',
                     'Insert',
@@ -1060,6 +1068,12 @@ do
     local fn = self._gpu_wrapper[nm]
     return fn(self._gpu_wrapper, ...)
   end
+end
+
+function Wrapper:Size(storeptr, tbltype)
+  local Table, tblname  = unpack_tbl(self, tbltype)
+  assert(not Table._is_live, 'INTERNAL: expect non-mergable table...')
+  return (`storeptr.[tblname]:size())
 end
 
 function Wrapper:Scan(storeptr, tbltype, rowsym, bodycode)
@@ -1086,15 +1100,7 @@ function Wrapper:Scan(storeptr, tbltype, rowsym, bodycode)
     end
   end
 end
-
-function Wrapper:ScanAB(storeptr, tbl0type, row0sym,
-                                  tbl1type, row1sym, bodycode)
-  return self:Scan(storeptr, tbl0type, row0sym,
-            self:Scan(storeptr, tbl1type, row1sym,
-              bodycode))
-end
-
-function Wrapper:ScanAA(storeptr, tbltype, row0sym, row1sym, bodycode)
+function Wrapper:SelfScan(storeptr, tbltype, row0sym, row1sym, bodycode)
   local Table, tblname  = unpack_tbl(self, tbltype)
 
   if Table._is_live then
@@ -1126,6 +1132,16 @@ function Wrapper:ScanAA(storeptr, tbltype, row0sym, row1sym, bodycode)
       end
     end
   end
+end
+
+function Wrapper:LoopGenAB(storeptr, traversal, row0sym, row1sym, bodycode)
+  local loopgen = traversal:_INTERNAL_LoopGen( self:GetAccAPI(), false )
+  return loopgen( storeptr, nil, nil, row0sym, row1sym, bodycode)
+end
+
+function Wrapper:LoopGenAA(storeptr, traversal, row0sym, row1sym, bodycode)
+  local loopgen = traversal:_INTERNAL_LoopGen( self:GetAccAPI(), false )
+  return loopgen( storeptr, nil, nil, row0sym, row1sym, bodycode)
 end
 
 function Wrapper:Clear(storeptr, tbltype)
@@ -1582,6 +1598,38 @@ function Wrapper:PrepareData(storeptr, for_gpu, effects)
   end
 end
 
+
+-------------------------------------------------------------------------------
+--[[         Gong Internal Data Interface : Acceleration Structures        ]]--
+-------------------------------------------------------------------------------
+
+function Wrapper:GetAccAPI()
+  local W             = self
+  return {
+    StoreTyp          = W:Store_Struct(),
+    Size              = function(api, storeptr, tbltype)
+                          return W:Size(storeptr, tbltype)
+                        end,
+    Scan              = function(api, ...)
+                          return W:Scan(...)
+                        end,
+    SelfScan          = function(api, ...)
+                          return W:SelfScan(...)
+                        end,
+    GPU_DoubleScan    = function(api, ...)
+                          return W._gpu_wrapper:ScanAB(...)
+                        end,
+    GPU_SelfScan      = function(api, ...)
+                          return W._gpu_wrapper:ScanAA(...)
+                        end,
+    GetCPUFunction    = function(api, gongfn)
+                          return W:get_terra_function(gongfn, false)
+                        end,
+    GetGPUFunction    = function(api, gongfn)
+                          return W:get_terra_function(gongfn, true)
+                        end,
+  }
+end
 
 -------------------------------------------------------------------------------
 --[[                     Gong External Data Interface                      ]]--

@@ -1462,8 +1462,7 @@ end
 
 function GWrapper:ScanAB(name, storeptr, gpu_tblptr, gpu_globptr,
                          tbl0type, row0sym, tbl1type, row1sym,
-                         args, bodycode
-)
+                         args, bodycode)
   local Table0, main_tbl0name, sub_tbl0name, tbl0validname
                       = unpack_prepare_tbl(self, tbl0type)
   local Table1, main_tbl1name, sub_tbl1name, tbl1validname
@@ -1510,7 +1509,6 @@ function GWrapper:ScanAB(name, storeptr, gpu_tblptr, gpu_globptr,
     gpu_kernel(N_launch, tblptr, globptr, [args])
   end
 end
-
 
 function GWrapper:ScanAA(name, storeptr, gpu_tblptr, gpu_globptr,
                          tbltype, row0sym, row1sym, args, bodycode
@@ -1559,6 +1557,28 @@ function GWrapper:ScanAA(name, storeptr, gpu_tblptr, gpu_globptr,
     gpu_kernel(N_launch, tblptr, globptr, [args])
   end
 end
+
+function GWrapper:LoopGenAA(name, storeptr, gpu_tblptr, gpu_globptr,
+                            traversal,
+                            tbltype, row0sym, row1sym, args, bodycode
+)
+  local MW        = self._main_wrap
+  local loopgen   = MW._traversal:_INTERNAL_LoopGen( MW:GetAccAPI(), true )
+  return loopgen( name, storeptr, gpu_tblptr, gpu_globptr,
+                  nil, nil, row0sym, row1sym, args, bodycode )
+end
+
+function GWrapper:LoopGenAB(name, storeptr, gpu_tblptr, gpu_globptr,
+                            traversal,
+                            tbl0type, row0sym, tbl1type, row1sym,
+                            args, bodycode
+)
+  local MW        = self._main_wrap
+  local loopgen   = MW._traversal:_INTERNAL_LoopGen( MW:GetAccAPI(), true )
+  return loopgen( name, storeptr, gpu_tblptr, gpu_globptr,
+                  nil, nil, row0sym, row1sym, args, bodycode )
+end
+
 
 ---------------------------------------
 
