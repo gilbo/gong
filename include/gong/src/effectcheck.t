@@ -80,6 +80,11 @@ function E.Effect:path_id()
   return ids:concat('.')
 end
 
+function E.Effect:touches_memory()    return true     end
+function E.Print:touches_memory()     return false    end
+function E.Return:touches_memory()    return false    end
+
+
 -------------------------------------------------------------------------------
 --[[                          Context Definition                           ]]--
 -------------------------------------------------------------------------------

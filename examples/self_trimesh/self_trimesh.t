@@ -7,6 +7,11 @@ local EPSILON         = 1.0e-7
 local USE_GPU = not not terralib.cudacompile
 print('USE GPU? ', USE_GPU)
 
+local params = { suffix = '', traversal = 'scan_scan' }
+for _,a in ipairs(arg) do
+  local _, _, label, value = a:find("^%-([^=]*)=(.*)$")
+  if label and value then params[label] = value end
+end
 
 ------------------------------------------------------------------------------
 
@@ -93,13 +98,56 @@ do
 end
 
 ------------------------------------------------------------------------------
+
+local AABB3f = G.AABB3f
+
+local gong function Edges_to_AABB3f( e : Mesh.Edges ) : AABB3f
+  return { lo = :[i] G.min(e.hd.pos[i], e.tl.pos[i]), 
+           hi = :[i] G.max(e.hd.pos[i], e.tl.pos[i]) }
+end
+local gong function Tris_to_AABB3f( t : Mesh.Tris ) : AABB3f
+  return { lo = :[i] :min[j] t.v[j].pos[i],
+           hi = :[i] :max[j] t.v[j].pos[i] }
+end
+
+
+local Edges_BVH       = G.bvh_index {
+  table       = Mesh.Edges,
+  volume      = AABB3f,
+  abstract    = Edges_to_AABB3f,
+  vol_union   = G.AABB3f_union,
+  point       = G.AABB3f_midpoint,
+}
+local Tris_BVH        = G.bvh_index {
+  table       = Mesh.Tris,
+  volume      = AABB3f,
+  abstract    = Tris_to_AABB3f,
+  vol_union   = G.AABB3f_union,
+  point       = G.AABB3f_midpoint,
+}
+
+local BVH_Traversal   = G.bvh_bvh_traversal {
+  left        = Edges_BVH,
+  right       = Tris_BVH,
+  vol_isct    = G.AABB3f_isct,
+}
+
+if params.traversal == 'scan_scan' then
+  -- leave the default traversal
+elseif params.traversal == 'bvh_bvh' then
+  find_et_iscts:set_cpu_traversal(BVH_Traversal)
+else
+  error('unrecognized traversal option: '..params.traversal)
+end
+
+------------------------------------------------------------------------------
 ------------------------------------------------------------------------------
 
 local API = G.CompileLibrary {
   tables          = {},
   joins           = {find_et_iscts},
-  c_obj_file      = 'self_trimesh.o',
-  cpp_header_file = 'self_trimesh.h',
+  c_obj_file      = 'self_trimesh'..params.suffix..'.o',
+  cpp_header_file = 'self_trimesh'..params.suffix..'.h',
   gpu             = USE_GPU,
 }
 

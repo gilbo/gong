@@ -33,12 +33,17 @@ local function common_constructor(ast)
 end
 
 local _is_installed_ = false
-local function install_builtins()
+local function late_lib_install()
   if _is_installed_ then return end
-  _is_installed_ = true
+  _is_installed_  = true
 
-  local BuiltIns = require 'gong.src.builtin'
+  local BuiltIns  = require 'gong.src.builtin'
   for k,v in pairs(BuiltIns) do
+    StdLib[k] = v
+  end
+
+  local LibGong   = require 'gong.libgong.all'
+  for k,v in pairs(LibGong) do
     StdLib[k] = v
   end
 end
@@ -48,7 +53,7 @@ local function get_library(self, lexer)
   lexer:expect('.')
   if lexer:expect(lexer.name).value == 'stdlib' then
     return function(env_fn)
-      install_builtins()
+      late_lib_install()
       return StdLib
     end
   else

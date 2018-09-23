@@ -29,9 +29,6 @@ local function vector(T, MINALLOC)
   --    size
   --    access individual element
   --    ptr
-  -- convenience methods
-  --    insert
-  --    remove    (these mirror lua list semantics)
 
   terra V:init()
     self._size      = 0
@@ -69,7 +66,57 @@ local function vector(T, MINALLOC)
 end
 vector = Util.memoize(vector)
 
-Exports.vector = vector
+-------------------------------------------------------------------------------
+
+local function stack(T, MINALLOC)
+  assert(terralib.types.istype(T))
+
+  local S                 = terralib.types.newstruct('stack_'..tostring(T))
+  S.entries:insertall {
+    { '_vec_impl',  vector(T,MINALLOC) }
+  }
+
+  -- METHODS OF USE
+  --    init
+  --    destroy
+  --    is_empty
+  --    size
+  --    top_ptr
+  --    push
+  --    pop
+
+  terra S:init()
+    self._vec_impl:init()
+  end
+  terra S:destroy()
+    self._vec_impl:destroy()
+  end
+  terra S:size()      return self._vec_impl:size() end
+  terra S:is_empty()  return self:size() == 0 end
+  terra S:top_ptr() : &T
+    return self._vec_impl:ptr() + self._vec_impl:size() - 1
+  end
+  terra S:push( val : T )
+    var idx     = self._vec_impl:size()
+    self._vec_impl:resize(idx+1)
+    self._vec_impl(idx) = val
+  end
+  terra S:pop() : T
+    var idx     = self._vec_impl:size() - 1
+    var val     = self._vec_impl(idx)
+    self._vec_impl:resize(idx)
+    return val
+  end
+
+  return S
+end
+stack = Util.memoize(stack)
+
+-------------------------------------------------------------------------------
+
+
+Exports.vector  = vector
+Exports.stack   = stack
 
 
 

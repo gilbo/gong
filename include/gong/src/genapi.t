@@ -15,9 +15,9 @@ local INTERNAL_ERR  = Util.INTERNAL_ERR
 local DataStore     = require 'gong.src.datastore'
 GenerateDataWrapper = DataStore.GenerateDataWrapper
 
-local AccStructs    = require 'gong.src.acc_structs'
-local scan_index              = AccStructs.scan_index
-local scan_scan_traversal     = AccStructs.scan_scan_traversal
+local AccScan       = require 'gong.src.acc_scan'
+local scan_index              = AccScan.scan_index
+local scan_scan_traversal     = AccScan.scan_scan_traversal
 
 
 local newlist       = terralib.newlist
@@ -37,6 +37,9 @@ local function table_join_closure(tables, joins, globals)
 
   -- form closure of all tables refered to in joins
   for _,j   in ipairs(joins) do
+    local effects       = j:_INTERNAL_geteffects()
+    effects:insertall(j:get_cpu_traversal():_INTERNAL_geteffects())
+    effects:insertall(j:get_gpu_traversal():_INTERNAL_geteffects())
     -- pull tables out of scan/emit effects
     for _,e in ipairs(j:_INTERNAL_geteffects()) do
       if E.Scan.check(e) then
@@ -195,6 +198,17 @@ function Exports.CompileLibrary(args)
     indices:insertall( tbl:_INTERNAL_GetIndices() )
   end
 
+  -- Extract Acceleration Indices
+  local acc_i           = {}
+  for _,j in ipairs(joins) do
+    for _,trav in ipairs({ j:get_cpu_traversal(), j:get_gpu_traversal() }) do
+      acc_i[trav:left()]  = true
+      acc_i[trav:right()] = true
+    end
+  end
+  local acc_indices     = newlist()
+  for ai,_ in pairs(acc_i) do acc_indices:insert(ai) end
+
   -- language mode argument parsing
   local langmode        = (args.terra_out and 'terra') or
                           (args.c_header_file and 'c') or
@@ -210,11 +224,12 @@ function Exports.CompileLibrary(args)
 
   -- generate wrapper
   local W               = GenerateDataWrapper{
-    prefix  = prefix,
-    tables  = tables,
-    indices = indices,
-    globals = globals,
-    use_gpu = use_gpu,
+    prefix      = prefix,
+    tables      = tables,
+    indices     = indices,
+    acc_indices = acc_indices,
+    globals     = globals,
+    use_gpu     = use_gpu,
   }
 
   -- Assemble all the structs and funcs to expose

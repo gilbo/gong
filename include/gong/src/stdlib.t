@@ -12,6 +12,9 @@ local Global          = require 'gong.src.global'
 local T               = require 'gong.src.types'
 local S               = require 'gong.src.schemata'
 local Functions       = require 'gong.src.functions'
+local AccStructs      = require 'gong.src.acc_structs'
+local AccScan         = require 'gong.src.acc_scan'
+local AccBVH          = require 'gong.src.acc_bvh'
 local GenAPI          = require 'gong.src.genapi'
 local C               = require 'gong.src.c'
 
@@ -58,6 +61,26 @@ end
 -------------------------------------------------------------------------------
 
 Exports.NewTable      = S.NewTable
+
+
+-------------------------------------------------------------------------------
+-- Acceleration Index API
+-------------------------------------------------------------------------------
+
+
+Exports.is_spatial_index          = AccStructs.is_spatial_index
+Exports.is_scan_index             = AccScan.is_scan_index
+Exports.is_bvh_index              = AccBVH.is_bvh_index
+
+Exports.scan_index                = AccScan.scan_index
+Exports.bvh_index                 = AccBVH.bvh_index
+
+Exports.scan_scan_traversal       = AccScan.scan_scan_traversal
+Exports.bvh_bvh_traversal         = AccBVH.bvh_bvh_traversal
+
+Exports.is_traversal              = AccStructs.is_traversal
+Exports.is_scan_scan_traversal    = AccScan.is_scan_scan_traversal
+Exports.is_bvh_bvh_traversal      = AccBVH.is_bvh_bvh_traversal
 
 
 -------------------------------------------------------------------------------

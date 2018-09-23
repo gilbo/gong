@@ -20,6 +20,8 @@ local is_table      = Schemata.is_table
 local is_field      = Schemata.is_field
 local is_index      = Schemata.is_index
 
+local AccStructs    = require 'gong.src.acc_structs'
+
 local CodeGen       = require 'gong.src.codegen'
 
 -----------------------------------------
@@ -431,7 +433,8 @@ local function GenerateWrapperStructs(prefix, W)
     W._c_cache[Table]       = { ctype             = CTable,
                                 name              = '_'..TableName,
                                 parallel_indices  = newlist(),
-                                dst_indices       = newlist(), }
+                                dst_indices       = newlist(),
+                                acc_indices       = newlist(), }
     W._type_reverse[CTable] = Table
   end
 
@@ -443,6 +446,21 @@ local function GenerateWrapperStructs(prefix, W)
     CStore.entries:insert { '_'..IndexName, CIndex }
     W._c_cache[Index]       = { ctype = CIndex, name = '_'..IndexName }
     W._type_reverse[CIndex] = Index
+  end
+
+  -- Add Acceleration Indices in
+  for iAIndex,AIndex in ipairs(W._acc_indices) do
+    assert(AccStructs.is_spatial_index(AIndex),
+           'INTERNAL: expected acceleration index')
+    local Table             = AIndex:table()
+    local AIndexName        = AIndex:name()..'_acc_index'..(iAIndex-1)
+    local CAIndex           = AIndex:_INTERNAL_StructLayout(W:GetAccAPI())
+
+    CStore.entries:insert { '_'..AIndexName, CAIndex }
+    W._c_cache[AIndex]      = { ctype = CAIndex, name = '_'..AIndexName }
+    W._type_reverse[CAIndex]= AIndex
+
+    W._c_cache[Table].acc_indices:insert(AIndex)
   end
 
   -- Add Globals in
@@ -768,6 +786,11 @@ local function InstallStructMethods(prefix, W)
       emit quote
         this.[idxname]:init( this )
       end
+    end for iAIndex, AIndex in ipairs(W._acc_indices) do
+      local aname             = W._c_cache[AIndex].name
+      emit quote
+        this.[aname]:init()
+      end
     end for iGlobal, Global in ipairs(W._globals) do
       local globname          = W._c_cache[Global].name
       local initval           = Global:initval()
@@ -788,7 +811,12 @@ local function InstallStructMethods(prefix, W)
   terra CStore:destroy()
     var this        = self
     this._error_msg = nil
-    escape for iIndex, Index in ipairs(W._indices) do
+    escape for iAIndex, AIndex in ipairs(W._acc_indices) do
+      local aname             = W._c_cache[AIndex].name
+      emit quote
+        this.[aname]:destroy()
+      end
+    end for iIndex, Index in ipairs(W._indices) do
       local idxname           = W._c_cache[Index].name
       emit quote
         this.[idxname]:destroy( this )
@@ -815,6 +843,7 @@ local function NewWrapper(args)
   local W = setmetatable({
     _tables         = assert(args.tables,'INTERNAL'):copy(),
     _indices        = assert(args.indices,'INTERNAL'):copy(),
+    _acc_indices    = assert(args.acc_indices,'INTERNAL'):copy(),
     _globals        = assert(args.globals,'INTERNAL'):copy(),
     _use_gpu        = args.use_gpu, -- boolean
     _c_cache        = {},
@@ -1134,14 +1163,15 @@ function Wrapper:SelfScan(storeptr, tbltype, row0sym, row1sym, bodycode)
   end
 end
 
-function Wrapper:LoopGenAB(storeptr, traversal, row0sym, row1sym, bodycode)
-  local loopgen = traversal:_INTERNAL_LoopGen( self:GetAccAPI(), false )
-  return loopgen( storeptr, nil, nil, row0sym, row1sym, bodycode)
-end
+function Wrapper:LoopGen(storeptr, traversal, row0sym, row1sym, bodycode)
+  local W               = self
+  local IndexL, IndexR  = traversal:left(), traversal:right()
+  local inameL, inameR  = W._c_cache[IndexL].name, W._c_cache[IndexR].name
+  local idxptrL         = `&(storeptr.[inameL])
+  local idxptrR         = `&(storeptr.[inameR])
 
-function Wrapper:LoopGenAA(storeptr, traversal, row0sym, row1sym, bodycode)
   local loopgen = traversal:_INTERNAL_LoopGen( self:GetAccAPI(), false )
-  return loopgen( storeptr, nil, nil, row0sym, row1sym, bodycode)
+  return loopgen( storeptr, idxptrL, idxptrR, row0sym, row1sym, bodycode)
 end
 
 function Wrapper:Clear(storeptr, tbltype)
@@ -1474,6 +1504,114 @@ local is_read       = Effects.Effects.Read.check
 local is_reduce_global  = Effects.Effects.ReduceG.check
 local is_read_global    = Effects.Effects.ReadG.check
 
+function Wrapper:AccIndexUpdate( traversal, name, storeptr,
+                                 gpu_tblptr, gpu_globptr )
+  local L_AIndex    = traversal:left()
+  local R_AIndex    = traversal:right()
+  local lname       = self._c_cache[L_AIndex].name
+  local rname       = self._c_cache[R_AIndex].name
+  local lidxptr     = (`storeptr.[lname])
+  local ridxptr     = (`storeptr.[rname])
+
+  local l_update = L_AIndex:_INTERNAL_PreJoinUpdate(
+                        self:GetAccAPI(), name, storeptr, lidxptr,
+                                                gpu_tblptr, gpu_globptr )
+  if L_AIndex == R_AIndex then
+    return l_update
+  else
+    local r_update = R_AIndex:_INTERNAL_PreJoinUpdate(
+                          self:GetAccAPI(), name, storeptr, ridxptr,
+                                                  gpu_tblptr, gpu_globptr )
+    return quote [l_update] ; [r_update] end
+  end
+end
+
+function Wrapper:AccIndexInvalidate_TableSize(storeptr, Table)
+  local code = newlist()
+  for iAIndex,AIndex in ipairs(self._acc_indices) do
+    if AIndex:_INTERNAL_depends_on(Table) then
+      local aname   = self._c_cache[AIndex].name
+      local idxptr  = (`storeptr.[aname])
+      code:insert(AIndex:_INTERNAL_do_invalidate( idxptr, true, true ))
+    end
+  end
+  return quote [code] end
+end
+
+function Wrapper:AccIndexInvalidate_FieldWrite(storeptr, Field)
+  local code = newlist()
+  for iAIndex,AIndex in ipairs(self._acc_indices) do
+    if AIndex:_INTERNAL_depends_on(Field) then
+      local aname   = self._c_cache[AIndex].name
+      local idxptr  = (`storeptr.[aname])
+      code:insert(AIndex:_INTERNAL_do_invalidate( idxptr, false, true ))
+    end
+  end
+  return quote [code] end
+end
+
+function Wrapper:AccIndexInvalidate_GlobalWrite(storeptr, Global)
+  local code = newlist()
+  for iAIndex,AIndex in ipairs(self._acc_indices) do
+    if AIndex:_INTERNAL_depends_on(Global) then
+      local aname   = self._c_cache[AIndex].name
+      local idxptr  = (`storeptr.[aname])
+      code:insert(AIndex:_INTERNAL_do_invalidate( idxptr, false, true ))
+    end
+  end
+  return quote [code] end
+end
+
+
+function Wrapper:AccIndexInvalidation(storeptr, effects)
+  local accidx      = {}
+  for iAIndex,AIndex in ipairs(self._acc_indices) do
+    accidx[AIndex]  = {
+      size_invalid  = false,
+      data_invalid  = false,
+    }
+  end
+
+  -- build up accounting of whether and how indices need to be invalidated
+  for i,e in ipairs(effects) do
+    if is_emit(e) or is_merge(e) then
+      local tbl   = e.dst:table()
+      for AIndex,bits in pairs(accidx) do
+        if AIndex:_INTERNAL_depends_on(tbl) then
+          bits.size_invalid = true
+          bits.data_invalid = true
+        end
+      end
+    elseif is_write(e) or is_overwrite(e) or is_reduce(e) then
+      local tbl   = e.dst:table()
+      local fld   = tbl:fields(e.path[1].name)
+      for AIndex,bits in pairs(accidx) do
+        if AIndex:_INTERNAL_depends_on(e.dst) then
+          bits.data_invalid = true
+        end
+      end
+    elseif is_reduce_global(e) then
+      local glob  = e.dst
+      for AIndex,bits in pairs(accidx) do
+        if AIndex:_INTERNAL_depends_on(glob) then
+          bits.data_invalid = true
+        end
+      end
+    end
+  end
+
+  local code = newlist()
+  for AIndex,bits in pairs(accidx) do
+    local aname   = self._c_cache[AIndex].name
+    local idxptr  = (`storeptr.[aname])
+    code:insert(AIndex:_INTERNAL_do_invalidate( idxptr,
+                                                bits.size_invalid,
+                                                bits.data_invalid ))
+  end
+
+  return quote [code] end
+end
+
 function Wrapper:PrepareData(storeptr, for_gpu, effects)
   local W = self
 
@@ -1605,8 +1743,9 @@ end
 
 function Wrapper:GetAccAPI()
   local W             = self
-  return {
-    StoreTyp          = W:Store_Struct(),
+  if W._cached_acc_API then return W._cached_acc_API end
+  W._cached_acc_API   = {
+    StoreTyp          = function(api) return W:Store_Struct() end,
     Size              = function(api, storeptr, tbltype)
                           return W:Size(storeptr, tbltype)
                         end,
@@ -1629,6 +1768,7 @@ function Wrapper:GetAccAPI()
                           return W:get_terra_function(gongfn, true)
                         end,
   }
+  return W._cached_acc_API
 end
 
 -------------------------------------------------------------------------------
@@ -1837,6 +1977,8 @@ function Wrapper:GenExternCAPI(prefix, export_funcs, gpu_on)
       store._load_counter = -1
       store._load_col_counter = -1
 
+      [ W:AccIndexInvalidate_TableSize( store, Table ) ]
+
       -- refresh indices if appropriate
       escape if Table._is_live then
         local indices   = W._c_cache[Table].dst_indices
@@ -1944,6 +2086,7 @@ function Wrapper:GenExternCAPI(prefix, export_funcs, gpu_on)
                  H_FIELDS[fname], 'ReadWriteUnlock',
         terra( hdl : ExtStore )
           var store = to_store(hdl)
+          [ W:AccIndexInvalidate_FieldWrite( store, Field ) ]
           escape if IS_IDX_KEY then emit quote
             store.[iname]:rebuild(store)
             [ (gpu_on and GW:CPU_index_rebuild(store, Index)) or {} ]
@@ -1996,6 +2139,7 @@ function Wrapper:GenExternCAPI(prefix, export_funcs, gpu_on)
     add_func('Write_'..gname, HIERARCHY.globals[gname], 'Write',
     terra( hdl : ExtStore, val : gtype )
       var store = to_store(hdl)
+      [ W:AccIndexInvalidate_GlobalWrite( store, Global ) ]
       [ (gpu_on and GW:PrepareReadWriteGlobals(store, false))
                 or {} ]
       return [ W:WriteGlobal( store, Global, newlist(), val ) ]

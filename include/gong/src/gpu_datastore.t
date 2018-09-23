@@ -1558,27 +1558,18 @@ function GWrapper:ScanAA(name, storeptr, gpu_tblptr, gpu_globptr,
   end
 end
 
-function GWrapper:LoopGenAA(name, storeptr, gpu_tblptr, gpu_globptr,
-                            traversal,
-                            tbltype, row0sym, row1sym, args, bodycode
-)
-  local MW        = self._main_wrap
+function GWrapper:LoopGen(name, storeptr, gpu_tblptr, gpu_globptr,
+                          traversal, row0sym, row1sym, args, bodycode)
+  local W               = self
+  local IndexL, IndexR  = traversal:left(), traversal:right()
+  local inameL, inameR  = W._c_cache[IndexL].name, W._c_cache[IndexR].name
+  local idxptrL         = `&(storeptr.[inameL])
+  local idxptrR         = `&(storeptr.[inameR])
+
   local loopgen   = traversal:_INTERNAL_LoopGen( MW:GetAccAPI(), true )
   return loopgen( name, storeptr, gpu_tblptr, gpu_globptr,
-                  nil, nil, row0sym, row1sym, args, bodycode )
+                  idxptrL, idxptrR, row0sym, row1sym, args, bodycode )
 end
-
-function GWrapper:LoopGenAB(name, storeptr, gpu_tblptr, gpu_globptr,
-                            traversal,
-                            tbl0type, row0sym, tbl1type, row1sym,
-                            args, bodycode
-)
-  local MW        = self._main_wrap
-  local loopgen   = traversal:_INTERNAL_LoopGen( MW:GetAccAPI(), true )
-  return loopgen( name, storeptr, gpu_tblptr, gpu_globptr,
-                  nil, nil, row0sym, row1sym, args, bodycode )
-end
-
 
 ---------------------------------------
 

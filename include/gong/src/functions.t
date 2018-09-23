@@ -88,9 +88,9 @@ function Join:argtypes()    return self._argtypes:copy()  end
 function Join:scantypes()   return self._scantypes:copy() end
 
 function Join:set_cpu_traversal(obj)
-  if self._cpu_traversal then
-    error("CPU traversal for join already set", 2)
-  end
+  --if self._cpu_traversal then
+  --  error("CPU traversal for join already set", 2)
+  --end
   if not AccStructs.is_traversal(obj) then
     error("expected traversal as argument", 2)
   end
@@ -103,9 +103,9 @@ function Join:get_cpu_traversal()
   return self._cpu_traversal
 end
 function Join:set_gpu_traversal(obj)
-  if self._gpu_traversal then
-    error("GPU traversal for join already set", 2)
-  end
+  --if self._gpu_traversal then
+  --  error("GPU traversal for join already set", 2)
+  --end
   if not AccStructs.is_traversal(obj) then
     error("expected traversal as argument", 2)
   end

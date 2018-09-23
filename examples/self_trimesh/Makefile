@@ -3,25 +3,52 @@
 CUDA_DIR ?= /usr/local/cuda
 CPP=clang++
 
-run: self_trimesh
-	./self_trimesh
+run: self_trimesh_scan self_trimesh_bvh
+	time ./self_trimesh_scan
+	time ./self_trimesh_bvh
 
-self_trimesh.o: self_trimesh.t
-	../../bin/gong self_trimesh.t
+self_trimesh_scan.o self_trimesn_scan.h: self_trimesh.t
+	../../bin/gong self_trimesh.t -suffix=_scan -traversal=scan_scan
 
-self_trimesh.h: self_trimesh.t
-	../../bin/gong self_trimesh.t
+self_trimesh_bvh.o self_trimesn_bvh.h: self_trimesh.t
+	../../bin/gong self_trimesh.t -suffix=_bvh -traversal=bvh_bvh
 
-self_trimesh: self_trimesh.o self_trimesh.h main.cpp
+self_trimesh_scan: self_trimesh_scan.o self_trimesh_scan.h main.cpp
 	if [ -d $(CUDA_DIR) ]; then \
 	  $(CPP) -std=c++11 \
 	         -L $(CUDA_DIR)/lib64 -lcuda -lcudart \
 	         -Wl,-rpath=$(CUDA_DIR)/lib64 \
-	         -o self_trimesh self_trimesh.o main.cpp; \
+	         -D GPU_ENABLE \
+	         -D USE_SCAN \
+	         -o self_trimesh_scan self_trimesh_scan.o main.cpp; \
 	else \
 	  $(CPP) -std=c++11 \
-	         -o self_trimesh self_trimesh.o main.cpp; \
+	         -D USE_SCAN \
+	         -o self_trimesh_scan self_trimesh_scan.o main.cpp; \
+	fi
+
+self_trimesh_bvh: self_trimesh_scan.o self_trimesh_scan.h main.cpp
+	if [ -d $(CUDA_DIR) ]; then \
+	  $(CPP) -std=c++11 \
+	         -L $(CUDA_DIR)/lib64 -lcuda -lcudart \
+	         -Wl,-rpath=$(CUDA_DIR)/lib64 \
+	         -D GPU_ENABLE \
+	         -D USE_BVH \
+	         -o self_trimesh_bvh self_trimesh_bvh.o main.cpp; \
+	else \
+	  $(CPP) -std=c++11 \
+	         -D USE_BVH \
+	         -o self_trimesh_bvh self_trimesh_bvh.o main.cpp; \
 	fi
 
 clean:
-	rm self_trimesh.h self_trimesh.o self_trimesh
+	rm self_trimesh_scan.h \
+	   self_trimesh_scan.o \
+	   self_trimesh_scan
+	rm self_trimesh_bvh.h \
+	   self_trimesh_bvh.o \
+	   self_trimesh_bvh
+
+
+
+

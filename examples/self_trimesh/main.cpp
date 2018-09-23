@@ -1,5 +1,12 @@
 
-#include "self_trimesh.h"
+#ifdef USE_SCAN
+#include "self_trimesh_scan.h"
+#endif
+#ifdef USE_BVH
+#include "self_trimesh_bvh.h"
+#endif
+
+
 #include <iostream>
 #include <cmath>
 #include <set>
@@ -287,6 +294,7 @@ int main() {
     MeshIsctCheck(store, "two_tri.check");
   }
 
+#ifdef GPU_ENABLE
   {
     MeshLoadOFF(store, "two_tri.off");
     MeshEndLoad(store);
@@ -296,6 +304,7 @@ int main() {
     MeshIsctPrint(store);
     MeshIsctCheck(store, "two_tri.check");
   }
+#endif /* GPU_ENABLE */
 
   {
     MeshLoadOFF(store, "clothfold.off");

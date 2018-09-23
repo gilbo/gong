@@ -1,3 +1,6 @@
-self_trimesh
-self_trimesh.h
-self_trimesh.o
+self_trimesh_scan
+self_trimesh_scan.h
+self_trimesh_scan.o
+self_trimesh_bvh
+self_trimesh_bvh.h
+self_trimesh_bvh.o

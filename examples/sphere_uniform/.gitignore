@@ -1,6 +1,9 @@
 Spheres.zip
 Spheres
 
-sphere_uniform
-sphere_uniform.h
-sphere_uniform.o
+sphere_uniform_scan
+sphere_uniform_scan.h
+sphere_uniform_scan.o
+sphere_uniform_bvh
+sphere_uniform_bvh.h
+sphere_uniform_bvh.o

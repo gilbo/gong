@@ -1,6 +1,13 @@
 
-#include "sphere_uniform.h"
+#ifdef USE_SCAN
+#include "sphere_uniform_scan.h"
+#endif
+#ifdef USE_BVH
+#include "sphere_uniform_bvh.h"
+#endif
+
 #include <iostream>
+#include <iomanip>
 #include <cmath>
 //#include <set>
 //#include <utility>
@@ -55,13 +62,15 @@ void SpheresLoad( Store store, int n_spheres, string filename )
   ifstream SFILE(filename);
   if(!SFILE.good()) { ERR("could not open '" << filename << "'"); }
 
-  store.Spheres().beginload(n_spheres);
+  //store.Spheres().beginload(n_spheres);
+  vec3 *pos         = store.Spheres().pos().readwrite_lock();
   for(uint32_t k=0; k<n_spheres; k++) {
-    vec3 pos;
-    SFILE >> pos.d[0] >> pos.d[1] >> pos.d[2];
-    store.Spheres().loadrow( pos, 0 );
+    //vec3 pos;
+    SFILE >> pos[k].d[0] >> pos[k].d[1] >> pos[k].d[2];
+    //store.Spheres().loadrow( pos, 0 );
   }
-  store.Spheres().endload();
+  store.Spheres().pos().readwrite_unlock();
+  //store.Spheres().endload();
 
   if(!SFILE.good()) { ERR("file-read error in '" << filename << "'"); }
   SFILE.close();
@@ -70,13 +79,14 @@ void SpheresLoad( Store store, int n_spheres, string filename )
 
 void SphereCounts( Store store, int n_spheres )
 {
-  int total_collisions = 0;
+  int total_collisions  = 0;
 
+  uint32_t *ic          = store.Spheres().isct_count().read_lock();
   for(uint32_t k=0; k<n_spheres; k++) {
-    int ic = store.Spheres().isct_count().read(k);
-    total_collisions += ic;
+    total_collisions += ic[k];
   }
-  cout << "  Found " << total_collisions << " collisions" << endl;
+  store.Spheres().isct_count().read_unlock();
+  //cout << "  Found " << total_collisions/2 << " collisions" << endl;
 }
 
 const int SPHERE_DIV = 8;
@@ -165,11 +175,12 @@ void DrawSpheres( Store store, int n_spheres )
 
   num RADIUS = 1.25;
 
+  vec3 *pos         = store.Spheres().pos().read_lock();
   for(int k=0; k<n_spheres; k++) {
-    vec3 pos = store.Spheres().pos().read(k);
     //vdb_sphere(pos, RADIUS);
-    vdb_point(pos.d[0], pos.d[1], pos.d[2]);
+    vdb_point(pos[k].d[0], pos[k].d[1], pos[k].d[2]);
   }
+  store.Spheres().pos().read_unlock();
 
   vdb_end();
 }
@@ -187,11 +198,15 @@ int main() {
   InitStore(store, N_SPHERES);
   SPHERE_PRECOMP();
 
+  double min_time   = 1e6;
+  double max_time   = 0;
+  double sum_time   = 0;
+
   int N_FRAMES = 100;
   for(int k=0; k < N_FRAMES; k++) {
     string filename = "Spheres/spheres" + to_string(k) + ".txt";
     SpheresLoad(store, N_SPHERES, filename);
-    cout << "Frame #"<<k<< " loaded.  Intersecting..." << endl;
+    //cout << "Frame #"<<k<< " loaded.  Intersecting..." << endl;
 
     double start = taketime();
     store.sphere_self_isct();
@@ -201,8 +216,21 @@ int main() {
 
     CHECK_ERR();
     SphereCounts(store, N_SPHERES);
-    cout << "collision took " << (stop-start)*1e3 << " ms" << endl;
+    double dtime = stop - start;
+    sum_time += dtime;
+    if (dtime < min_time) min_time = dtime;
+    if (dtime > max_time) max_time = dtime;
+    //cout << "collision took " << (stop-start)*1e3 << " ms" << endl;
   }
+
+  double avg_time = sum_time / N_FRAMES;
+  cout << "frame timings (in ms) for " << N_FRAMES << " frames" << endl;
+  cout << "    avg         min         max         " << endl;
+  cout << "    "
+       << setw(10) << avg_time*1e3 << "  "
+       << setw(10) << min_time*1e3 << "  "
+       << setw(10) << max_time*1e3 << "  "
+       << endl;
 
   cout << "sphere_uniform done" << endl;
   return 0;

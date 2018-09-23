@@ -120,26 +120,28 @@ function Context:PrepareData( effects )
   return self._W:PrepareData(self:StorePtr(), self:on_GPU(), effects)
 end
 
-function Context:LoopGenAB(name, src0, row0, src1, row1, args, code)
+function Context:AccIndexInvalidation( effects )
+  return self._W:AccIndexInvalidation(self:StorePtr(), effects)
+end
+
+function Context:AccIndexUpdate(name)
   if self:on_GPU() then
-    return self._W:GPU_LoopGenAB(name, self:StorePtr(),
-                  self:GPU_Tables_Ptr(), self:GPU_Globals_Ptr(),
-                  self._traversal,
-                  src0, row0, src1, row1, args, code)
+    return self._W:AccIndexUpdate( self._traversal, name, self:StorePtr(),
+                                   self:GPU_Tables_Ptr(),
+                                   self:GPU_Globals_Ptr() )
   else
-    return self._W:LoopGenAB(self:StorePtr(),
-                             self._traversal, row0, row1, code)
+    return self._W:AccIndexUpdate( self._traversal, name, self:StorePtr() )
   end
 end
-function Context:LoopGenAA(name, srctype, rowA, rowB, args, code)
+
+function Context:LoopGen(name, rowA, rowB, args, code)
   if self:on_GPU() then
-    return self._W:GPU_LoopGenAA(name, self:StorePtr(),
+    return self._W:GPU_LoopGen(name, self:StorePtr(),
                   self:GPU_Tables_Ptr(), self:GPU_Globals_Ptr(),
-                  self._traversal,
-                  srctype, rowA, rowB, args, code)
+                  self._traversal, rowA, rowB, args, code)
   else
-    return self._W:LoopGenAA(self:StorePtr(),
-                             self._traversal, rowA, rowB, code)
+    return self._W:LoopGen(self:StorePtr(),
+                           self._traversal, rowA, rowB, code)
   end
 end
 
@@ -364,6 +366,11 @@ function Exports.codegen(args)
                       assert(for_gpu~=nil,  'INTERNAL: expect for_gpu')
   local traversal   = args.traversal
 
+  -- add traversal effects to the join context if present
+  if traversal then
+    effects:insertall(traversal:_INTERNAL_geteffects())
+  end
+
   local ctxt        = NewContext(effects, StoreWrap, traversal, for_gpu)
   local func        = ast:codegen(name, ctxt)
   func:setname(name)
@@ -439,13 +446,15 @@ function AST.Join:codegen(name, ctxt)
   local outerloop = terra( [outerargs] ) escape
     emit( ctxt:PrepareData( ctxt.effects ) )
 
+    -- do index maintenance now if needed
+    emit( ctxt:AccIndexUpdate( name ) )
+
     -- then do the main loops of the join
-    if typA == typB then -- self-join
-      emit( ctxt:LoopGenAA(name, typA, rowA, rowB, outerargs, innerloop) )
-    else -- not a self-join
-      emit( ctxt:LoopGenAB(name, typA, rowA,
-                                 typB, rowB, outerargs, innerloop) )
-    end
+    emit( ctxt:LoopGen(name, rowA, rowB, outerargs, innerloop) )
+
+    -- Invalidate any spatial indices that need to be as a result of
+    -- this join modifying some data
+    emit( ctxt:AccIndexInvalidation( ctxt.effects ) )
 
     -- cleanup any merge tables
     for dst,_ in pairs(mergetbls) do
