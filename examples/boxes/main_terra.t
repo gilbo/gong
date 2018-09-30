@@ -23,7 +23,15 @@ local assert    = G.cassert
 ------------------------------------------------------------------------------
 -- Sim Constants / Parameters
 
-local debug_draw            = false
+local params = { debug_draw = '', traversal = 'scan_scan' }
+for _,a in ipairs(arg) do
+  local _, _, label, value = a:find("^%-([^=]*)=(.*)$")
+  if label and value then params[label] = value end
+end
+
+local debug_draw            = (params.debug_draw ~= '')
+
+local traversal             = params.traversal
 
 local timestep              = 1/60
 local inv_timestep          = 1/timestep
@@ -36,8 +44,8 @@ local invmass               = 1/mass
 
 local max_iters             = 50
 
--- NOTE: The PCG solver appears to be broken
---        I don't know what's wrong with it...
+-- NOTE: The PCG solver doesn't actually work
+--        I'm not sure it ever did
 local solver_use            = 'pgs'
 
 ------------------------------------------------------------------------------
@@ -45,6 +53,14 @@ local solver_use            = 'pgs'
 
 local function GenBoxAPI()
   local Boxes             = require 'boxes'
+
+  if traversal == 'bvh_bvh' then
+    Boxes.find_plank_iscts:set_cpu_traversal(Boxes.bvh_traversal)
+  elseif traversal == 'scan_scan' then
+    -- a-ok
+  else
+    error('unrecognized traversal setting: '..traversal)
+  end
 
   local API = G.CompileLibrary {
     tables          = Boxes.tables,
@@ -58,6 +74,7 @@ local function GenBoxAPI()
     Planks        = true,
     PPContacts    = true,
     find_plank_iscts = true,
+    bvh_traversal = true,
   }
   for k,v in pairs(Boxes) do if not blockout[k] then API[k] = v end end
 
@@ -175,14 +192,17 @@ local terra loadBoxesSimpleStack( store : API.Store )
   boxes:endload()
 end
 
-local terra loadBoxesRoundTower( store : API.Store )
+local terra loadBoxesRoundTower( store : API.Store, use_projectile : bool )
   var boxes = store:Planks()
 
   var n_levels  = 50
   var n_ring    = 24
   var radius    = 11
 
-  boxes:beginload( n_levels*n_ring + 2 )
+  var n_extra   = 1
+  if use_projectile then n_extra = 2 end
+
+  boxes:beginload( n_levels*n_ring + n_extra )
     -- ground box
     boxes:loadrow( v3(0,-50,0),
                    q4(0,0,0,1),
@@ -193,6 +213,7 @@ local terra loadBoxesRoundTower( store : API.Store )
                    num(0),
                    v3(200,100,200)
                  )
+  if use_projectile then
     -- projectile box
     boxes:loadrow( v3(20,14.5,0),   -- position
                    q4(0,0,0,1),   -- rotation
@@ -203,6 +224,7 @@ local terra loadBoxesRoundTower( store : API.Store )
                    num(18),       -- mass
                    v3(2,7,5)      -- dims
                  )
+  end
     for k=0,n_levels do
       var off = num((k+1)%2)/2
       for j=0,n_ring do
@@ -408,13 +430,98 @@ local terra drawStore( store : API.Store )
   --C.getchar()
 end
 
+local terra dumpStore( store : API.Store, filename : rawstring )
+  var F   = C.fopen(filename, 'w')
+  assert(F ~= nil, 'failed to open file %s for writing', filename)
+  C.printf('Opened %s for dumping...\n', filename)
+
+  var n_post_sphere   = store:post_sphere_count():read()
+  var n_alloc         = store:PPContacts():get_n_alloc()
+  var n_contacts      = store:PPContacts():get_n_rows()
+  var n_box           = store:Planks():getsize()
+  var pos             = store:Planks():pos():read_lock()
+  var rot             = store:Planks():rot():read_lock()
+  var dims            = store:Planks():dims():read_lock()
+  var p0, p1          = store:PPContacts():p0():read_lock(),
+                        store:PPContacts():p1():read_lock()
+  var is_live         = store:PPContacts():is_live():read_lock()
+
+  var n_pts           = store:PPContacts():n_pts():read_lock()
+  var basis           = store:PPContacts():basis():read_lock()
+  var pts             = store:PPContacts():pts():read_lock()
+
+  C.fprintf(F, "n_boxes:        %5d\n", n_box)
+  C.fprintf(F, "n_contacts:     %5d\n", n_contacts)
+  C.fprintf(F, "n_post_sphere:  %5d\n", n_post_sphere)
+  C.fprintf(F, "\nBOXES\n")
+  for b=0,n_box do
+    C.fprintf(F, "  %5d : %8.4f %8.4f %8.4f ; %8.4f %8.4f %8.4f %8.4f\n",
+                 b,
+                 pos[b].d[0], pos[b].d[1], pos[b].d[2],
+                 rot[b].d[0], rot[b].d[1], rot[b].d[2], rot[b].d[3] )
+  end
+  C.fprintf(F, "\nCONTACTS\n")
+  var p_tmp           = [&uint64](C.malloc(n_contacts*sizeof(uint64)))
+  var w               = 0
+  for c=0,n_alloc do
+    if is_live[c] then
+      var packed      = ([uint64](p0[c]) << 32) or [uint64](p1[c])
+      p_tmp[w]        = packed
+      w               = w + 1
+      assert(w <= n_contacts, 'Found too many contacts; N:%d alloc:%d c:%d',
+             n_contacts, n_alloc, c)
+    end
+  end
+  assert(w == n_contacts, 'Found wrong number of contacts')
+  --sort(n_contacts, p_tmp)
+  for c=0,n_contacts do
+    var packed        = p_tmp[c]
+    var i0, i1        = [uint32](packed >> 32), [uint32](packed)
+    C.fprintf(F, "%5d (%d): %5d %5d ; %8.4f %8.4f %8.4f\n",
+                 c, n_pts[c], i0, i1,
+                 basis[c].norm.d[0], basis[c].norm.d[1], basis[c].norm.d[2] )
+    for k=0,n_pts[c] do
+      C.fprintf(F, "      [%d]: %8.4f %8.4f %8.4f ; %8.4f\n", k,
+        pts[c].d[k].pt.d[0], pts[c].d[k].pt.d[1], pts[c].d[k].pt.d[2],
+        pts[c].d[k].depth )
+      C.fprintf(F, "           %8.4f %8.4f %8.4f ; %8.4f %8.4f %8.4f\n",
+        pts[c].d[k].rel0.d[0], pts[c].d[k].rel0.d[1], pts[c].d[k].rel0.d[2],
+        pts[c].d[k].rel1.d[0], pts[c].d[k].rel1.d[1], pts[c].d[k].rel1.d[2] )
+      C.fprintf(F, "           %8.4f %8.4f %8.4f ; %8.4f %8.4f %8.4f\n",
+   pts[c].d[k].local0.d[0], pts[c].d[k].local0.d[1], pts[c].d[k].local0.d[2],
+   pts[c].d[k].local1.d[0], pts[c].d[k].local1.d[1], pts[c].d[k].local1.d[2] )
+    end
+  end
+  C.free(p_tmp)
+  --{ 'pt',                 vec3 },
+  --{ 'rel0',               vec3 },
+  --{ 'rel1',               vec3 },
+  --{ 'local0',             vec3 },
+  --{ 'local1',             vec3 },
+  --{ 'depth',              num },
+
+  store:PPContacts():pts():read_unlock()
+  store:PPContacts():basis():read_unlock()
+  store:PPContacts():n_pts():read_unlock()
+
+  store:PPContacts():is_live():read_unlock()
+  store:PPContacts():p0():read_unlock()
+  store:PPContacts():p1():read_unlock()
+  store:Planks():pos():read_unlock()
+  store:Planks():rot():read_unlock()
+  store:Planks():dims():read_unlock()
+
+  C.printf('Done dumping to %s\n', filename)
+  assert(C.fclose(F) == 0, 'failed to close file %s', filename)
+end
+
 local terra mainLoop()
   C.printf('        -+-+- CODE: mainLoop() -+- Begin\n')
   var store       = API.NewStore()
   C.printf('        -+-+- CODE: mainLoop() -+- into loadBoxes()\n')
   --loadBoxesSlantGround(store)
   --loadBoxesSimpleStack(store)
-  loadBoxesRoundTower(store)
+  loadBoxesRoundTower(store, true)
 
     vdb.vbegin()
     vdb.frame()
@@ -428,6 +535,13 @@ local terra mainLoop()
   solver:alloc(store)
 
   for k=0,300 do
+
+    --var namebuf :int8[1024]
+    --var file_stubname   = [ (use_bvh and "../../bvh_data/dump")
+    --                                  or "../../scan_data/dump" ]
+    --C.snprintf( namebuf, 1024, "%s%04d.txt", file_stubname, k )
+    --dumpStore( store, namebuf )
+
     C.printf('timestep #%d:\n', k)
     var start     = taketime()
     solver:do_timestep(nil)
@@ -437,9 +551,15 @@ local terra mainLoop()
       C.usleep([int](wait_time*1e6))
     end
 
+    var ps = store:post_sphere_count():read()
+    C.printf('  Collisions Post-Sphere-Test: %d\n', ps)
+    store:post_sphere_count():write(0)
+
     drawStore(store)
     --print_boxes(store)
   end
+
+  solver:print_final_report()
 
   C.printf('        -+-+- CODE: mainLoop() -+- Start Free\n')
   solver:free()

@@ -325,7 +325,7 @@ function Exports.GenTerraAPI(hierarchy)
     else
       terra TWrap:get_n_rows() return TBL.GetNRows(self.store) end
       terra TWrap:get_n_alloc() return TBL.GetNAlloc(self.store) end
-      --terra TWrap:make_compact() TBL.MakeCompact(self.store) end
+      terra TWrap:sort() TBL.Sort(self.store) end
     end
     local loadarg         = symbol(TBL.BeginLoad:gettype().parameters[2])
     terra TWrap:beginload( [loadarg] )
@@ -691,7 +691,7 @@ function Exports.GenCppAPI(prefix, structs, funcs, hierarchy)
     else
       CPP:insert( tmethod('    ', 'n_rows', TBL.GetNRows) )
       CPP:insert( tmethod('    ', 'n_alloc', TBL.GetNAlloc) )
-      --CPP:insert( tmethod('    ', 'make_compact', TBL.MakeCompact) )
+      CPP:insert( tmethod('    ', 'sort', TBL.Sort) )
     end
     CPP:insertall {
       tmethod('    ', 'beginload', TBL.BeginLoad),

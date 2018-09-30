@@ -83,6 +83,32 @@ local function GeneratePGSSolver(API, params)
 
   -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
 
+  local struct Histogram {
+    _sum     : double
+    _min     : double
+    _max     : double
+    _count   : uint32
+  }
+  terra Histogram:init()
+    self._sum   = 0
+    self._min   = [math.huge]
+    self._max   = [-math.huge]
+    self._count = 0
+  end
+  terra Histogram:acc(v : double)
+    self._sum   = self._sum + v
+    if v < self._min then self._min = v end
+    if v > self._max then self._max = v end
+    self._count = self._count + 1
+  end
+  terra Histogram:avg()
+    return self._sum / [double](self._count)
+  end
+  terra Histogram:min()   return self._min    end
+  terra Histogram:max()   return self._max    end
+  terra Histogram:count() return self._count  end
+  terra Histogram:sum()   return self._sum    end
+
   local struct PGS_State {
     -- scalar solver data
     --alpha_numerator : num
@@ -138,6 +164,11 @@ local function GeneratePGSSolver(API, params)
     basis           : &ContactBase
 
     store           : API.Store
+
+    -- Stats
+    total_time      : Histogram
+    collide_time    : Histogram
+    solve_time      : Histogram
   }
 
   local terra getAllocLimit( store : API.Store )
@@ -162,6 +193,10 @@ local function GeneratePGSSolver(API, params)
 
   terra PGS_State:alloc( store : API.Store )
     self.store          = store
+
+    self.total_time:init()
+    self.collide_time:init()
+    self.solve_time:init()
 
     var bs              = store:Planks()
     var cs              = store:PPContacts()
@@ -849,6 +884,7 @@ local function GeneratePGSSolver(API, params)
     pgs:unlock_store()
     --C.printf("    unlocked\n")
     pgs.store:find_plank_iscts()
+    pgs.store:PPContacts():sort()
     --C.printf("    locking\n")
     pgs:relock_store() -- resize constraint-value arrays
     var midtime     = taketime()
@@ -894,6 +930,23 @@ local function GeneratePGSSolver(API, params)
               "                collision  %8.3f\n"..
               "                solver     %8.3f\n"],
               total*1e3, collide*1e3, solve*1e3)
+    self.collide_time:acc(collide*1e3)
+    self.solve_time:acc(solve*1e3)
+    self.total_time:acc(total*1e3)
+  end
+
+  terra PGS_State:print_final_report()
+    C.printf('\n*** Final Report ***\n')
+    C.printf("  timings(ms) -  avg      min      max      | sum\n")
+    C.printf("      total      %8.3f %8.3f %8.3f | %8.3f\n",
+      self.total_time:avg(), self.total_time:min(),
+      self.total_time:max(), self.total_time:sum() )
+    C.printf("      collision  %8.3f %8.3f %8.3f | %8.3f\n",
+      self.collide_time:avg(), self.collide_time:min(),
+      self.collide_time:max(), self.collide_time:sum() )
+    C.printf("      solver     %8.3f %8.3f %8.3f | %8.3f\n",
+      self.solve_time:avg(), self.solve_time:min(),
+      self.solve_time:max(), self.solve_time:sum() )
   end
 
   return PGS_State

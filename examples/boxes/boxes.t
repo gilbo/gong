@@ -826,79 +826,127 @@ end
 ------------------------------------------------------------------------------
 -- Join
 
+local post_sphere_count   = G.Global('post_sphere_count', G.uint32, 0)
+
 local gong join find_plank_iscts ( p0 : Planks, p1 : Planks )
   where p0 ~= p1
   where bound_sphere_test(p0,p1)
 
   var n_pts, norm, contacts = obb_isct(p0, p1)
-  where n_pts > 0
 do
+  post_sphere_count += 1
   --var f0, f1 = compute_friction(norm)
-
-  merge in PPContacts
-    new { n_pts       = G.uint32(n_pts),
-          basis       = {
-            norm = norm
-          },
-          pts         = contacts,
-          l_mult      = l_mult_zero(),
-          fric_mult   = l_mult_zero()
-        }
-    update(c)
-      c.basis             = { norm        = norm }
-      -- sort out point-to-point correspondence
-      if false then -- just overwrite in simple case
-        c.n_pts           = G.uint32(n_pts)
-        c.pts             = contacts
-        c.l_mult          = l_mult_zero()
-        c.fric_mult       = l_mult_zero()
-      else
-        --c.n_pts = 0
-        -- for each new point,
-        --    * try to find an existing old point to associate to
-        --    * add if room, or try to find the best point to replace
-        for k=0,n_pts do
-          var id  = cacheLookup( c, contacts[k].local0 )
-          if id >= 0 then
-            c.pts[id]       = contacts[k]
-          elseif c.n_pts < 4 then
-            var id          = c.n_pts
-            c.n_pts         = id+1
-            c.pts[id]       = contacts[k]
-            c.l_mult[id]    = num(0)
-            c.fric_mult[id] = num(0)
-          else
-            id              = replacePoint( c, norm, contacts[k].pt,
-                                                     contacts[k].depth )
-            c.pts[id]       = contacts[k]
-            c.l_mult[id]    = num(0)
-            c.fric_mult[id] = num(0)
+  if n_pts > 0 then
+    merge in PPContacts
+      new { n_pts       = G.uint32(n_pts),
+            basis       = {
+              norm = norm
+            },
+            pts         = contacts,
+            l_mult      = l_mult_zero(),
+            fric_mult   = l_mult_zero()
+          }
+      update(c)
+        c.basis             = { norm        = norm }
+        -- sort out point-to-point correspondence
+        if false then -- just overwrite in simple case
+          c.n_pts           = G.uint32(n_pts)
+          c.pts             = contacts
+          c.l_mult          = l_mult_zero()
+          c.fric_mult       = l_mult_zero()
+        else
+          --c.n_pts = 0
+          -- for each new point,
+          --    * try to find an existing old point to associate to
+          --    * add if room, or try to find the best point to replace
+          for k=0,n_pts do
+            var id  = cacheLookup( c, contacts[k].local0 )
+            if id >= 0 then
+              c.pts[id]       = contacts[k]
+            elseif c.n_pts < 4 then
+              var id          = c.n_pts
+              c.n_pts         = id+1
+              c.pts[id]       = contacts[k]
+              c.l_mult[id]    = num(0)
+              c.fric_mult[id] = num(0)
+            else
+              id              = replacePoint( c, norm, contacts[k].pt,
+                                                       contacts[k].depth )
+              c.pts[id]       = contacts[k]
+              c.l_mult[id]    = num(0)
+              c.fric_mult[id] = num(0)
+            end
           end
+          --G.print("FINAL",c.n_pts)
+          -- Then, update all the points, potentially discarding some
+          var N, PTS, LM, FM = refreshPoints( c )
+          --G.print('discard from-to...',c.n_pts,'-/->',N)
+          --G.print('REFRESHED',N)
+          c.n_pts     = N
+          c.pts       = PTS
+          c.l_mult    = LM
+          c.fric_mult = FM
         end
-        --G.print("FINAL",c.n_pts)
+      end
+      remove(c)
         -- Then, update all the points, potentially discarding some
         var N, PTS, LM, FM = refreshPoints( c )
-        --G.print('discard from-to...',c.n_pts,'-/->',N)
-        --G.print('REFRESHED',N)
-        c.n_pts     = N
-        c.pts       = PTS
-        c.l_mult    = LM
-        c.fric_mult = FM
+        --G.print('remove-keep from-to...',c.n_pts,'-/->',N)
+        if N > 0 then
+          keep(c)
+          c.n_pts     = N
+          c.pts       = PTS
+          c.l_mult    = LM
+          c.fric_mult = FM
+        end
       end
-    end
-    remove(c)
-      -- Then, update all the points, potentially discarding some
-      var N, PTS, LM, FM = refreshPoints( c )
-      --G.print('remove-keep from-to...',c.n_pts,'-/->',N)
-      if N > 0 then
-        keep(c)
-        c.n_pts     = N
-        c.pts       = PTS
-        c.l_mult    = LM
-        c.fric_mult = FM
-      end
-    end
+  end
 end
+
+
+------------------------------------------------------------------------------
+-- BVH
+
+local AABB3f  = G.AABB3f
+
+local gong function Planks_to_AABB3f( p : Planks ) : AABB3f
+  -- R sends local to global,
+  -- so the columns j=0,1,2 given by (:[i] R[i,j]) are the global
+  -- coordinates for rotated box axes.
+  var R       = qRotMat(p.rot)
+  -- These need to be scaled by the half-width of the box in each dimension
+  var hw      = p.dims * 0.5f + {OBB_EPSILON,OBB_EPSILON,OBB_EPSILON}
+  -- There are 8 vertices of the box, obtainable via every possible
+  -- choice of +,- signs on the axis vectors.  For each world-space dimension
+  -- there is some choice of signs such that we take a sum of strictly
+  -- positive coordinates in that dimension, which is the largest possible
+  -- value.  And by symmetry, this is the least possible value when
+  -- the sign is flipped.
+  var AAhw    = ( :[world] +[obj] G.abs( R[obj,world] * hw[obj] ) )
+              + {OBB_EPSILON,OBB_EPSILON,OBB_EPSILON}
+  --]]
+  --var r = bound_radius(p)
+  --var AAhw = num(1)*{r,r,r}
+  --G.print(p,r,'    ',AAhw,p.pos)
+
+  return { lo = p.pos-AAhw, hi = p.pos+AAhw }
+end
+
+local Planks_BVH      = G.bvh_index {
+  table       = Planks,
+  volume      = AABB3f,
+  abstract    = Planks_to_AABB3f,
+  vol_union   = G.AABB3f_union,
+  point       = G.AABB3f_midpoint,
+}
+
+local BVH_Traversal   = G.bvh_bvh_traversal {
+  left        = Planks_BVH,
+  right       = Planks_BVH,
+  vol_isct    = G.AABB3f_isct,
+}
+
+
 
 
 ------------------------------------------------------------------------------
@@ -910,6 +958,7 @@ return {
   Planks        = Planks,
   PPContacts    = PPContacts,
   find_plank_iscts = find_plank_iscts,
+  bvh_traversal = BVH_Traversal,
 
   num           = num,
   vec2          = vec2,

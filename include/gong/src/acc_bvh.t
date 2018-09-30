@@ -288,6 +288,7 @@ function BVH_Index:_INTERNAL_do_invalidate(idxptr, size_invalid,data_invalid)
   return quote
     idxptr.rebuild  = idxptr.rebuild  or size_invalid
     idxptr.refit    = idxptr.refit    or data_invalid
+    --idxptr.rebuild  = true -- hack for now...
   end
 end
 

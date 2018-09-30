@@ -288,7 +288,8 @@ local function GeneralMergeIndex(Index, IndexName)
     local terra find( self : &CIdx, k0 : K0, k1 : K1 )
       var v       = (self._keys + k0)
       var N       = v:size()
-      var lo,hi   = 0,int32(N)-1
+      var lo,hi   = int32(0),int32(N)-1
+      --C.printf('find %d %d ; %d\n', k0, k1, N)
       while lo <= hi do
         var mid   = lo + (hi-lo)/2
         var mval  = v(mid)
@@ -300,16 +301,44 @@ local function GeneralMergeIndex(Index, IndexName)
           return true, v, mid
         end
       end
-      assert(lo == hi + 1, 'INTERNAL: sanity 1 for index find')
-      assert(lo >= 0, 'INTERNAL: sanity 2 for index find')
+      assert(lo == hi + 1,
+        'INTERNAL: sanity 1 for index find at (%d,%d) lo,hi=%d,%d',
+        k0,k1, lo,hi)
+      assert(lo >= 0,
+        'INTERNAL: sanity 2 for index find at (%d,%d) lo,hi=%d,%d',
+        k0,k1, lo,hi)
       return false, v, lo
     end
 
-    local terra print_idx( idx : &CIdx, k0 : K0 )
-      C.printf("  idx[%d]: ", k0)
-      var V = idx._keys[k0]
-      for k=0,V:size() do C.printf(" %d(%d)", V(k).k1, V(k).dst) end
-      C.printf("\n")
+    terra CIdx:debug_print( store : &CStore )
+      var size          = store.[T0name]._size
+      for k=0,size do
+        C.printf("  %5d:", k)
+        var V = self._keys[k]
+        for i=0,V:size() do C.printf(" %d(%d)", V(i).k1, V(i).dst) end
+        C.printf("\n")
+      end
+    end
+    terra CIdx:check_valid( store : &CStore )
+      C.printf("* + * + * Do Validity Check\n")
+      var T0size        = store.[T0name]._size
+      var T1size        = store.[ W._c_cache[F1:type():table()].name ]._size
+      for k0=0,T0size do
+        var V   = self._keys[k0]
+        for i=0,V:size() do
+          var k1  = V(i).k1
+          var dst = V(i).dst
+          assert(k1 < T1size,
+            'INTERNAL: bad key-1 value in index; (%d,%d)=%d', k0, k1, dst)
+          assert( [ W:_INTERNAL_is_live_read(store, T.row(DST), dst) ],
+            'INTERNAL: dst value is a dead row; (%d,%d)=%d', k0, k1, dst)
+          var d0  = (store.[Dname].[F0name])[dst]
+          var d1  = (store.[Dname].[F1name])[dst]
+          assert(d0 == k0 and d1 == k1,
+          'INTERNAL: index key values mismatch at dst; (%d,%d)=%d -> (%d,%d)',
+            k0, k1, dst, d0, d1)
+        end
+      end
     end
 
     terra CIdx:insert( k0 : K0, k1 : K1, row : KDST )
@@ -361,15 +390,15 @@ local function GeneralMergeIndex(Index, IndexName)
       end
     end
 
+    local row = symbol(KDST, 'row')
     terra CIdx:rebuild( store : &CStore )
-      self:clear(store)
-      var ALLOC           = store.[Dname]._n_alloc
-      for row=0,ALLOC do
-        if [ W:_INTERNAL_is_live_read(store, T.row(DST), row) ] then
+      var this = self
+      this:clear(store)
+      [ W:Scan( store, T.row(DST), row, quote
           var k0          = (store.[Dname].[F0name])[row]
           var k1          = (store.[Dname].[F1name])[row]
-          self:insert(k0, k1, row)
-      end end
+          this:insert(k0, k1, row)
+        end) ]
     end
 
     CIdx.methods.InstallMethods = nil -- erase
@@ -527,6 +556,25 @@ local function InstallStructMethods(prefix, W)
       local is_live_f = macro(function( store, k )
         return W:_INTERNAL_is_live_read(store, T.row(Table), k)
       end)
+      local livename        = W._c_cache[Table._is_live].name
+      terra CTable:debug_is_live()
+        var this            = self
+        var n_alloc         = this._n_alloc
+        var is_live         = this.[livename]
+        var i = 0
+        while i < n_alloc do
+          C.printf("%6d: ", i)
+          for j=0,50 do
+            if i+j < n_alloc then
+              if is_live[i+j] then C.printf("1")
+                              else C.printf("0") end
+            end
+          end
+          i = i+50
+          C.printf('\n')
+        end
+      end
+
       terra CTable:alloc_more( store : &CStore, newalloc : SizeT )
         var this              = self
         var oldalloc          = self._n_alloc
@@ -596,28 +644,35 @@ local function InstallStructMethods(prefix, W)
         var write             = 0
         var read              = live_bound - 1
         while n_to_move > 0 do
-          -- start by finding a row to copy and an empty slot to copy
-          -- it to
+          -- start by finding a row to copy and an empty slot to copy it to
           while is_live_f(store, write)    do write = write + 1 end
-          while not is_live_f(store, read) do read = read - 1 end
-          -- copy row
-          escape for iField,Field in ipairs(Table:_INTERNAL_fields()) do
-            local fname       = W._c_cache[Field].name
-            emit quote
-              (self.[fname])[write] = (self.[fname])[read]
-            end
-          end end
-          -- Make sure to set the written row as live
-          [ W:_INTERNAL_set_live(store, T.row(Table), write) ]
-          -- and repair the index incrementally
-          var k0, k1          = self.[f0name][read], self.[f1name][read]
-          var found, ptr      = store.[iname]:lookup(k0,k1)
-          assert(found, 'INTERNAL: bad index update on compaction')
-          @ptr                = write
-          -- and adjust all the pointers to continue
-          write               = write + 1
-          read                = read - 1
-          n_to_move           = n_to_move - 1
+          while not is_live_f(store, read) do
+            -- skipping dead rows at the end counts against
+            -- the total number of rows we need to copy
+            n_to_move   = n_to_move - 1
+            read        = read - 1
+          end
+          if n_to_move > 0 then
+            assert(write < read, 'INTERNAL: Out of Order Copy')
+            -- copy row
+            escape for iField,Field in ipairs(Table:_INTERNAL_fields()) do
+              local fname       = W._c_cache[Field].name
+              emit quote
+                (self.[fname])[write] = (self.[fname])[read]
+              end
+            end end
+            -- Make sure to set the written row as live
+            [ W:_INTERNAL_set_live(store, T.row(Table), write) ]
+            -- and repair the index incrementally
+            var k0, k1          = self.[f0name][read], self.[f1name][read]
+            var found, ptr      = store.[iname]:lookup(k0,k1)
+            assert(found, 'INTERNAL: bad index update on compaction')
+            @ptr                = write
+            -- and adjust all the pointers to continue
+            write               = write + 1
+            read                = read - 1
+            n_to_move           = n_to_move - 1
+          end
         end
 
         -- finally, we need to flush out the dead space
@@ -646,7 +701,11 @@ local function InstallStructMethods(prefix, W)
           local fcopies       = newlist()
           local fswaps        = newlist()
           for iField,Field in ipairs(Table:_INTERNAL_fields()) do
-            if Field ~= f0 and Field ~= f1 then
+            -- NOTE: it's very important that we exclude
+            -- Table._is_live, because if we re-allocate that field
+            -- specifically, then we must make sure to zero out all
+            -- the un-used rows, which the generic copy doesn't do
+            if Field ~= f0 and Field ~= f1 and Field ~= Table._is_live then
               local fname     = W._c_cache[Field].name
               local ftype     = Field:type():terratype()
               local fsym      = symbol(&ftype, fname..'_newptr')
@@ -779,6 +838,10 @@ local function InstallStructMethods(prefix, W)
         local f0name          = W._c_cache[f0].name
         emit quote for k=0,MIN_INIT_SIZE do
           (this.[tblname].[f0name])[k] = k+1
+        end end
+        -- Need to zero out the dead rows...
+        emit quote for k=0,MIN_INIT_SIZE do
+          [ W:_INTERNAL_set_dead( this, T.row(Table), k ) ]
         end end
       end
     end for iIndex, Index in ipairs(W._indices) do
@@ -1063,9 +1126,20 @@ function Wrapper:_INTERNAL_EnsureSorted(storeptr, tbltype)
   local Table, tblname  = unpack_tbl(self, tbltype)
   assert(Table._is_live, 'INTERNAL: only call EnsureSorted on mergables')
   local tbl_expr        = `storeptr.[tblname]
+  --local idx_print       = nil
+  --for iIndex, Index in ipairs(W._indices) do
+  --  local idxname       = W._c_cache[Index].name
+  --  idx_print           = quote
+  --    storeptr.[idxname]:debug_print(storeptr)
+  --    storeptr.[idxname]:check_valid(storeptr)
+  --  end
+  --end
   return quote
+    --[idx_print]
     [ W:_INTERNAL_EnsureCompact( storeptr, tbltype ) ]
     if not tbl_expr:is_sorted() then tbl_expr:sort(storeptr) end
+    --[idx_print]
+    --C.printf('endsort\n')
   end
 end
 
@@ -1106,13 +1180,14 @@ function Wrapper:Size(storeptr, tbltype)
 end
 
 function Wrapper:Scan(storeptr, tbltype, rowsym, bodycode)
+  local W               = self
   local Table, tblname  = unpack_tbl(self, tbltype)
 
   if Table._is_live then
     local guard         = W:_INTERNAL_is_live_read(storeptr, tbltype, rowsym)
     return quote
-      var ALLOC         = storeptr.[tblname]:n_alloc()
-      var N_ROW         = storeptr.[tblname]:n_rows()
+      var ALLOC         = storeptr.[tblname]._n_alloc
+      var N_ROW         = storeptr.[tblname]._n_rows
       for [rowsym]=0,ALLOC do if [guard] then
         [bodycode]
         -- early exit
@@ -1928,12 +2003,13 @@ function Wrapper:GenExternCAPI(prefix, export_funcs, gpu_on)
                   or {} ]
         return to_store(hdl).[tbl_cname]:n_alloc()
       end)
-      --add_func('MakeCompact_'..tname, HIERARCHY.tables[tname],
-      --         'MakeCompact',
-      --terra( hdl : ExtStore )
-      --  var store = to_store(hdl)
-      --  [ W:_INTERNAL_EnsureCompact(store, T.row(Table)) ]
-      --end)
+      add_func('Sort_'..tname, HIERARCHY.tables[tname], 'Sort',
+      terra( hdl : ExtStore )
+        var store = to_store(hdl)
+        [ (gpu_on and GW:CPU_SizeRefresh(`to_store(hdl), T.row(Table)))
+                  or {} ]
+        [ W:_INTERNAL_EnsureSorted(store, T.row(Table)) ]
+      end)
     else
       add_func('GetSize_'..tname, HIERARCHY.tables[tname], 'GetSize',
       terra( hdl : ExtStore ) : SizeT

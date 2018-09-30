@@ -94,6 +94,7 @@ end
 -- work correctly inside of Terra code
 local oldassert = assert
 local assert = macro(function(test,errstr,...)
+  local optargs     = terralib.newlist{...}
   local filename    = test.filename or 'unknown_file'
   local linenumber  = test.linenumber or -1
   errstr = errstr and errstr:asvalue()
@@ -104,7 +105,8 @@ local assert = macro(function(test,errstr,...)
   return quote
     if not test then
       C.fflush(Exports.stdout())
-      C.fprintf(Exports.stderr(), err,[{...}])
+      C.printf("stderr: %p\n", Exports.stderr())
+      C.fprintf(Exports.stderr(), err, [optargs])
       terralib.traceback(nil)
       C.abort()
     end
