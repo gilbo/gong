@@ -1994,7 +1994,6 @@ function Wrapper:GenExternCAPI(prefix, export_funcs, gpu_on)
   end)
   add_func('DestroyStore', HIERARCHY, 'DestroyStore',
   terra( hdl : ExtStore )
-    [ W._profiler:print_profile( `to_store(hdl)._profiler ) ]
     to_store(hdl):destroy()
   end)
   add_func('GetError', HIERARCHY, 'GetError',

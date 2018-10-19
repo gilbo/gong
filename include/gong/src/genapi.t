@@ -521,10 +521,15 @@ local function C_Common_API(prefix, structs, funcs)
 
   local HEADER_BODY       = newlist()
 
+  -- in order to get recursive inclusion ordering right, we need to
+  -- include the extra structs first, and reverse the declaration order
+  -- from the order in which we discovered them...
+  EXTRA_STRUCTS           = EXTRA_STRUCTS:reverse()
+
   -- Structs, in two groups, then function signatures
-  HEADER_BODY:insertall(STRUCT_SIGS)
-  HEADER_BODY:insert('')
   HEADER_BODY:insertall(EXTRA_STRUCTS)
+  HEADER_BODY:insert('')
+  HEADER_BODY:insertall(STRUCT_SIGS)
   HEADER_BODY:insert('')
   HEADER_BODY:insertall(FUNC_SIGS)
 

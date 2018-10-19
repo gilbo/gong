@@ -782,6 +782,7 @@ local terra mainLoop()
     --print_boxes(store)
   end
 
+  store:print_profile()
   solver:print_final_report()
 
   C.printf('        -+-+- CODE: mainLoop() -+- Start Free\n')
