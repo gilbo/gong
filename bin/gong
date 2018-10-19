@@ -17,6 +17,10 @@ while i<=#arg do
     options.coverage = true
   elseif arg[i] == '--debug_gpu_mem' then
     options.DEBUG_GPU_MEM = true
+  elseif arg[i] == '--no_profiling' then
+    options.PROFILING_OFF = true
+  elseif arg[i] == '--slow_verify' then
+    options.SLOW_VERIFY = true
   else break end
   i = i+1
 end

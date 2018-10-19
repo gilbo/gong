@@ -95,10 +95,11 @@ end
 
 local gong function DOP7f_midpoint( a : DOP7f ) : G.vec3f
   var pa = (a.lo_axis + a.hi_axis)/2
-  var md = (a.lo_diag + a.hi_diag)/2
-  var s  = (+[i] md[i])/4
-  var v  = {s,s,s} - 2 * { md[1], md[2], md[3] }
-  return (pa + v)/2
+  --var md = (a.lo_diag + a.hi_diag)/2
+  --var s  = (+[i] md[i])/4
+  --var v  = {s,s,s} - 2 * { md[1], md[2], md[3] }
+  --return (pa + v)/2
+  return pa
 end
 
 

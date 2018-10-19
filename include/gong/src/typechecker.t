@@ -135,7 +135,7 @@ local ADT A
         attributes {    type  : Type,         srcinfo : SrcInfo }
 
   PathToken = PathField { name : id_str }
-            | PathIndex { args : Expr*  }
+            | PathIndex { args : Expr*,       basetyp : Type    }
             attributes {                      srcinfo : SrcInfo }
 
   extern binop  function(obj) return binop_token_set[obj] end
@@ -1169,6 +1169,7 @@ function AST.TensorMap:typecheck(ctxt)
     local t       = ctxt:gettype(n)
     if t:is_unknown_tensorindex() then
       has_err     = true
+      ctxt:error(self, "unable to infer tensor index variable range for "..n)
       dims:insert(1)
     else
       dims:insert(t.range)
@@ -1202,7 +1203,10 @@ function AST.TensorFold:typecheck(ctxt)
   local idxtypes  = newlist()
   for i,n in ipairs(self.names) do
     local t       = ctxt:gettype(n)
-    if t:is_unknown_tensorindex() then has_err = true end
+    if t:is_unknown_tensorindex() then
+      ctxt:error(self, "unable to infer tensor index variable range for "..n)
+      has_err = true
+    end
     idxtypes:insert(t)
   end
   ctxt:leaveblock()
@@ -1266,11 +1270,11 @@ function AST.Lookup:typecheck(ctxt)
         local typ = base.type:basetype()
         if A.TableRead.check(base) then
           local path    = base.path:copy()
-          path:insert( A.PathIndex(args, self.srcinfo) )
+          path:insert( A.PathIndex(args, base.type, self.srcinfo) )
           return A.TableRead(base.base, path, typ, self.srcinfo)
         elseif A.GlobalRead.check(base) then
           local path    = base.path:copy()
-          path:insert( A.PathIndex(args, self.srcinfo) )
+          path:insert( A.PathIndex(args, base.type, self.srcinfo) )
           return A.GlobalRead(base.base, path, typ, self.srcinfo)
         else
           return A.TensorIndex(base, args, typ, self.srcinfo)

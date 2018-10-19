@@ -497,11 +497,12 @@ function BVH_BVH_Traversal:_INTERNAL_Construct_Functions(StoreAPI)
   local isctfn              = StoreAPI:GetCPUFunction( self._vol_isct )
 
   local function BVH_BVH_loopgen(storeptr, idxptr0, idxptr1,
-                                           row0sym, row1sym, bodycode)
+                                           row0sym, row1sym, args, bodycode)
     assert(terralib.issymbol(storeptr), 'INTERNAL: expect symbol')
     local StorePtrType  = storeptr.type
 
-    local terra bvh_loop( s : StorePtrType, bvh_L : &BVH_L, bvh_R : &BVH_R )
+    local terra bvh_loop( s : StorePtrType, bvh_L : &BVH_L, bvh_R : &BVH_R,
+                          [args] )
       -- exit early if either operand table is empty
       if bvh_L.geom_ids:size() == 0 or bvh_R.geom_ids:size() == 0 then
         return
@@ -615,7 +616,7 @@ function BVH_BVH_Traversal:_INTERNAL_Construct_Functions(StoreAPI)
     end
 
     return quote
-      bvh_loop( [storeptr], [idxptr0], [idxptr1] )
+      bvh_loop( [storeptr], [idxptr0], [idxptr1], [args] )
     end
   end
 

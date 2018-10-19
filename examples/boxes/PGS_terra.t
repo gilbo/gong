@@ -357,6 +357,8 @@ local function GeneratePGSSolver(API, params)
 
   -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
 
+  local nfmt = "%20.15f"
+  local vfmt = nfmt.." "..nfmt.." "..nfmt
   terra PGS_State:print()
     --
     C.printf("  BOXES       #%d\n", self.n_boxes)
@@ -369,19 +371,23 @@ local function GeneratePGSSolver(API, params)
       var p, v = self.pos[b], self.linvel[b]
       var r, w = self.rot[b], self.angvel[b]
   --  var f, t = self.force[b], self.torque[b]
-    C.printf("    %4d:  %7.3f %7.3f %7.3f         ; %7.3f %7.3f %7.3f\n",
+    C.printf(["    %4d:  "..vfmt.."         ; "..vfmt.."\n"],
              b, p(0), p(1), p(2), v(0), v(1), v(2))
-    C.printf("           %7.3f %7.3f %7.3f %7.3f ; %7.3f %7.3f %7.3f\n",
+    C.printf(["           "..vfmt.." "..nfmt.." ; "..vfmt.."\n"],
              r(0), r(1), r(2), r(3), w(0), w(1), w(2))
     end
     C.printf("  CONTACTS    #%d\n", self.n_contacts)
-    C.printf("              l_mult  fricmlt pos_mlt ; rhs     rhsfric rhs_pos ; depth\n")
-    C.printf("              fric_dir        -       ; invJ    invJfric\n")
-    C.printf("              norm    -       -       ; ctct_pt -       -\n")
+    C.printf("              l_mult  fricmlt depth   ; pt      -       -\n")
+    C.printf("              rel0    -       -       ; rel1    -       -\n")
+    C.printf("              local0  -       -       ; local1  -       -\n")
+    --C.printf("              l_mult  fricmlt pos_mlt ; rhs     rhsfric rhs_pos ; depth\n")
+    --C.printf("              fric_dir        -       ; invJ    invJfric\n")
+    --C.printf("              norm    -       -       ; ctct_pt -       -\n")
     --C.printf("              rel0    -       -       ; rel1    -       -\n")
     for c=0,self.n_c_alloc do if self.is_live[c] then
-    C.printf("    %4d: (%d)  %4d, %4d\n", c, self.n_pts[c],
-                                          self.b0[c], self.b1[c])
+      var n             = self.basis[c].norm
+    C.printf(["    %4d: (%d)  %4d, %4d ; "..vfmt.."\n"],
+             c, self.n_pts[c], self.b0[c], self.b1[c], n(0), n(1), n(2))
       for k=0,self.n_pts[c] do
         var lm, fm, pm  = self.l_mult[4*c+k], self.fric_mult[4*c+k],
                                               self.pos_mult[4*c+k]
@@ -390,14 +396,24 @@ local function GeneratePGSSolver(API, params)
         var d           = self.pts[c].d[k].depth
         var fd          = self.friction_dir[4*c+k]
         var iJ, iJf     = self.inv_J[4*c+k], self.inv_J_fric[4*c+k]
-        var n           = self.basis[c].norm
-        var pt          = self.pts[c].d[k].rel1 + self.pos_prev[ self.b1[c] ]
-    C.printf("          %d : %7.3f %7.3f %7.3f ; %7.3f %7.3f %7.3f ; %7.3f\n",
-             k, lm, fm, pm, r, fr, pr, d)
-    C.printf("            : %7.3f %7.3f %7.3f ; %7.3f %7.3f\n",
-             fd(0), fd(1), fd(2), iJ, iJf)
-    C.printf("            : %7.3f %7.3f %7.3f ; %7.3f %7.3f %7.3f\n\n",
-             n(0), n(1), n(2), pt(0), pt(1), pt(2))
+
+        var pt          = self.pts[c].d[k].pt
+        var r0          = self.pts[c].d[k].rel0
+        var r1          = self.pts[c].d[k].rel1
+        var l0          = self.pts[c].d[k].local0
+        var l1          = self.pts[c].d[k].local1
+    C.printf(["          %d : "..vfmt.." ; "..vfmt.."\n"],
+             k, lm, fm, d, pt(0), pt(1), pt(2))
+    C.printf(["            : "..vfmt.." ; "..vfmt.."\n"],
+             r0(0), r0(1), r0(2), r1(0), r1(1), r1(2))
+    C.printf(["            : "..vfmt.." ; "..vfmt.."\n"],
+             l0(0), l0(1), l0(2), l1(0), l1(1), l1(2))
+  --C.printf("          %d : %7.3f %7.3f %7.3f ; %7.3f %7.3f %7.3f ; %7.3f\n",
+  --         k, lm, fm, pm, r, fr, pr, d)
+  --C.printf("            : %7.3f %7.3f %7.3f ; %7.3f %7.3f\n",
+  --         fd(0), fd(1), fd(2), iJ, iJf)
+  --C.printf("            : %7.3f %7.3f %7.3f ; %7.3f %7.3f %7.3f\n\n",
+  --         n(0), n(1), n(2), pt(0), pt(1), pt(2))
       end
     end end
     --]]
@@ -881,6 +897,7 @@ local function GeneratePGSSolver(API, params)
 
     -- DO COLLISION DETECTION!
     C.printf("  start collision\n")
+    --pgs:print()
     pgs:unlock_store()
     --C.printf("    unlocked\n")
     pgs.store:find_plank_iscts()
@@ -889,6 +906,7 @@ local function GeneratePGSSolver(API, params)
     pgs:relock_store() -- resize constraint-value arrays
     var midtime     = taketime()
     C.printf("  end collision\n")
+    --pgs:print()
     if sfunc ~= nil then sfunc(pgs.store) end
 
     -- integrate forward velocities for the solver

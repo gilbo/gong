@@ -23,10 +23,113 @@ local is_builtin  = Functions.is_builtin
 local is_emit     = Effects.Effects.Emit.check
 local is_merge    = Effects.Effects.Merge.check
 
-local C           = require 'gong.src.c'
+local C             = require 'gong.src.c'
+local assert        = C.assert
+local StdContainers = require 'gong.src.stdcontainers'
+local vector        = StdContainers.vector
+local sort          = StdContainers.sort
+
+local PARAMS      = (require 'gong.src.params').get_param
+local SLOW_VERIFY = PARAMS('SLOW_VERIFY')
 
 local newlist   = terralib.newlist
 
+
+-------------------------------------------------------------------------------
+--[[                                Buffers                                ]]--
+-------------------------------------------------------------------------------
+
+local function buffer(key0_Type, key1_Type, for_gpu)
+  assert(not for_gpu, 'INTERNAL: gpu buffers currently unsupported')
+
+  local struct Buf_Entry {
+    k0    : key0_Type
+    k1    : key1_Type
+  }
+
+  local struct Buffer {
+    v     : vector(Buf_Entry)
+  }
+  terra Buffer:init()     self.v:init()     end
+  terra Buffer:destroy()  self.v:destroy()  end
+  terra Buffer:insert( k0 : key0_Type, k1 : key1_Type )
+    var k = self.v:size()
+    self.v:resize(k+1)
+    self.v(k).k0  = k0
+    self.v(k).k1  = k1
+  end
+  Buffer.methods.replay = function(self, name, k0, k1, args, body)
+    return quote
+      for k=0,self.v:size() do
+        var [k0]        = self.v(k).k0
+        var [k1]        = self.v(k).k1
+        [body]
+      end
+    end
+  end
+
+  return Buffer
+end
+buffer = Util.memoize(buffer)
+
+local function lookup_buffer(key0_Type, key1_Type, for_gpu)
+  assert(not for_gpu, 'INTERNAL: gpu buffers currently unsupported')
+
+  local struct Buf_Entry {
+    k0    : key0_Type
+    k1    : key1_Type
+  }
+  Buf_Entry.metamethods.__lt = macro(function(lhs, rhs)
+    return `lhs.k0 < rhs.k0 or (lhs.k0 == rhs.k0 and lhs.k1 < rhs.k1)
+  end)
+  Buf_Entry.metamethods.__eq = macro(function(lhs, rhs)
+    return `lhs.k0 == rhs.k0 and lhs.k1 == rhs.k1
+  end)
+  Buf_Entry.metamethods.__gt = macro(function(lhs, rhs)
+    return `rhs < lhs
+  end)
+
+  local struct Buffer {
+    v       : vector(Buf_Entry)
+    _ready  : bool
+  }
+  terra Buffer:init()     self.v:init(); self._ready = false    end
+  terra Buffer:destroy()  self.v:destroy()                      end
+  terra Buffer:insert( k0 : key0_Type, k1 : key1_Type )
+    var k = self.v:size()
+    self.v:resize(k+1)
+    self.v(k).k0  = k0
+    self.v(k).k1  = k1
+  end
+  terra Buffer:prepare()
+    [sort(Buf_Entry)]( self.v:ptr(), self.v:size() )
+    self._ready = true
+  end
+  terra Buffer:lookup( k0 : key0_Type, k1 : key1_Type ) : bool
+    var VAL         = Buf_Entry { k0 = k0, k1 = k1 }
+    assert(self._ready, 'tried to lookup in unprepared buffer')
+    -- setup range variables
+    var N           = [int32]( self.v:size() )
+    if N == 0 then return false end
+    var lo, hi      = [int32](0), N-1
+    var lo_v, hi_v  = self.v(lo), self.v(hi)
+    if VAL < lo_v or VAL > hi_v then return false end
+
+    -- now attempt to narrow range in on the value to lookup
+    repeat
+      var mid       = (lo+hi)/2
+      var mid_v     = self.v(mid)
+      if      VAL < mid_v   then    hi = mid-1
+      elseif  VAL == mid_v  then    return true
+                            else    lo = mid+1      end
+    until hi < lo
+    return false
+  end
+  terra Buffer:size() return self.v:size() end
+
+  return Buffer
+end
+lookup_buffer = Util.memoize(lookup_buffer)
 
 -------------------------------------------------------------------------------
 --[[                          Context Definition                           ]]--
@@ -34,15 +137,19 @@ local newlist   = terralib.newlist
 local Context = {}
 Context.__index = Context
 
-local function NewContext(effects, StoreWrap, traversal, for_gpu)
+local function NewContext(args)
   local ctxt = setmetatable({
     env           = terralib.newenvironment(nil),
-    _W            = StoreWrap,
-    effects       = effects,
+    _W            = args.StoreWrap,
+    effects       = args.effects,
     _loop_args    = nil,
     _merge_rms    = {},
-    _traversal    = traversal,
-    _on_gpu_flag  = for_gpu,
+    _traversal    = args.traversal,
+    _buffer_eff   = args.buffer_effects,
+    _buffer_idx   = args.buffer_index,
+    _verify_idx   = args.verify_index,
+    _effect_enable  = true, -- effects on by default
+    _on_gpu_flag  = args.for_gpu,
   }, Context)
   return ctxt
 end
@@ -50,7 +157,13 @@ function Context:localenv()
   return self.env:localenv()
 end
 
-function Context:on_GPU() return self._on_gpu_flag end
+function Context:on_GPU()           return self._on_gpu_flag      end
+function Context:buffer_effects()   return self._buffer_eff       end
+function Context:buffer_index()     return self._buffer_idx       end
+function Context:verify_index()     return self._verify_idx       end
+function Context:set_effects_on()   self._effect_enable = true    end
+function Context:set_effects_off()  self._effect_enable = false   end
+function Context:effects_on()       return self._effect_enable    end
 
 function Context:SetLoopArgs(a1,a2)
   self._loop_args = newlist{a1,a2}
@@ -74,6 +187,13 @@ function Context:GetTerraFunction(obj)
   if is_function(obj) then
     return self._W:get_terra_function(obj, self:on_GPU())
   else INTERNAL_ERR('cannot get Terra function for object type') end
+end
+
+function Context:effectflag()
+  if self._effect_flag_sym then return self._effect_flag_sym end
+  local sym               = symbol( bool, 'effect_flag')
+  self._effect_flag_sym   = sym
+  return sym
 end
 
 function Context:StorePtr()
@@ -141,8 +261,14 @@ function Context:LoopGen(name, rowA, rowB, args, code)
                   self._traversal, rowA, rowB, args, code)
   else
     return self._W:LoopGen(self:StorePtr(),
-                           self._traversal, rowA, rowB, code)
+                           self._traversal, rowA, rowB, args, code)
   end
+end
+
+function Context:DefaultDoubleScan(typA, typB, rowA, rowB, args, code)
+  assert(not self:on_GPU(), 'INTERNAL: TODO gpu defaultdoublescan')
+  return self._W:DefaultDoubleScan( self:StorePtr(),
+                                    typA, typB, rowA, rowB, code )
 end
 
 function Context:Read(srctype, row, path)
@@ -221,6 +347,13 @@ function Context:KeepRow(dsttype, row)
     return self._W:GPU_KeepRow(self:GPU_Tables_Ptr(), dsttype, row)
   else
     return self._W:KeepRow(self:StorePtr(), dsttype, row)
+  end
+end
+
+function Context:Profile(name, type)
+  if self:on_GPU() then return quote end
+  else
+    return self._W:Profile(self:StorePtr(), name, type)
   end
 end
 
@@ -364,18 +497,26 @@ function Exports.codegen(args)
   local StoreWrap   = assert(args.storewrap,'INTERNAL: expect storewrap')
   local for_gpu     = args.for_gpu
                       assert(for_gpu~=nil,  'INTERNAL: expect for_gpu')
-  local traversal   = args.traversal
+  local traversal       = args.traversal
+  local buffer_effects  = args.buffer_effects or false
+  local buffer_index    = args.buffer_index   or false
+  local verify_index    = args.verify_index   or false
 
   -- add traversal effects to the join context if present
   if traversal then
     effects:insertall(traversal:_INTERNAL_geteffects())
   end
-
-  local ctxt        = NewContext(effects, StoreWrap, traversal, for_gpu)
+  local ctxt        = NewContext {
+                        effects           = effects,
+                        StoreWrap         = StoreWrap,
+                        traversal         = traversal,
+                        buffer_effects    = buffer_effects,
+                        buffer_index      = buffer_index,
+                        verify_index      = verify_index,
+                        for_gpu           = for_gpu,
+                      }
   local func        = ast:codegen(name, ctxt)
   func:setname(name)
-  --func:printpretty()
-  --func:compile()
   return func
 end
 
@@ -403,6 +544,7 @@ function AST.Function:codegen(name, ctxt)
   local func = terra( [args] ) : rettyp
     [body]
   end
+  --func:disas()
   return func
 end
 
@@ -426,9 +568,6 @@ function AST.Join:codegen(name, ctxt)
 
   ctxt:SetLoopArgs(rowA,rowB)
 
-  local filter          = self.filter:codegen(ctxt)
-  local doblock         = self.doblock:codegen(ctxt)
-
   local emittbls        = {}
   local mergetbls       = {}
   for i,e in ipairs(ctxt.effects) do
@@ -436,38 +575,246 @@ function AST.Join:codegen(name, ctxt)
     elseif is_emit(e) then emittbls[e.dst]  = true end
   end
 
-  local loopcall  = terra( [innerargs] ) : bool
+  -- buffering code
+  local buffer_init       = newlist()
+  local buffer_destroy    = newlist()
+
+  -- index and effect buffering setup
+  local idxbuf            = nil
+  local idxbufType        = nil
+  if ctxt:buffer_index() then
+    idxbufType            = buffer(typA:terratype(), typB:terratype())
+    idxbuf                = symbol(&idxbufType, 'index_buffer')
+    buffer_init:insert(quote
+      var [idxbuf]  = [&idxbufType]( C.malloc(sizeof(idxbufType)) )
+      idxbuf:init()
+    end)
+    buffer_destroy:insert(quote
+      idxbuf:destroy()
+      C.free(idxbuf)
+    end)
+  end
+  local effbuf            = nil
+  local effbufType        = nil
+  if ctxt:buffer_effects() then
+    effbufType            = buffer(typA:terratype(), typB:terratype())
+    effbuf                = symbol(&effbufType, 'effect_buffer')
+    buffer_init:insert(quote
+      var [effbuf]  = [&effbufType]( C.malloc(sizeof(effbufType)) )
+      effbuf:init()
+    end)
+    buffer_destroy:insert(quote
+      effbuf:destroy()
+      C.free(effbuf)
+    end)
+  end
+  local verifybuf         = nil
+  local verifybufType     = nil
+  if ctxt:verify_index() then
+    verifybufType         = lookup_buffer(typA:terratype(), typB:terratype())
+    verifybuf             = symbol(&verifybufType, 'verify_buffer')
+    buffer_init:insert(quote
+      var [verifybuf]  = [&verifybufType]( C.malloc(sizeof(verifybufType)) )
+      verifybuf:init()
+    end)
+    buffer_destroy:insert(quote
+      verifybuf:destroy()
+      C.free(verifybuf)
+    end)
+  end
+
+  -- add buffers to argument lists
+  local buffered_args     = newlist()
+  if effbuf then buffered_args:insert(effbuf) end
+  if idxbuf then buffered_args:insert(idxbuf) end
+  if verifybuf then buffered_args:insert(verifybuf) end
+  buffered_args:insertall(outerargs)
+
+  -- looping structures with buffers
+  local index_wrap        = nil
+  local effect_wrap       = nil
+  if idxbuf then
+    index_wrap    = function(body)
+      return newlist {
+        ctxt:Profile(name..'_loop_time', 'timer_start'),
+        ctxt:LoopGen(name, rowA, rowB, buffered_args, quote
+          idxbuf:insert(rowA,rowB)
+        end),
+        ctxt:Profile(name..'_loop_time', 'timer_stop'),
+        ctxt:Profile(name..'_post_index_loop_time', 'timer_start'),
+        idxbufType.methods.replay( idxbuf, name, rowA, rowB,
+                                   buffered_args, body ),
+        ctxt:Profile(name..'_post_index_loop_time', 'timer_stop'),
+      }
+    end
+  else
+    -- usual case looping over the index without index buffering..
+    index_wrap    = function(body)
+      return newlist {
+        ctxt:Profile(name..'_loop_time', 'timer_start'),
+        ctxt:LoopGen(name, rowA, rowB, buffered_args, body),
+        ctxt:Profile(name..'_loop_time', 'timer_stop'),
+      }
+    end
+  end
+  if effbuf then
+    -- generate a no-effect version of the inner loop
+    ctxt:set_effects_off()
+    local no_eff_filter   = self.filter:codegen(ctxt)
+    local no_eff_doblock  = self.doblock:codegen(ctxt)
+    ctxt:set_effects_on()
+
+    local no_eff_innerloop = terra( [innerargs] ) : bool
+      var [ctxt:effectflag()] = false
+      [no_eff_filter]
+      [no_eff_doblock]
+      return [ctxt:effectflag()]
+    end
+    --no_eff_innerloop:disas()
+
+    effect_wrap   = function(loopcall)
+      -- first loop(s) to fill up effect buffer
+      local idx_stmts = index_wrap(quote
+        [ ctxt:Profile(name..'_post_index_rows', 'framed_counter') ]
+        var eff_flag    = no_eff_innerloop( [innerargs] )
+        if eff_flag then
+          [ ctxt:Profile(name..'_effectful_rows', 'framed_counter') ]
+          effbuf:insert(rowA, rowB)
+        end
+      end)
+      -- remaining processing of effects
+      idx_stmts:insertall {
+        ctxt:Profile(name..'_effectful_loop_time', 'timer_start'),
+        effbufType.methods.replay( effbuf, name, rowA, rowB,
+                                   buffered_args, loopcall ),
+        ctxt:Profile(name..'_effectful_loop_time', 'timer_stop'),
+      }
+      return idx_stmts
+    end
+  else
+    effect_wrap   = function(loopcall)
+      return index_wrap(quote
+        [ ctxt:Profile(name..'_post_index_rows', 'framed_counter') ]
+        var eff_flag    = [loopcall]
+        if eff_flag then
+          [ ctxt:Profile(name..'_effectful_rows', 'framed_counter') ]
+        end
+      end)
+    end
+  end
+
+  -- now, plug in the actual, effectful inner loop, agnostic to whether
+  -- any other loops were created to replay buffers from etc.
+  local filter          = self.filter:codegen(ctxt)
+  local doblock         = self.doblock:codegen(ctxt)
+
+  local innerloop  = terra( [innerargs] ) : bool
+    var [ctxt:effectflag()] = false
     [filter]
     [doblock]
-    return true
+    return [ctxt:effectflag()]
   end
-  local innerloop = quote loopcall( [innerargs] ) end
+  --innerloop:disas()
+
+  local loopcall = (`innerloop( [innerargs] ))
+  if verifybuf then
+    loopcall = quote
+      var eff_flag = innerloop( [innerargs] )
+      if eff_flag then
+        verifybuf:insert(rowA, rowB)
+      end
+    in eff_flag end
+  end
+
+  local loopstmts = effect_wrap(loopcall)
+
+  -- add additional loop if verifying...
+  if verifybuf then
+    -- generate a no-effect version of the inner loop
+    ctxt:set_effects_off()
+    local no_eff_filter   = self.filter:codegen(ctxt)
+    local no_eff_doblock  = self.doblock:codegen(ctxt)
+    ctxt:set_effects_on()
+
+    local no_eff_innerloop = terra( [innerargs] ) : bool
+      var [ctxt:effectflag()] = false
+      [no_eff_filter]
+      [no_eff_doblock]
+      return [ctxt:effectflag()]
+    end
+    --no_eff_innerloop:disas()
+
+    -- raw loop...
+    local n_pairs = symbol(uint64, 'n_pairs')
+    loopstmts:insertall {
+    quote
+      verifybuf:prepare()
+      var [n_pairs]       = 0
+    end,
+    ctxt:DefaultDoubleScan(typA, typB, rowA, rowB, buffered_args,
+    quote
+      var eff_flag        = no_eff_innerloop( [innerargs] )
+      if eff_flag then
+        [n_pairs]         = [n_pairs] + 1
+        var found_earlier = verifybuf:lookup(rowA, rowB)
+        assert(found_earlier, "VERIFICATION FAILED: missing result %d %d",
+                              rowA, rowB)
+      end
+    end),
+    quote
+      assert([n_pairs] == verifybuf:size(),
+             "VERIFICATION FAILED: got %d results, expected %d results",
+             verifybuf:size(), [n_pairs])
+    end,
+    }
+  end
 
   local outerloop = terra( [outerargs] ) escape
     emit( ctxt:PrepareData( ctxt.effects ) )
 
     -- do index maintenance now if needed
+    emit( ctxt:Profile(name..'_index_updates', 'timer_start') )
     emit( ctxt:AccIndexUpdate( name ) )
+    emit( ctxt:Profile(name..'_index_updates', 'timer_stop') )
+
+    -- buffer initialization
+    emit quote [buffer_init] end
 
     -- then do the main loops of the join
-    emit( ctxt:LoopGen(name, rowA, rowB, outerargs, innerloop) )
+    emit quote [loopstmts] end
+    -- buffer cleanup
+    emit quote [buffer_destroy] end
 
-    -- Invalidate any spatial indices that need to be as a result of
-    -- this join modifying some data
+    emit( ctxt:Profile(name..'_post_index_rows', 'end_framed_counter') )
+    emit( ctxt:Profile(name..'_effectful_rows', 'end_framed_counter') )
+
+    -- Invalidate any spatial indices that need to be invalidated,
+    -- as a result of this join modifying some data
     emit( ctxt:AccIndexInvalidation( ctxt.effects ) )
 
     -- cleanup any merge tables
-    for dst,_ in pairs(mergetbls) do
-      local mstmt           = ctxt:GetMergeRemove(dst)
-      local rm_var, rm_body = nil, nil
-      if mstmt then
-        rm_var              = ctxt:NewSym(mstmt.rm_name, mstmt.dst)
-        rm_body             = mstmt.rm_body:codegen(ctxt)
+    if next(mergetbls) then
+      emit( ctxt:Profile(name..'_merge_cleanup_time', 'timer_start') )
+      for dst,_ in pairs(mergetbls) do
+        local mstmt           = ctxt:GetMergeRemove(dst)
+        local rm_var, rm_body = nil, nil
+        if mstmt then
+          rm_var              = ctxt:NewSym(mstmt.rm_name, mstmt.dst)
+          rm_body             = mstmt.rm_body:codegen(ctxt)
+          -- hack to prevent undefined variable error
+          rm_body = quote
+            var [ctxt:effectflag()] = false
+            [rm_body]
+          end
+        end
+        emit( ctxt:PostMerge(dst, rm_var, rm_body) )
       end
-      emit( ctxt:PostMerge(dst, rm_var, rm_body) )
+      emit( ctxt:Profile(name..'_merge_cleanup_time', 'timer_stop') )
     end
-    for dst,_ in pairs(emittbls) do
-      emit( ctxt:PostEmit(dst) )
+    if next(emittbls) then
+      for dst,_ in pairs(emittbls) do
+        emit( ctxt:PostEmit(dst) )
+      end
     end
   end end
   return outerloop --, newlist{ innerloop }
@@ -493,15 +840,23 @@ end
 function AST.WhereFilter:codegen(ctxt)
   local expr      = self.expr:codegen(ctxt)
   return quote
-    if not [expr] then return false end
+    if not [expr] then return [ctxt:effectflag()] end
   end
 end
 function AST.EmitStmt:codegen(ctxt)
   local exprs     = codegen_all(self.record.exprs, ctxt)
   local dst       = self.dst
-  return ctxt:Insert(dst, exprs)
+  return quote 
+    [ ctxt:effectflag() ] = true
+    [ (ctxt:effects_on() and ctxt:Insert(dst, exprs)) or {} ]
+  end
 end
 function AST.MergeStmt:codegen(ctxt)
+  if not ctxt:effects_on() then
+    return quote
+      [ ctxt:effectflag() ] = true
+    end
+  end
   if self.rm_name then
     ctxt:AddMergeRemove(self)
   end
@@ -512,7 +867,10 @@ function AST.MergeStmt:codegen(ctxt)
   if self.new_emit then
     new_vals      = codegen_all(self.new_emit.record.exprs, ctxt)
   end
-  return ctxt:MergeLookup(self.dst, up_var, k0, k1, up_body, new_vals)
+  return quote
+    [ ctxt:effectflag() ] = true
+    [ ctxt:MergeLookup(self.dst, up_var, k0, k1, up_body, new_vals) ]
+  end
 end
 function AST.KeepStmt:codegen(ctxt)
   local arg       = self.arg:codegen(ctxt)
@@ -533,11 +891,31 @@ function AST.BuiltInStmt:codegen(ctxt)
   return call
 end
 
+
+local function range_check(expr, lo, hi, ast, ctxt)
+  -- only insert range checks in slow mode
+  if not SLOW_VERIFY then return expr end
+
+  if ctxt:on_GPU() then return expr
+  else
+    return quote
+      var e = [expr]
+      assert(e >= lo and e < hi,
+             [tostring(ast.srcinfo)..':  OUT OF BOUND INDEX!  %d in [%d,%d)'],
+             e, lo, hi)
+    in e end
+  end
+end
 function AST.PathField:codegen(ctxt)
   return self.name
 end
 function AST.PathIndex:codegen(ctxt)
-  return codegen_all(self.args, ctxt)
+  local args      = codegen_all(self.args, ctxt)
+  local dims      = self.basetyp.dims
+  for k=1,#args do
+    args[k]       = range_check(args[k], 0, dims[k], self, ctxt)
+  end
+  return args
 end
 function AST.Assignment:codegen(ctxt)
   local rval      = self.rval:codegen(ctxt)
@@ -545,7 +923,10 @@ function AST.Assignment:codegen(ctxt)
     local row     = self.lval.base:codegen(ctxt)
     local path    = codegen_all(self.lval.path, ctxt)
     local dst     = self.lval.base.type
-    return ctxt:Write(dst, row, path, rval)
+    return quote
+      [ ctxt:effectflag() ] = true
+      [ (ctxt:effects_on() and ctxt:Write(dst, row, path, rval)) or {} ]
+    end
   else
     local lval    = self.lval:codegen(ctxt)
     return quote [lval] = [rval] end
@@ -565,8 +946,10 @@ local function reduction_lval_unwind(lval, ctxt)
     -- cache computed offset
     local offset          = `0
     local strides         = lval.base.type.rowstrides
+    local dims            = lval.base.type.dims
     for i,a in ipairs(lval.args) do
       local aexpr         = a:codegen(ctxt)
+      aexpr               = range_check(aexpr, 0, dims[i], lval, ctxt)
       local off           = offset
       offset              = `[off] + [ strides[i] ] * [aexpr]
     end
@@ -583,11 +966,19 @@ function AST.Reduction:codegen(ctxt)
     local row     = self.lval.base:codegen(ctxt)
     local path    = codegen_all(self.lval.path, ctxt)
     local dst     = self.lval.base.type
-    return ctxt:Reduce(dst, self.op, row, path, rval)
+    return quote
+      [ ctxt:effectflag() ] = true
+      [ (ctxt:effects_on() and ctxt:Reduce(dst, self.op, row, path, rval))
+                            or {} ]
+    end
   elseif AST.GlobalWrite.check(self.lval) then
     local path    = codegen_all(self.lval.path, ctxt)
     local glob    = self.lval.base
-    return ctxt:ReduceGlobal(glob, self.op, path, rval)
+    return quote
+      [ ctxt:effectflag() ] = true
+      [ (ctxt:effects_on() and ctxt:ReduceGlobal(glob, self.op, path, rval))
+                            or {} ]
+    end
   else
     local lval, stmts   = reduction_lval_unwind(self.lval, ctxt)
     local op            = self.op
@@ -698,9 +1089,11 @@ function AST.TensorIndex:codegen(ctxt)
   local strides       = self.base.type.rowstrides
   local base          = self.base:codegen(ctxt)
   local args          = codegen_all(self.args, ctxt)
-  local offset        = args[1]
+  local dims          = self.base.type.dims
+  local offset        = range_check( args[1], 0, dims[1], self, ctxt )
   for k=2,#args do
     local off         = offset
+    local a           = range_check( args[k], 0, dims[k], self, ctxt )
     offset            = `[off] + [ strides[k] ] * [ args[k] ]
   end
   return `[base].d[ offset ]

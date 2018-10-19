@@ -5,6 +5,7 @@ package.loaded["gong.src.functions"] = Exports
 
 local T           = require 'gong.src.types'
 local AccStructs  = require 'gong.src.acc_structs'
+local PARAMS      = (require 'gong.src.params').get_param
 
 local newlist     = terralib.newlist
 
@@ -63,12 +64,15 @@ Join.__index      = Join
 local function NewJoin(params)
   assert(type(params) == 'table')
   local j = setmetatable({
-    _name       = assert(params.name),
-    _scantypes  = assert(params.scantypes),
-    _argtypes   = assert(params.argtypes),
-    _ast        = assert(params.ast),
-    _subfuncs   = newlist(),
-    _effects    = newlist(),
+    _name                     = assert(params.name),
+    _scantypes                = assert(params.scantypes),
+    _argtypes                 = assert(params.argtypes),
+    _ast                      = assert(params.ast),
+    _subfuncs                 = newlist(),
+    _effects                  = newlist(),
+    _use_cpu_effect_buffer    = false,
+    _use_cpu_index_buffer     = false,
+    _use_verification_buffer  = PARAMS('SLOW_VERIFY'),
   }, Join)
   return j
 end
@@ -116,6 +120,28 @@ function Join:set_gpu_traversal(obj)
 end
 function Join:get_gpu_traversal()
   return self._gpu_traversal
+end
+
+function Join:buffer_effects_on_cpu(flag)
+  if flag == nil then flag = true end
+  self._use_cpu_effect_buffer = not not flag
+end
+function Join:_INTERNAL_are_cpu_effects_buffered()
+  return self._use_cpu_effect_buffer
+end
+function Join:buffer_index_on_cpu(flag)
+  if flag == nil then flag = true end
+  self._use_cpu_index_buffer = not not flag
+end
+function Join:_INTERNAL_are_cpu_indices_buffered()
+  return self._use_cpu_index_buffer
+end
+function Join:verify_index(flag)
+  if flag == nil then flag = true end
+  self._use_verification_buffer = not not flag
+end
+function Join:_INTERNAL_verify_index()
+  return self._use_verification_buffer
 end
 
 function Join:_INTERNAL_getast()

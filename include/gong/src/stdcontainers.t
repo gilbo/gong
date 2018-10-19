@@ -8,6 +8,29 @@ local Util        = require 'gong.src.util'
 
 -------------------------------------------------------------------------------
 
+local function sort(elemType)
+  local eSZ       = terralib.sizeof(elemType)
+  -- insertion sort
+  local terra sort( xs : &elemType, N : uint32 )
+    for i=0,N do
+      var min     = xs[i]
+      var min_idx = i
+      for j=i+1,N do
+        if xs[j] < min then
+          min = xs[j]
+          min_idx = j
+        end
+      end
+      if min_idx ~= i then
+        xs[i], xs[min_idx] = xs[min_idx], xs[i]
+      end
+    end
+  end
+  return sort
+end
+sort = Util.memoize(sort)
+
+
 local DEFAULT_MINBYTES = 16
 local function vector(T, MINALLOC)
   assert(terralib.types.istype(T))
@@ -115,6 +138,7 @@ stack = Util.memoize(stack)
 -------------------------------------------------------------------------------
 
 
+Exports.sort    = sort
 Exports.vector  = vector
 Exports.stack   = stack
 

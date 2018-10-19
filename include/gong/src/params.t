@@ -19,6 +19,8 @@ local default_params = {
   -- expect to be modified parameters
   ['GPU_ENABLED']       = default_gpu_on,
   ['DEBUG_GPU_MEM']     = false,
+  ['PROFILING_OFF']     = false,
+  ['SLOW_VERIFY']       = false,
 
   -- potentially modifiable parameters
   ['GPU_BLOCK_SIZE']    = 128,

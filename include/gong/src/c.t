@@ -3,6 +3,19 @@ local Exports = {}
 package.loaded['gong.src.c'] = Exports
 
 
+
+-------------------------------------------------------------------------------
+-- Intel x87 floating point behavior control to ensure determinism
+-------------------------------------------------------------------------------
+
+--local terra warpballot_b32() : uint32
+--  return terralib.asm(terralib.types.uint32,
+--    "vote.ballot.b32 $0, 0xFFFFFFFF;","=r",false)
+--end
+--#define _FPU_GETCW(cw) __asm__ ("fnstcw %0" : "=m" (*&cw))
+--#define _FPU_SETCW(cw) __asm__ ("fldcw %0" : : "m" (*&cw))
+
+
 -------------------------------------------------------------------------------
 -- GPU optional...
 -------------------------------------------------------------------------------
@@ -34,6 +47,29 @@ double get_wall_time(){
 }
 ]]
 
+-- performance timer
+local perf_time = [[
+#include <time.h>
+time_t    perf_init_time = 0;
+void initialize_performance_timer() {
+  if (perf_init_time == 0) {
+    struct timespec ts;
+    clock_gettime( CLOCK_REALTIME, &ts );
+    perf_init_time = ts.tv_sec;
+  }
+}
+double get_perf_time_in_seconds() {
+  struct timespec ts;
+  clock_gettime( CLOCK_REALTIME, &ts );
+  // note that the difference here keeps the magnitude of the
+  // timestamp small enough that nanoseconds will not be rounded off
+  // for the first 1e6 seconds of program execution, which is about
+  // 11.5 days
+  return (double)(ts.tv_sec - perf_init_time) +
+         (double)(ts.tv_nsec) * 1e-9;
+}
+]]
+
 
 -------------------------------------------------------------------------------
 -- Main Header load
@@ -59,7 +95,8 @@ FILE * __gong_get__stdin()  { return stdin; }
 FILE * __gong_get__stderr() { return stderr; }
 
 ]]..
-sys_time
+sys_time..
+perf_time
 )
 
 -- mass export the c code

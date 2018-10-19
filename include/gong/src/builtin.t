@@ -70,6 +70,25 @@ B.assert  = NewBuiltIn{
     end,
 }
 
+B.id      = NewBuiltIn {
+  name        = 'id',
+  typecheck   = function(args,ast,ctxt)
+      if #args ~= 1 then
+        ctxt:error(ast, "id() expects exactly one argument; got "..#args)
+      else
+        local typ = args[1].type
+        if typ ~= T.error and not typ:is_row() then
+          ctxt:error(ast, "expected a row value argument to id()")
+        end
+      end
+      return T.uint32
+    end,
+  effectcheck = function(args,ast,ctxt) return newlist() end,
+  codegen     = function(args,ast,ctxt)
+      return args[1]
+    end,
+}
+
 -------------------------------------------
 
 local function unary_arg_builtin(nm)

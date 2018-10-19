@@ -303,6 +303,14 @@ function Exports.GenTerraAPI(hierarchy)
     return ROOT.GetError( @self )
   end
 
+  API.Profile             = ROOT.Profile
+  terra Store:print_profile()
+    ROOT.PrintProfile( @self )
+  end
+  terra Store:get_profile()
+    return ROOT.GetProfile( @self )
+  end
+
   for jname,j in pairs(ROOT.joins) do
     local args            = j:gettype().parameters:sublist(2)
                              :map(function(t) return symbol(t) end)

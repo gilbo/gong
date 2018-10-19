@@ -24,6 +24,11 @@ local AccStructs    = require 'gong.src.acc_structs'
 
 local CodeGen       = require 'gong.src.codegen'
 
+local Functions     = require 'gong.src.functions'
+
+local Profiling     = require 'gong.src.profiling'
+local NewProfiler   = Profiling.NewProfiler
+
 -----------------------------------------
 
 local C             = require 'gong.src.c'
@@ -508,6 +513,7 @@ local function GenerateWrapperStructs(prefix, W)
   end
 
   CStore.entries:insertall {
+    { '_profiler',      W._profiler:handle() },
     { '_error_msg',     rawstring },
     { '_error_buf',     int8[ERR_BUF_LEN] },
     { '_load_counter',  int64 },
@@ -802,6 +808,7 @@ local function InstallStructMethods(prefix, W)
   local MIN_INIT_SIZE = 8
   terra CStore:init()
     var this                = self
+    this._profiler:init()
     this._error_msg         = nil
     this._load_counter      = -1
     this._load_col_counter  = -1
@@ -873,6 +880,7 @@ local function InstallStructMethods(prefix, W)
   end
   terra CStore:destroy()
     var this        = self
+    this._profiler:destroy()
     this._error_msg = nil
     escape for iAIndex, AIndex in ipairs(W._acc_indices) do
       local aname             = W._c_cache[AIndex].name
@@ -912,6 +920,7 @@ local function NewWrapper(args)
     _c_cache        = {},
     _type_reverse   = {},
     _func_cache     = {},
+    _profiler       = NewProfiler(),
   }, Wrapper)
 
   if W._use_gpu then
@@ -954,15 +963,26 @@ function Wrapper:get_terra_function(f_obj, for_gpu)
   elseif f_obj.get_gpu_traversal and for_gpu then
     traversal     = f_obj:get_gpu_traversal()
   end
+  local buffer_effects  = Functions.is_join(f_obj) and
+                          f_obj:_INTERNAL_are_cpu_effects_buffered() and
+                          not for_gpu
+  local buffer_index    = Functions.is_join(f_obj) and
+                          f_obj:_INTERNAL_are_cpu_indices_buffered() and
+                          not for_gpu
+  local verify_index    = Functions.is_join(f_obj) and
+                          f_obj:_INTERNAL_verify_index()
 
   if not self._func_cache[f_obj][token] then
     local tfunc = CodeGen.codegen {
-      name      = name,
-      ast       = f_obj:_INTERNAL_getast(),
-      effects   = f_obj:_INTERNAL_geteffects(),
-      traversal = traversal,
-      storewrap = self,
-      for_gpu   = for_gpu,
+      name              = name,
+      ast               = f_obj:_INTERNAL_getast(),
+      effects           = f_obj:_INTERNAL_geteffects(),
+      traversal         = traversal,
+      storewrap         = self,
+      for_gpu           = for_gpu,
+      buffer_effects    = buffer_effects,
+      buffer_index      = buffer_index,
+      verify_index      = verify_index,
     }
     self._func_cache[f_obj][token] = tfunc
   end
@@ -1238,7 +1258,18 @@ function Wrapper:SelfScan(storeptr, tbltype, row0sym, row1sym, bodycode)
   end
 end
 
-function Wrapper:LoopGen(storeptr, traversal, row0sym, row1sym, bodycode)
+function Wrapper:DefaultDoubleScan(storeptr, tbl0, tbl1, row0, row1, body)
+  local W               = self
+  if tbl0 == tbl1 then
+    return W:SelfScan(storeptr, tbl0, row0, row1, body)
+  else
+    return W:Scan(storeptr, tbl0, row0,
+            W:Scan(storeptr, tbl1, row1,
+              body))
+  end
+end
+
+function Wrapper:LoopGen(storeptr, traversal, row0sym, row1sym, args, bodycode)
   local W               = self
   local IndexL, IndexR  = traversal:left(), traversal:right()
   local inameL, inameR  = W._c_cache[IndexL].name, W._c_cache[IndexR].name
@@ -1246,7 +1277,7 @@ function Wrapper:LoopGen(storeptr, traversal, row0sym, row1sym, bodycode)
   local idxptrR         = `&(storeptr.[inameR])
 
   local loopgen = traversal:_INTERNAL_LoopGen( self:GetAccAPI(), false )
-  return loopgen( storeptr, idxptrL, idxptrR, row0sym, row1sym, bodycode)
+  return loopgen( storeptr, idxptrL, idxptrR, row0sym, row1sym, args, bodycode)
 end
 
 function Wrapper:Clear(storeptr, tbltype)
@@ -1559,6 +1590,11 @@ function Wrapper:KeepRow(storeptr, tbltype, row)
   return W:_INTERNAL_visit(storeptr, tbltype, row)
 end
 
+function Wrapper:Profile(storeptr, name, metric_type)
+  local W               = self
+  return W._profiler:hook( `storeptr._profiler, name, metric_type )
+end
+
 -------------------------------------------------------------------------------
 --[[      Gong Internal Data Interface : Data Movement & Preparation       ]]--
 -------------------------------------------------------------------------------
@@ -1842,6 +1878,9 @@ function Wrapper:GetAccAPI()
     GetGPUFunction    = function(api, gongfn)
                           return W:get_terra_function(gongfn, true)
                         end,
+    Profile           = function(api, ...)
+                          return W:Profile(...)
+                        end,
   }
   return W._cached_acc_API
 end
@@ -1904,7 +1943,9 @@ function Wrapper:GenExternCAPI(prefix, export_funcs, gpu_on)
 
     add_func(jf:getname(), HIERARCHY.joins, jf:getname(),
     terra( hdl : ExtStore, [args] )
-      return tfunc( to_store(hdl), [args] )
+      [ W:Profile( `to_store(hdl), jf:getname()..'_launches', 'timer_start' )]
+      tfunc( to_store(hdl), [args] )
+      [ W:Profile( `to_store(hdl), jf:getname()..'_launches', 'timer_stop' )]
     end)
   end
   add_func_note("")
@@ -1922,7 +1963,7 @@ function Wrapper:GenExternCAPI(prefix, export_funcs, gpu_on)
       local name = gpu_name(jf)
       add_func(name, HIERARCHY.joins, name,
       terra( hdl : ExtStore, [args] )
-        return tfunc( to_store(hdl), [args] )
+        tfunc( to_store(hdl), [args] )
       end)
     end
     add_func_note("")
@@ -1953,11 +1994,28 @@ function Wrapper:GenExternCAPI(prefix, export_funcs, gpu_on)
   end)
   add_func('DestroyStore', HIERARCHY, 'DestroyStore',
   terra( hdl : ExtStore )
+    [ W._profiler:print_profile( `to_store(hdl)._profiler ) ]
     to_store(hdl):destroy()
   end)
   add_func('GetError', HIERARCHY, 'GetError',
   terra( hdl : ExtStore ) : rawstring
     return to_store(hdl):get_error()
+  end)
+  add_func_note("")
+
+  -- Profiling
+
+  add_func_note("/* Profiling Output */")
+  add_func('PrintProfile', HIERARCHY, 'PrintProfile',
+  terra( hdl : ExtStore )
+    [ W._profiler:print_profile( `to_store(hdl)._profiler ) ]
+  end)
+
+  HIERARCHY.Profile           = W._profiler:get_output_struct()
+  STRUCTS:insert(HIERARCHY.Profile)
+  add_func('GetProfile', HIERARCHY, 'GetProfile',
+  terra( hdl : ExtStore ) : HIERARCHY.Profile
+    return [ W._profiler:get_output( `to_store(hdl)._profiler ) ]
   end)
   add_func_note("")
 

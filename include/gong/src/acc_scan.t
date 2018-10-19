@@ -172,12 +172,15 @@ function Scan_Scan_Traversal:_INTERNAL_Construct_Functions(StoreAPI)
   if CACHE.FUNCTIONS_BUILT then return end
   
   local function Scan_Scan_CPU_loopgen(storeptr, idxptr0, idxptr1,
-                                                 row0sym, row1sym, bodycode)
+                                                 row0sym, row1sym, args,
+                                                 bodycode)
     local tbl0type = T.row(self._left._table)
     local tbl1type = T.row(self._right._table)
     if tbl0type == tbl1type then
-      return StoreAPI:SelfScan( storeptr, tbl0type,
-                                          row0sym, row1sym, bodycode )
+      return quote
+        [ StoreAPI:SelfScan( storeptr, tbl0type,
+                             row0sym, row1sym, bodycode ) ]
+      end
     else
       return StoreAPI:Scan( storeptr, tbl0type, row0sym,
                 StoreAPI:Scan( storeptr, tbl1type, row1sym,

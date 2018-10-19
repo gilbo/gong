@@ -23,15 +23,38 @@ local assert    = G.cassert
 ------------------------------------------------------------------------------
 -- Sim Constants / Parameters
 
-local params = { debug_draw = '', traversal = 'scan_scan' }
+local function boolparam(str)
+  if type(str) == 'boolean' then return str end
+  if str == nil or str == '' or str == '0' or str == 'false' then
+    return false
+  else
+    return true
+  end
+end
+local params = { debug_draw     = false,
+                 traversal      = 'scan_scan',
+                 collide_shape  = 'aabb',
+                 no_projectile  = false,
+                 effect_buffer  = false,
+                 index_buffer   = false,
+                 verify         = false,
+                 test_case      = 'round_tower',
+                 max_iters      = 50,
+               }
 for _,a in ipairs(arg) do
   local _, _, label, value = a:find("^%-([^=]*)=(.*)$")
   if label and value then params[label] = value end
 end
 
-local debug_draw            = (params.debug_draw ~= '')
+local debug_draw            = boolparam(params.debug_draw)
 
 local traversal             = params.traversal
+local collide_shape         = params.collide_shape
+local test_case             = params.test_case
+local use_projectile        = not boolparam(params.no_projectile)
+local effect_buffer         = boolparam(params.effect_buffer)
+local index_buffer          = boolparam(params.index_buffer)
+local verify                = boolparam(params.verify)
 
 local timestep              = 1/60
 local inv_timestep          = 1/timestep
@@ -42,7 +65,7 @@ local gravity_acc           = 9.8
 local mass                  = 1
 local invmass               = 1/mass
 
-local max_iters             = 50
+local max_iters             = tonumber(params.max_iters)
 
 -- NOTE: The PCG solver doesn't actually work
 --        I'm not sure it ever did
@@ -55,26 +78,39 @@ local function GenBoxAPI()
   local Boxes             = require 'boxes'
 
   if traversal == 'bvh_bvh' then
-    Boxes.find_plank_iscts:set_cpu_traversal(Boxes.bvh_traversal)
+    if collide_shape == 'aabb' then
+      Boxes.find_plank_iscts:set_cpu_traversal(Boxes.aabb_bvh_traversal)
+    elseif collide_shape == 'dop' then
+      Boxes.find_plank_iscts:set_cpu_traversal(Boxes.aabb_bvh_traversal)
+    else error('unrecognized collision shape: '..collide_shape)
+    end
   elseif traversal == 'scan_scan' then
     -- a-ok
   else
     error('unrecognized traversal setting: '..traversal)
   end
 
+  if effect_buffer then
+    Boxes.find_plank_iscts:buffer_effects_on_cpu()
+  end
+  if index_buffer then
+    Boxes.find_plank_iscts:buffer_index_on_cpu()
+  end
+  Boxes.find_plank_iscts:verify_index(verify)
+
   local API = G.CompileLibrary {
-    tables          = Boxes.tables,
-    joins           = Boxes.joins,
-    terra_out       = true,
+    tables            = Boxes.tables,
+    joins             = Boxes.joins,
+    terra_out         = true,
   }
 
   local blockout = {
-    tables        = true,
-    joins         = true,
-    Planks        = true,
-    PPContacts    = true,
-    find_plank_iscts = true,
-    bvh_traversal = true,
+    tables            = true,
+    joins             = true,
+    Planks            = true,
+    PPContacts        = true,
+    find_plank_iscts  = true,
+    bvh_traversal     = true,
   }
   for k,v in pairs(Boxes) do if not blockout[k] then API[k] = v end end
 
@@ -140,6 +176,8 @@ local terra loadBoxesSlantGround( store : API.Store )
                  )
 
   boxes:endload()
+
+  return 300
 end
 
 local terra loadBoxesSimpleStack( store : API.Store )
@@ -190,9 +228,11 @@ local terra loadBoxesSimpleStack( store : API.Store )
                    )
     end
   boxes:endload()
+
+  return 250
 end
 
-local terra loadBoxesRoundTower( store : API.Store, use_projectile : bool )
+local terra loadBoxesRoundTower( store : API.Store )
   var boxes = store:Planks()
 
   var n_levels  = 50
@@ -244,6 +284,184 @@ local terra loadBoxesRoundTower( store : API.Store, use_projectile : bool )
       end
     end
   boxes:endload()
+
+  return 300
+end
+
+local terra loadBoxesPlankTower1( store : API.Store )
+  var boxes = store:Planks()
+
+  var n_levels  = 25
+  var n_ring    = 4
+  var p_len     = 8.0f
+  var p_width   = 0.5f
+  var p_height  = 2.0f
+  var p_off     = 1.0f
+
+  var n_extra   = 1
+  if use_projectile then n_extra = 2 end
+
+  boxes:beginload( n_levels*n_ring/2 + n_extra )
+    -- ground box
+    boxes:loadrow( v3(0,-50,0),
+                   q4(0,0,0,1),
+                   v3(0,0,0),
+                   v3(0,0,0),
+                   v3(0,0,0),
+                   v3(0,0,0),
+                   num(0),
+                   v3(200,100,200)
+                 )
+  if use_projectile then
+    -- projectile box
+    boxes:loadrow( v3(10,16,5),   -- position
+                   q4(0,0,0,1),   -- rotation
+                   v3(-10,0,-5), -- linear velocity
+                   v3(0,0,0),     -- angular velocity
+                   v3(0,0,0),     -- force
+                   v3(0,0,0),     -- torque
+                   num(18),       -- mass
+                   v3(4,4,4)      -- dims
+                 )
+  end
+    for k=0,n_levels do
+      var y     = p_height*k + (p_height/2.0f)
+      var off   = p_len/2.0f - p_off
+      if k%2 == 0 then -- place planks running in the z-direction
+        boxes:loadrow( v3(-off,y,0),
+                       q4(0,0,0,1),
+                       v3(0,0,0),
+                       v3(0,0,0),
+                       v3(0,0,0),
+                       v3(0,0,0),
+                       num(1),
+                       v3(p_width,p_height,p_len)
+                     )
+        boxes:loadrow( v3(off,y,0),
+                       q4(0,0,0,1),
+                       v3(0,0,0),
+                       v3(0,0,0),
+                       v3(0,0,0),
+                       v3(0,0,0),
+                       num(1),
+                       v3(p_width,p_height,p_len)
+                     )
+      else -- place planks running in the x-direction
+        boxes:loadrow( v3(0,y,-off),
+                       q4(0,0,0,1),
+                       v3(0,0,0),
+                       v3(0,0,0),
+                       v3(0,0,0),
+                       v3(0,0,0),
+                       num(1),
+                       v3(p_len,p_height,p_width)
+                     )
+        boxes:loadrow( v3(0,y,off),
+                       q4(0,0,0,1),
+                       v3(0,0,0),
+                       v3(0,0,0),
+                       v3(0,0,0),
+                       v3(0,0,0),
+                       num(1),
+                       v3(p_len,p_height,p_width)
+                     )
+      end
+    end
+  boxes:endload()
+
+  return 300
+end
+
+local terra loadBoxesPlankTower2( store : API.Store )
+  var boxes = store:Planks()
+
+  var n_levels  = 25
+  var p_len     = 8.0f
+  var p_width   = 0.5f
+  var p_height  = 2.0f
+  var p_off     = 0.25f
+
+  var tower_gap = 8.0f
+  var tower_x   = 5
+  var tower_z   = 3
+
+  var n_extra   = 1
+  if use_projectile then n_extra = 2 end
+
+  boxes:beginload( n_levels*tower_x*tower_z*4/2 + n_extra )
+    -- ground box
+    boxes:loadrow( v3(0,-50,0),
+                   q4(0,0,0,1),
+                   v3(0,0,0),
+                   v3(0,0,0),
+                   v3(0,0,0),
+                   v3(0,0,0),
+                   num(0),
+                   v3(200,100,200)
+                 )
+  if use_projectile then
+    -- projectile box
+    boxes:loadrow( v3(-20,20,-10),   -- position
+                   q4(0,0,0,1),   -- rotation
+                   v3(30,0,20), -- linear velocity
+                   v3(0,0,0),     -- angular velocity
+                   v3(0,0,0),     -- force
+                   v3(0,0,0),     -- torque
+                   num(30),       -- mass
+                   v3(5,5,5)      -- dims
+                 )
+  end
+    for x_t = 0,tower_x do
+    for z_t = 0,tower_z do
+      for k=0,n_levels do
+        var y     = p_height*k + (p_height/2.0f)
+        var x     = tower_gap * x_t
+        var z     = tower_gap * z_t
+        var off   = p_len/2.0f - p_off
+        if k%2 == 0 then -- place planks running in the z-direction
+          boxes:loadrow( v3(x-off,y,z),
+                         q4(0,0,0,1),
+                         v3(0,0,0),
+                         v3(0,0,0),
+                         v3(0,0,0),
+                         v3(0,0,0),
+                         num(1),
+                         v3(p_width,p_height,p_len)
+                       )
+          boxes:loadrow( v3(x+off,y,z),
+                         q4(0,0,0,1),
+                         v3(0,0,0),
+                         v3(0,0,0),
+                         v3(0,0,0),
+                         v3(0,0,0),
+                         num(1),
+                         v3(p_width,p_height,p_len)
+                       )
+        else -- place planks running in the x-direction
+          boxes:loadrow( v3(x,y,z-off),
+                         q4(0,0,0,1),
+                         v3(0,0,0),
+                         v3(0,0,0),
+                         v3(0,0,0),
+                         v3(0,0,0),
+                         num(1),
+                         v3(p_len,p_height,p_width)
+                       )
+          boxes:loadrow( v3(x,y,z+off),
+                         q4(0,0,0,1),
+                         v3(0,0,0),
+                         v3(0,0,0),
+                         v3(0,0,0),
+                         v3(0,0,0),
+                         num(1),
+                         v3(p_len,p_height,p_width)
+                       )
+        end
+      end
+    end end
+  boxes:endload()
+
+  return 500
 end
 
 
@@ -435,7 +653,6 @@ local terra dumpStore( store : API.Store, filename : rawstring )
   assert(F ~= nil, 'failed to open file %s for writing', filename)
   C.printf('Opened %s for dumping...\n', filename)
 
-  var n_post_sphere   = store:post_sphere_count():read()
   var n_alloc         = store:PPContacts():get_n_alloc()
   var n_contacts      = store:PPContacts():get_n_rows()
   var n_box           = store:Planks():getsize()
@@ -452,7 +669,6 @@ local terra dumpStore( store : API.Store, filename : rawstring )
 
   C.fprintf(F, "n_boxes:        %5d\n", n_box)
   C.fprintf(F, "n_contacts:     %5d\n", n_contacts)
-  C.fprintf(F, "n_post_sphere:  %5d\n", n_post_sphere)
   C.fprintf(F, "\nBOXES\n")
   for b=0,n_box do
     C.fprintf(F, "  %5d : %8.4f %8.4f %8.4f ; %8.4f %8.4f %8.4f %8.4f\n",
@@ -519,9 +735,20 @@ local terra mainLoop()
   C.printf('        -+-+- CODE: mainLoop() -+- Begin\n')
   var store       = API.NewStore()
   C.printf('        -+-+- CODE: mainLoop() -+- into loadBoxes()\n')
-  --loadBoxesSlantGround(store)
-  --loadBoxesSimpleStack(store)
-  loadBoxesRoundTower(store, true)
+  var N_FRAMES    : uint32
+  escape if test_case == 'slant_ground' then emit quote
+    N_FRAMES      = loadBoxesSlantGround(store)
+  end elseif test_case == 'simple_stack' then emit quote
+    N_FRAMES      = loadBoxesSimpleStack(store)
+  end elseif test_case == 'round_tower' then emit quote
+    N_FRAMES      = loadBoxesRoundTower(store)
+  end elseif test_case == 'plank_tower' then emit quote
+    N_FRAMES      = loadBoxesPlankTower1(store)
+  end elseif test_case == 'plank_tower2' then emit quote
+    N_FRAMES      = loadBoxesPlankTower2(store)
+  end else
+    error('unrecognized test-case: '..tostring(test_case))
+  end end
 
     vdb.vbegin()
     vdb.frame()
@@ -534,7 +761,7 @@ local terra mainLoop()
   var solver : SOLVER
   solver:alloc(store)
 
-  for k=0,300 do
+  for k=0,N_FRAMES do
 
     --var namebuf :int8[1024]
     --var file_stubname   = [ (use_bvh and "../../bvh_data/dump")
@@ -550,10 +777,6 @@ local terra mainLoop()
     if wait_time > 0 then
       C.usleep([int](wait_time*1e6))
     end
-
-    var ps = store:post_sphere_count():read()
-    C.printf('  Collisions Post-Sphere-Test: %d\n', ps)
-    store:post_sphere_count():write(0)
 
     drawStore(store)
     --print_boxes(store)
