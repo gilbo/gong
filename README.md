@@ -15,6 +15,8 @@ TODO: have an actual hello world program that can be run.
 
 ## More Details
 
+Some of the examples and tests emit debug visuals, which can be viewed by running an instance of [vdb](https://github.com/zdevito/vdb).
+
 ### CUDA Support
 Gong includes support for generating CUDA code.  However, the Terra installation must first have CUDA support.
 
