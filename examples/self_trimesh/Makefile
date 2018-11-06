@@ -27,7 +27,7 @@ self_trimesh_scan: self_trimesh_scan.o self_trimesh_scan.h main.cpp
 	         -o self_trimesh_scan self_trimesh_scan.o main.cpp; \
 	fi
 
-self_trimesh_bvh: self_trimesh_scan.o self_trimesh_scan.h main.cpp
+self_trimesh_bvh: self_trimesh_bvh.o self_trimesh_scan.h main.cpp
 	if [ -d $(CUDA_DIR) ]; then \
 	  $(CPP) -std=c++11 \
 	         -L $(CUDA_DIR)/lib64 -lcuda -lcudart \
