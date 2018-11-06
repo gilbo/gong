@@ -112,10 +112,48 @@ Exports.DOP7f_midpoint          = DOP7f_midpoint
 
 
 
+-------------------------------------------------------------------------------
+-- Discrete-Oriented-Polytope volumes
+-------------------------------------------------------------------------------
 
 
 
+local gong function hash2u( v : G.vec2u ) : G.uint32
+  var Xmult   = G.uint32(73856093)
+  var Ymult   = G.uint32(19349663)
+  var hkey    = G.bitxor(v[0]*Xmult, v[1]*Ymult)
+  return hkey
+end
 
+local gong function hash3u( v : G.vec3u ) : G.uint32
+  var Xmult   = G.uint32(73856093)
+  var Ymult   = G.uint32(19349663)
+  var Zmult   = G.uint32(83492791)
+  var hkey    = G.bitxor( G.bitxor(v[0]*Xmult, v[1]*Ymult), v[2]*Zmult )
+  return hkey
+end
+
+
+local gong function hash2i( v : G.vec2i ) : G.uint32
+  var Xmult   = G.int32(73856093)
+  var Ymult   = G.int32(19349663)
+  var hkey    = G.bitxor(v[0]*Xmult, v[1]*Ymult)
+  return G.uint32(hkey)
+end
+
+local gong function hash3i( v : G.vec3i ) : G.uint32
+  var Xmult   = G.int32(73856093)
+  var Ymult   = G.int32(19349663)
+  var Zmult   = G.int32(83492791)
+  var hkey    = G.bitxor( G.bitxor(v[0]*Xmult, v[1]*Ymult), v[2]*Zmult )
+  return G.uint32(hkey)
+end
+
+
+Exports.hash2u        = hash2u
+Exports.hash3u        = hash3u
+Exports.hash2i        = hash2i
+Exports.hash3i        = hash3i
 
 
 

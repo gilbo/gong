@@ -2,8 +2,6 @@ import 'gong'
 local test  = require 'tests.test'
 local G = gong.stdlib
 
---local keyT            = G.uint32
---local EPSILON         = 1.0e-7
 
 local GPU_ON = not not terralib.cudacompile
 
@@ -55,6 +53,64 @@ local BVH_Traversal   = G.bvh_bvh_traversal {
   vol_isct    = G.AABB3f_isct,
 }
 
+local gong function Spheres_to_GridRange( s : Spheres ) : { G.vec3i, G.vec3i }
+  -- floating point bounding box...
+  var bbox  = Spheres_to_AABB3f(s)
+  -- grid cell width
+  var w     = 2f*radius * 1.1f
+  var inv_w = 1.0f / w
+  var lo    = :[i] G.int32( G.floor( bbox.lo[i] * inv_w ) )
+  var hi    = :[i] G.int32( G.floor( bbox.hi[i] * inv_w ) )
+  return lo, hi
+end
+
+
+local HashGrid        = G.hash_index {
+  table       = Spheres,
+  key         = G.vec3i,
+  abs_range   = Spheres_to_GridRange,
+  hash        = G.hash3i,
+}
+
+local Hash_Traversal  = G.hash_hash_traversal {
+  left        = HashGrid,
+  right       = HashGrid,
+}
+
+local gong function Spheres_to_DilatedGridRange( s : Spheres )
+  -- floating point bounding box...
+  var r     = 2f*{radius, radius, radius}
+  var lo    = s.pos-r
+  var hi    = s.pos+r
+  -- grid cell width
+  var w     = 2f*radius * 1.1f
+  var inv_w = 1.0f / w
+  var lo_i  = :[i] G.int32( G.floor( lo[i] * inv_w ) )
+  var hi_i  = :[i] G.int32( G.floor( hi[i] * inv_w ) )
+  return lo_i, hi_i
+end
+
+local gong function Spheres_to_Point( s : Spheres )
+  -- grid cell width
+  var w       = 2f*radius * 1.1f
+  var inv_w   = 1.0f / w
+  return :[i] G.int32( G.floor( s.pos[i] * inv_w ) )
+end
+
+local DilatedHashGrid   = G.hash_index {
+  table       = Spheres,
+  key         = G.vec3i,
+  abs_range   = Spheres_to_DilatedGridRange,
+  hash        = G.hash3i,
+}
+
+local Scan_Hash_Traversal  = G.scan_hash_traversal {
+  left              = DilatedHashGrid,
+  right             = Spheres,
+  right_abs_point   = Spheres_to_Point,
+}
+
+
 ------------------------------------------------------------------------------
 
 local API_Scan = G.CompileLibrary {
@@ -69,7 +125,23 @@ local API_BVH = G.CompileLibrary {
   tables        = {},
   joins         = {sphere_self_isct},
   terra_out     = true,
-  gpu           = GPU_ON,
+  gpu           = false --GPU_ON,
+}
+
+sphere_self_isct:set_cpu_traversal(Hash_Traversal)
+local API_Hash = G.CompileLibrary {
+  tables        = {},
+  joins         = {sphere_self_isct},
+  terra_out     = true,
+  gpu           = false --GPU_ON,
+}
+
+sphere_self_isct:set_cpu_traversal(Scan_Hash_Traversal)
+local API_Scan_Hash = G.CompileLibrary {
+  tables        = {},
+  joins         = {sphere_self_isct},
+  terra_out     = true,
+  gpu           = false --GPU_ON,
 }
 
 local C   = terralib.includecstring [[
@@ -83,12 +155,21 @@ local CHECK_ERR = macro(function(store)
     return 1
   end end
 end)
+local FOUND_ERR = symbol(bool, 'FOUND_ERR')
 local ERR = macro(function(err,...)
   err = "ERROR: "..err:asvalue().."\n"
   local args = {...}
   return quote
     C.printf(err, [args])
-    return 1
+    FOUND_ERR = true
+  end
+end)
+local DUMP_ERRS = macro(function()
+  return quote
+    if FOUND_ERR then
+      C.printf(" * * * FOUND ERRORS * * *\n")
+      return 1
+    end
   end
 end)
 
@@ -127,12 +208,13 @@ local function gen_exec(API, for_gpu)
       store:sphere_self_isct()
     end end end
     CHECK_ERR(store)
+    --store:print_profile()
 
     var n_expect    = 3*N*N*(N-1)
     var n_contact   = SSContacts:getsize()
+    var [FOUND_ERR] = false
     C.printf("got %d contacts\n", n_contact)
     if n_contact ~= n_expect then
-      store:destroy()
       ERR("expected %d contacts, but found %d", n_expect, n_contact)
     end
 
@@ -194,6 +276,8 @@ local function gen_exec(API, for_gpu)
       end
     end
 
+    DUMP_ERRS()
+
     store:destroy()
     return 0
   end
@@ -202,6 +286,8 @@ end
 
 test.eq(gen_exec(API_Scan, false)(), 0)
 test.eq(gen_exec(API_BVH, false)(), 0)
+test.eq(gen_exec(API_Hash, false)(), 0)
+test.eq(gen_exec(API_Scan_Hash, false)(), 0)
 if GPU_ON then
   test.eq(gen_exec(API_Scan, true)(), 0)
 end

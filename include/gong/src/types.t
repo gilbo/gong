@@ -418,7 +418,7 @@ function Type:is_numeric()
 end
 
 function Type:is_signed()
-  return (self:is_pure_tensor() and self:basetype():is_float())
+  return (self:is_pure_tensor() and self:basetype():is_signed())
       or (self:is_primitive() and (self == Exports.float or
                                    self == Exports.double or
                                    self == Exports.int8 or

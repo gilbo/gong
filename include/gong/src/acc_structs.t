@@ -148,8 +148,25 @@ local function NewTraversalObj(obj,Class)
   obj._effects    = newlist()
   obj._CACHE      = {}
 
+  lazy_load_EC()
+  local is_read   = EC.Effects.Read.check
+  local is_read_g = EC.Effects.ReadG.check
+
+  local depends_on        = {}
   for f,_ in pairs(subf) do obj._subfuncs:insert(f) end
-  for e,_ in pairs(eff)  do obj._effects:insert(e)  end
+  for e,_ in pairs(eff)  do
+    obj._effects:insert(e)
+    if is_read(e) then
+      local tbl           = e.src:table()
+      local fld           = tbl:fields(e.path[1].name)
+      depends_on[fld]     = true
+      depends_on[tbl]     = true
+    elseif is_read_g(e) then
+      local glob  = e.src
+      depends_on[glob]    = true
+    else assert(not e:touches_memory(),
+                'INTERNAL: expected no non-read memory effects') end
+  end
 
   return setmetatable(obj,Class)
 end
