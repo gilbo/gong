@@ -2,10 +2,6 @@
 
 TERRA_FILES = cork_isct.t prelude.t ext.t bignums.t
 
-WARN:
-	echo "EXAMPLE REQUIRES AUTO-PATCHING the CORK library."
-	echo "  todo: implement that functionality"
-
 run: CORK_LIB
 	cd cork; \
 	  ./bin/cork -resolve ../triA.off ../triB.off ../triC.off; \

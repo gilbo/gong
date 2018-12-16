@@ -1,4 +1,9 @@
 
+cork/bin
+cork/depend
+cork/include
+cork/lib
+cork/obj
 
 cork_isct.h
 cork_isct.o
