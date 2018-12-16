@@ -169,10 +169,11 @@ local function LimbInt(N)
       var A     = LInt.promote(x)
       var B     = LInt.promote(y)
       var carry = Limb_T(0)
-      for k=0,Ny do
+      for k=0,N do
         var a,b = A.limbs[k], B.limbs[k]
-        var r   = a + b + carry
-        carry   = ADD_CARRY(a,b,r)
+        var ab  = a + b
+        var r   = ab + carry
+        carry   = ADD_CARRY(a,b,ab) + ADD_CARRY(ab,carry,r)
         A.limbs[k] = r
       end
     in A end
@@ -192,8 +193,9 @@ local function LimbInt(N)
       var B     = LInt.neg(yy)
       --G.print('sub', A.limbs)
       --G.print('   ', B.limbs)
-      --G.print('  y', yy.limbs)
       --G.print('  x', xx.limbs)
+      --G.print('  y', yy.limbs)
+      --G.print('  RES', LInt.add(A,B).limbs)
     in LInt.add(A,B) end
   end)
 
@@ -630,6 +632,8 @@ local function get_join( xDim, xBits, xRep, yDim, yBits, yRep )
     local rRep    = FExt(2, xBits + yBits + 1)
     joinf = gong function( x : xRep, y : yRep ) : rRep
       --G.print('*\n**\n***\n****')
+      --G.print( '..', mul( x.e0, y.e2 ).limbs )
+      --G.print( '..', mul( y.e0, x.e2 ).limbs )
       var r : rRep = {
         e01   = rInt.sub( mul( x.e0, y.e1 ), mul( y.e0, x.e1 ) ),
         e02   = rInt.sub( mul( x.e0, y.e2 ), mul( y.e0, x.e2 ) ),

@@ -1004,6 +1004,71 @@ local DOP_BVH_Traversal   = G.bvh_bvh_traversal {
 
 
 
+local function hash_gen(cell_w)
+  cell_w = G.Constant(G.float, cell_w)
+  local gong function Box_to_GridRange( p : Planks ) : { G.vec3i, G.vec3i }
+    -- floating point bounding box...
+    var bbox  = Planks_to_AABB3f(p)
+    -- grid cell width
+    var inv_w = 1.0f / cell_w
+    var lo    = :[i] G.int32( G.floor( bbox.lo[i] * inv_w ) )
+    var hi    = :[i] G.int32( G.floor( bbox.hi[i] * inv_w ) )
+    --G.print(p, inv_w, lo, hi)
+    return lo, hi
+  end
+
+  local gong function Split_Boxes( p : Planks ) : G.bool
+    -- compute max box width...
+    var bbox  = Planks_to_AABB3f(p)
+    var w     = 1.0001 * (bbox.hi - bbox.lo)
+    --G.print(p, w[0] > cell_w or w[1] > cell_w or w[2] > cell_w)
+    return w[0] > cell_w or w[1] > cell_w or w[2] > cell_w
+  end
+
+  local HashGrid        = G.hash_index {
+    table       = Planks,
+    key         = G.vec3i,
+    abs_range   = Box_to_GridRange,
+    hash        = G.hash3i,
+  }
+
+  local Hash_Traversal  = G.hash_hash_traversal {
+    left        = HashGrid,
+    right       = HashGrid,
+  }
+
+  local Scan_and_Hash      = G.split_index {
+    table       = Planks,
+    index_A     = G.scan_index { table = Planks },
+    index_B     = HashGrid,
+    split       = Split_Boxes,
+  }
+
+  local Split_Traversal   = G.split_split_traversal {
+    left        = Scan_and_Hash,
+    right       = Scan_and_Hash,
+    AA_traverse = G.scan_scan_traversal {
+      left        = Scan_and_Hash:index_A(),
+      right       = Scan_and_Hash:index_A(),
+    },
+    AB_traverse = G.scan_scan_traversal {
+      left        = Scan_and_Hash:index_A(),
+      right       = Scan_and_Hash:index_B(),
+    },
+    BA_traverse = G.scan_scan_traversal {
+      left        = Scan_and_Hash:index_B(),
+      right       = Scan_and_Hash:index_A(),
+    },
+    BB_traverse = G.hash_hash_traversal {
+      left        = Scan_and_Hash:index_B(),
+      right       = Scan_and_Hash:index_B(),
+    },
+  }
+
+  return Split_Traversal
+end
+
+
 
 ------------------------------------------------------------------------------
 -- Export
@@ -1016,6 +1081,7 @@ return {
   find_plank_iscts      = find_plank_iscts,
   aabb_bvh_traversal    = AABB_BVH_Traversal,
   dop_bvh_traversal     = DOP_BVH_Traversal,
+  hash_gen              = hash_gen,
 
   num           = num,
   vec2          = vec2,

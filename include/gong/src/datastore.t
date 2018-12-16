@@ -1269,7 +1269,8 @@ function Wrapper:DefaultDoubleScan(storeptr, tbl0, tbl1, row0, row1, body)
   end
 end
 
-function Wrapper:LoopGen(storeptr, traversal, row0sym, row1sym, args, bodycode)
+function Wrapper:LoopGen(storeptr, is_self_join,
+                         traversal, row0sym, row1sym, args, bodycode)
   local W               = self
   local IndexL, IndexR  = traversal:left(), traversal:right()
   local inameL, inameR  = W._c_cache[IndexL].name, W._c_cache[IndexR].name
@@ -1277,7 +1278,8 @@ function Wrapper:LoopGen(storeptr, traversal, row0sym, row1sym, args, bodycode)
   local idxptrR         = `&(storeptr.[inameR])
 
   local loopgen = traversal:_INTERNAL_LoopGen( self:GetAccAPI(), false )
-  return loopgen( storeptr, idxptrL, idxptrR, row0sym, row1sym, args, bodycode)
+  return loopgen( storeptr, is_self_join,
+                  idxptrL, idxptrR, row0sym, row1sym, args, bodycode)
 end
 
 function Wrapper:Clear(storeptr, tbltype)
@@ -1617,6 +1619,7 @@ local is_read_global    = Effects.Effects.ReadG.check
 
 function Wrapper:AccIndexUpdate( traversal, name, storeptr,
                                  gpu_tblptr, gpu_globptr )
+
   local L_AIndex    = traversal:left()
   local R_AIndex    = traversal:right()
   local lname       = self._c_cache[L_AIndex].name
@@ -1624,17 +1627,21 @@ function Wrapper:AccIndexUpdate( traversal, name, storeptr,
   local lidxptr     = (`storeptr.[lname])
   local ridxptr     = (`storeptr.[rname])
 
-  local l_update = L_AIndex:_INTERNAL_PreJoinUpdate(
-                        self:GetAccAPI(), name, storeptr, lidxptr,
-                                                gpu_tblptr, gpu_globptr )
-  if L_AIndex == R_AIndex then
-    return l_update
-  else
-    local r_update = R_AIndex:_INTERNAL_PreJoinUpdate(
-                          self:GetAccAPI(), name, storeptr, ridxptr,
-                                                  gpu_tblptr, gpu_globptr )
-    return quote [l_update] ; [r_update] end
-  end
+  return traversal:_INTERNAL_PreJoinUpdate( self:GetAccAPI(),
+                                            self:GetAccAPI(),
+                                            name, storeptr, lidxptr, ridxptr,
+                                            gpu_tblptr, gpu_globptr )
+  --local l_update = L_AIndex:_INTERNAL_PreJoinUpdate(
+  --                      self:GetAccAPI(), name, storeptr, lidxptr,
+  --                                              gpu_tblptr, gpu_globptr )
+  --if L_AIndex == R_AIndex then
+  --  return l_update
+  --else
+  --  local r_update = R_AIndex:_INTERNAL_PreJoinUpdate(
+  --                        self:GetAccAPI(), name, storeptr, ridxptr,
+  --                                                gpu_tblptr, gpu_globptr )
+  --  return quote [l_update] ; [r_update] end
+  --end
 end
 
 function Wrapper:AccIndexInvalidate_TableSize(storeptr, Table)
@@ -1857,8 +1864,13 @@ function Wrapper:GetAccAPI()
   if W._cached_acc_API then return W._cached_acc_API end
   W._cached_acc_API   = {
     StoreTyp          = function(api) return W:Store_Struct() end,
+    HasGPUSupport     = function(api) return W:has_GPU_support() end,
     Size              = function(api, storeptr, tbltype)
                           return W:Size(storeptr, tbltype)
+                        end,
+    IndexPtr          = function(api, storeptr, SpatialIndex)
+                          local iname = W._c_cache[SpatialIndex].name
+                          return `&([storeptr].[iname])
                         end,
     Scan              = function(api, ...)
                           return W:Scan(...)

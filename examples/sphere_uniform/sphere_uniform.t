@@ -37,7 +37,6 @@ local Spheres     = G.NewTable('Spheres')
                      :NewField('pos',         vec3)
                      :NewField('isct_count',  G.uint32)
 
-
 ------------------------------------------------------------------------------
 -- SubRoutines
 

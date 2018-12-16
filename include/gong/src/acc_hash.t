@@ -341,8 +341,9 @@ end
 -------------------------------------------------------------------------------
 
 
-function Hash_Index:_INTERNAL_StructLayout()
-  if self._CACHE.HASH then return self._CACHE.HASH end
+function Hash_Index:_INTERNAL_StructLayout(StoreAPI)
+  local CACHE         = self:_INTERNAL_get_CACHE(StoreAPI)
+  if CACHE.HASH then return CACHE.HASH end
 
   local row_t         = T.row(self._table):terratype()
   local key_t         = self._key:terratype()
@@ -383,11 +384,11 @@ function Hash_Index:_INTERNAL_StructLayout()
     end end end
   end
 
-  self._CACHE.SLOT_IDS      = SLOT_IDS
-  self._CACHE.HashSlot      = HashSlot
-  self._CACHE.NULL_ROW      = NULL_ROW
-  self._CACHE.NULL_BIN      = NULL_BIN
-  self._CACHE.NULL_U32      = NULL_U32
+  CACHE.SLOT_IDS      = SLOT_IDS
+  CACHE.HashSlot      = HashSlot
+  CACHE.NULL_ROW      = NULL_ROW
+  CACHE.NULL_BIN      = NULL_BIN
+  CACHE.NULL_U32      = NULL_U32
 
 
   local struct HashTable {
@@ -411,7 +412,7 @@ function Hash_Index:_INTERNAL_StructLayout()
     self.slots:destroy()
   end
 
-  self._CACHE.HashTable     = HashTable
+  CACHE.HashTable     = HashTable
 
   return HashTable
 end
@@ -435,20 +436,21 @@ function Hash_Index:_INTERNAL_PreJoinUpdate( StoreAPI,
 end
 
 function Hash_Index:_INTERNAL_Construct_Functions(StoreAPI)
-  if self._CACHE.FUNCTIONS_BUILT then return end
-  self._CACHE.FUNCTIONS_BUILT = true
+  local CACHE           = self:_INTERNAL_get_CACHE(StoreAPI)
+  if CACHE.FUNCTIONS_BUILT then return end
+  CACHE.FUNCTIONS_BUILT = true
 
-  local row_t         = T.row(self._table):terratype()
-  local key_t         = self._key:terratype()
-  local key_bt        = self._key_base:terratype()
-  local bin_t         = self._bin_type:terratype()
+  local row_t           = T.row(self._table):terratype()
+  local key_t           = self._key:terratype()
+  local key_bt          = self._key_base:terratype()
+  local bin_t           = self._bin_type:terratype()
 
-  local SLOT_IDS        = self._CACHE.SLOT_IDS
-  local HashSlot        = self._CACHE.HashSlot
-  local NULL_ROW        = self._CACHE.NULL_ROW
-  local NULL_BIN        = self._CACHE.NULL_BIN
-  local NULL_U32        = self._CACHE.NULL_U32
-  local HashTable       = self._CACHE.HashTable
+  local SLOT_IDS        = CACHE.SLOT_IDS
+  local HashSlot        = CACHE.HashSlot
+  local NULL_ROW        = CACHE.NULL_ROW
+  local NULL_BIN        = CACHE.NULL_BIN
+  local NULL_U32        = CACHE.NULL_U32
+  local HashTable       = CACHE.HashTable
   local BIN_TO_ROW      = terralib.constant(double, self._BIN_TO_ROW)
 
   local abs_range, abs_point, hash
@@ -463,9 +465,9 @@ function Hash_Index:_INTERNAL_Construct_Functions(StoreAPI)
   else
         hash            = macro(function(storeptr, key) return key end)
   end
-  self._CACHE.abs_range = abs_range
-  self._CACHE.abs_point = abs_point
-  self._CACHE.hash      = hash
+  CACHE.abs_range       = abs_range
+  CACHE.abs_point       = abs_point
+  CACHE.hash            = hash
 
   local key_eq, key_loop, key_join, slot_print
   if self._key:is_primitive() then
@@ -553,9 +555,9 @@ function Hash_Index:_INTERNAL_Construct_Functions(StoreAPI)
       return `[key_t]({ d = array( [mvec] ) })
     end)
   end
-  self._CACHE.key_eq    = key_eq
-  self._CACHE.key_loop  = key_loop
-  self._CACHE.key_join  = key_join
+  CACHE.key_eq          = key_eq
+  CACHE.key_loop        = key_loop
+  CACHE.key_join        = key_join
 
   local RowTyp          = T.row(self._table)
   local StorePtr        = &(StoreAPI:StoreTyp())
@@ -767,48 +769,67 @@ function Hash_Index:_INTERNAL_Construct_Functions(StoreAPI)
 end
 
 
-function Hash_Hash_Traversal:_INTERNAL_LoopGen(StoreAPI, for_gpu)
-  self:_INTERNAL_Construct_Functions(StoreAPI)
-  assert(not for_gpu, 'INTERNAL: expect HashTable to be CPU only')
-  return self._CACHE.Hash_Hash_loopgen
+function Hash_Hash_Traversal:_INTERNAL_PreJoinUpdate(
+  L_API, R_API, name, storeptr, idxptr0, idxptr1, gpu_tblptr, gpu_globptr
+)
+  self:_INTERNAL_Construct_Functions(L_API, R_API)
+  assert(not gpu_tblptr, 'INTERNAL: expect BVH to be CPU only')
+  local HASH_LEFT             = self._hash_first == 'left'
+  if HASH_LEFT then
+    return `[idxptr0]:update( [storeptr] )
+  else
+    return `[idxptr1]:update( [storeptr] )
+  end
 end
 
-function Hash_Hash_Traversal:_INTERNAL_Construct_Functions(StoreAPI)
-  if self._CACHE.FUNCTIONS_BUILT then return end
-  self._CACHE.FUNCTIONS_BUILT = true
+function Hash_Hash_Traversal:_INTERNAL_Split_LoopGen(L_API, R_API, for_gpu)
+  self:_INTERNAL_Construct_Functions(L_API, R_API)
+  local CACHE               = self:_INTERNAL_get_CACHE(L_API)
+  assert(not for_gpu, 'INTERNAL: expect HashTable to be CPU only')
+  return CACHE.Hash_Hash_loopgen
+end
 
-  self._left:_INTERNAL_Construct_Functions(StoreAPI)
-  self._right:_INTERNAL_Construct_Functions(StoreAPI)
+function Hash_Hash_Traversal:_INTERNAL_LoopGen(StoreAPI, for_gpu)
+  return self:_INTERNAL_Split_LoopGen(StoreAPI, StoreAPI, for_gpu)
+end
+
+function Hash_Hash_Traversal:_INTERNAL_Construct_Functions(L_API, R_API)
+  local CACHE                 = self:_INTERNAL_get_CACHE(L_API)
+  if CACHE.FUNCTIONS_BUILT then return end
+  CACHE.FUNCTIONS_BUILT = true
+
+  self._left:_INTERNAL_Construct_Functions(L_API)
+  self._right:_INTERNAL_Construct_Functions(R_API)
+  local L_CACHE               = self._left:_INTERNAL_get_CACHE(L_API)
+  local R_CACHE               = self._right:_INTERNAL_get_CACHE(R_API)
 
   local HASH_LEFT             = self._hash_first == 'left'
   local IS_SAME_IDX           = (self._left == self._right)
-  local IS_SAME_TBL           = (self._left._table == self._right._table)
 
-  local Hash_L                = self._left._CACHE.HashTable
-  local Hash_R                = self._right._CACHE.HashTable
+  local Hash_L                = L_CACHE.HashTable
+  local Hash_R                = R_CACHE.HashTable
   local RowTyp_L              = T.row(self._left._table)
   local RowTyp_R              = T.row(self._right._table)
 
-  local abs_range_L           = self._left._CACHE.abs_range
-  local abs_range_R           = self._right._CACHE.abs_range
-  local abs_point_L           = self._left._CACHE.abs_point
-  local abs_point_R           = self._right._CACHE.abs_point
-  local hash                  = (HASH_LEFT and self._left._CACHE.hash)
-                                            or self._right._CACHE.hash
+  local abs_range_L           = L_CACHE.abs_range
+  local abs_range_R           = R_CACHE.abs_range
+  local abs_point_L           = L_CACHE.abs_point
+  local abs_point_R           = R_CACHE.abs_point
+  local hash                  = (HASH_LEFT and L_CACHE.hash) or R_CACHE.hash
 
   assert( self._left._key == self._right._key, 'INTERNAL' )
   local key_t                 = self._left._key:terratype()
-  local key_eq                = self._left._CACHE.key_eq
-  local key_loop              = self._left._CACHE.key_loop
-  local key_join              = self._left._CACHE.key_join
+  local key_eq                = L_CACHE.key_eq
+  local key_loop              = L_CACHE.key_loop
+  local key_join              = L_CACHE.key_join
 
-  local function Hash_Hash_loopgen(storeptr, idxptr0, idxptr1,
+  local function Hash_Hash_loopgen(storeptr, is_self_join, idxptr0, idxptr1,
                                              row0sym, row1sym, args, bodycode)
     assert(terralib.issymbol(storeptr), 'INTERNAL: expect symbol')
     local StorePtrType  = storeptr.type
 
     local key           = symbol(key_t, 'key')
-    if IS_SAME_TBL and not IS_SAME_IDX then
+    if is_self_join and not IS_SAME_IDX then
       local tmpbody     = bodycode
       bodycode = quote
         if row0sym <= row1sym then
@@ -837,13 +858,13 @@ function Hash_Hash_Traversal:_INTERNAL_Construct_Functions(StoreAPI)
     elseif HASH_LEFT then
       -- SCAN RIGHT ; LOOKUP IN LEFT
       if abs_point_R then
-        join_loop = StoreAPI:Scan( storeptr, RowTyp_R, row1sym, quote
+        join_loop = R_API:Scan( storeptr, RowTyp_R, row1sym, quote
             var [key]     = abs_point_R(storeptr, row1sym)
             [ Hash_L.methods.query_loop( idxptr0, storeptr,
                                          key, row0sym, deduped_body ) ]
           end)
       else assert(abs_range_R, 'INTERNAL')
-        join_loop = StoreAPI:Scan( storeptr, RowTyp_R, row1sym, quote
+        join_loop = R_API:Scan( storeptr, RowTyp_R, row1sym, quote
             var [key]
             var lo, hi    = abs_range_R(storeptr, row1sym)
             [ key_loop( lo, hi, key,
@@ -854,13 +875,13 @@ function Hash_Hash_Traversal:_INTERNAL_Construct_Functions(StoreAPI)
     else -- hash right
       -- SCAN LEFT ; LOOKUP IN RIGHT
       if abs_point_L then
-        join_loop = StoreAPI:Scan( storeptr, RowTyp_L, row0sym, quote
+        join_loop = L_API:Scan( storeptr, RowTyp_L, row0sym, quote
             var [key]     = abs_point_L(storeptr, row0sym)
             [ Hash_R.methods.query_loop( idxptr1, storeptr,
                                          key, row1sym, deduped_body ) ]
           end)
       else assert(abs_range_L, 'INTERNAL')
-        join_loop = StoreAPI:Scan( storeptr, RowTyp_L, row0sym, quote
+        join_loop = L_API:Scan( storeptr, RowTyp_L, row0sym, quote
             var [key]
             var lo, hi    = abs_range_L(storeptr, row0sym)
             [ key_loop( lo, hi, key,
@@ -870,70 +891,87 @@ function Hash_Hash_Traversal:_INTERNAL_Construct_Functions(StoreAPI)
       end
     end
 
-    return quote
-      [ HASH_LEFT and (`[idxptr0]:update( [storeptr] ))
-                   or (`[idxptr1]:update( [storeptr] )) ]
-      [ join_loop ]
-    end
+    return join_loop
   end
-  self._CACHE.Hash_Hash_loopgen = Hash_Hash_loopgen
+  CACHE.Hash_Hash_loopgen = Hash_Hash_loopgen
 end
 
+
+function Scan_Hash_Travesal:_INTERNAL_PreJoinUpdate(
+  L_API, R_API, name, storeptr, idxptr0, idxptr1, gpu_tblptr, gpu_globptr
+)
+  self:_INTERNAL_Construct_Functions(L_API, R_API)
+  assert(not gpu_tblptr, 'INTERNAL: expect BVH to be CPU only')
+  local HASH_LEFT             = self._hash_first == 'left'
+  if HASH_LEFT then
+    return `[idxptr0]:update( [storeptr] )
+  else
+    return `[idxptr1]:update( [storeptr] )
+  end
+end
+
+function Scan_Hash_Travesal:_INTERNAL_Split_LoopGen(L_API, R_API, for_gpu)
+  self:_INTERNAL_Construct_Functions(L_API, R_API)
+  local CACHE               = self:_INTERNAL_get_CACHE(L_API)
+  assert(not for_gpu, 'INTERNAL: expect HashTable to be CPU only')
+  return CACHE.Scan_Hash_loopgen
+end
 
 function Scan_Hash_Travesal:_INTERNAL_LoopGen(StoreAPI, for_gpu)
-  self:_INTERNAL_Construct_Functions(StoreAPI)
-  assert(not for_gpu, 'INTERNAL: expect HashTable to be CPU only')
-  return self._CACHE.Scan_Hash_loopgen
+  return self:_INTERNAL_Split_LoopGen(StoreAPI, StoreAPI, for_gpu)
 end
 
-function Scan_Hash_Travesal:_INTERNAL_Construct_Functions(StoreAPI)
-  if self._CACHE.FUNCTIONS_BUILT then return end
-  self._CACHE.FUNCTIONS_BUILT = true
+function Scan_Hash_Travesal:_INTERNAL_Construct_Functions(L_API, R_API)
+  local CACHE                 = self:_INTERNAL_get_CACHE(L_API)
+  if CACHE.FUNCTIONS_BUILT then return end
+  CACHE.FUNCTIONS_BUILT = true
 
-  self._left:_INTERNAL_Construct_Functions(StoreAPI)
-  self._right:_INTERNAL_Construct_Functions(StoreAPI)
+  self._left:_INTERNAL_Construct_Functions(L_API)
+  self._right:_INTERNAL_Construct_Functions(R_API)
+  local L_CACHE               = self._left:_INTERNAL_get_CACHE(L_API)
+  local R_CACHE               = self._right:_INTERNAL_get_CACHE(R_API)
 
   local HASH_LEFT             = self._hash_first == 'left'
   local IS_SAME_IDX           = false
-  local IS_SAME_TBL           = (self._left._table == self._right._table)
   local hashidx               = (HASH_LEFT and self._left) or self._right
+  local hashidxCACHE          = (HASH_LEFT and L_CACHE) or R_CACHE
 
-  local Hash_L                = HASH_LEFT and self._left._CACHE.HashTable
-  local Hash_R                = not HASH_LEFT and self._right._CACHE.HashTable
+  local Hash_L                = HASH_LEFT and L_CACHE.HashTable
+  local Hash_R                = not HASH_LEFT and R_CACHE.HashTable
   local RowTyp_L              = T.row(self._left._table)
   local RowTyp_R              = T.row(self._right._table)
 
   local abs_range             = self._abs_range and
-                                StoreAPI:GetCPUFunction( self._abs_range )
+                                L_API:GetCPUFunction( self._abs_range )
   local abs_point             = self._abs_point and
-                                StoreAPI:GetCPUFunction( self._abs_point )
+                                L_API:GetCPUFunction( self._abs_point )
   local abs_range_L           = abs_range
   local abs_range_R           = abs_range
   local abs_point_L           = abs_point
   local abs_point_R           = abs_point
   if HASH_LEFT then
-    abs_range_L               = self._left._CACHE.abs_range
-    abs_point_L               = self._left._CACHE.abs_point
+    abs_range_L               = L_CACHE.abs_range
+    abs_point_L               = L_CACHE.abs_point
   else
-    abs_range_R               = self._right._CACHE.abs_range
-    abs_point_R               = self._right._CACHE.abs_point
+    abs_range_R               = R_CACHE.abs_range
+    abs_point_R               = R_CACHE.abs_point
   end
-  local hash                  = (HASH_LEFT and self._left._CACHE.hash)
-                                            or self._right._CACHE.hash
+  local hash                  = (HASH_LEFT and L_CACHE.hash)
+                                            or R_CACHE.hash
 
   assert( self._key == hashidx._key, 'INTERNAL' )
   local key_t                 = self._key:terratype()
-  local key_eq                = hashidx._CACHE.key_eq
-  local key_loop              = hashidx._CACHE.key_loop
-  local key_join              = hashidx._CACHE.key_join
+  local key_eq                = hashidxCACHE.key_eq
+  local key_loop              = hashidxCACHE.key_loop
+  local key_join              = hashidxCACHE.key_join
 
-  local function Scan_Hash_loopgen(storeptr, idxptr0, idxptr1,
+  local function Scan_Hash_loopgen(storeptr, is_self_join, idxptr0, idxptr1,
                                              row0sym, row1sym, args, bodycode)
     assert(terralib.issymbol(storeptr), 'INTERNAL: expect symbol')
     local StorePtrType  = storeptr.type
 
     local key           = symbol(key_t, 'key')
-    if IS_SAME_TBL then
+    if is_self_join then
       local tmpbody     = bodycode
       bodycode = quote
         --C.printf('        %d %d\n', row0sym, row1sym)
@@ -960,14 +998,14 @@ function Scan_Hash_Travesal:_INTERNAL_Construct_Functions(StoreAPI)
     if HASH_LEFT then
       -- SCAN RIGHT ; LOOKUP IN LEFT
       if abs_point_R then
-        join_loop = StoreAPI:Scan( storeptr, RowTyp_R, row1sym, quote
+        join_loop = R_API:Scan( storeptr, RowTyp_R, row1sym, quote
             --C.printf('r %d\n', row1sym)
             var [key]     = abs_point_R(storeptr, row1sym)
             [ Hash_L.methods.query_loop( idxptr0, storeptr,
                                          key, row0sym, deduped_body ) ]
           end)
       else assert(abs_range_R, 'INTERNAL')
-        join_loop = StoreAPI:Scan( storeptr, RowTyp_R, row1sym, quote
+        join_loop = R_API:Scan( storeptr, RowTyp_R, row1sym, quote
             var [key]
             var lo, hi    = abs_range_R(storeptr, row1sym)
             [ key_loop( lo, hi, key,
@@ -978,13 +1016,13 @@ function Scan_Hash_Travesal:_INTERNAL_Construct_Functions(StoreAPI)
     else -- hash right
       -- SCAN LEFT ; LOOKUP IN RIGHT
       if abs_point_L then
-        join_loop = StoreAPI:Scan( storeptr, RowTyp_L, row0sym, quote
+        join_loop = L_API:Scan( storeptr, RowTyp_L, row0sym, quote
             var [key]     = abs_point_L(storeptr, row0sym)
             [ Hash_R.methods.query_loop( idxptr1, storeptr,
                                          key, row1sym, deduped_body ) ]
           end)
       else assert(abs_range_L, 'INTERNAL')
-        join_loop = StoreAPI:Scan( storeptr, RowTyp_L, row0sym, quote
+        join_loop = L_API:Scan( storeptr, RowTyp_L, row0sym, quote
             var [key]
             var lo, hi    = abs_range_L(storeptr, row0sym)
             [ key_loop( lo, hi, key,
@@ -994,13 +1032,9 @@ function Scan_Hash_Travesal:_INTERNAL_Construct_Functions(StoreAPI)
       end
     end
 
-    return quote
-      [ HASH_LEFT and (`[idxptr0]:update( [storeptr] ))
-                   or (`[idxptr1]:update( [storeptr] )) ]
-      [ join_loop ]
-    end
+    return join_loop
   end
-  self._CACHE.Scan_Hash_loopgen = Scan_Hash_loopgen
+  CACHE.Scan_Hash_loopgen = Scan_Hash_loopgen
 end
 
 

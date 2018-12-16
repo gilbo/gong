@@ -84,6 +84,19 @@ local function GenBoxAPI()
       Boxes.find_plank_iscts:set_cpu_traversal(Boxes.aabb_bvh_traversal)
     else error('unrecognized collision shape: '..collide_shape)
     end
+  elseif traversal == 'hash_split' then
+    local cell_w = 3
+    if test_case == 'slant_ground' then
+    elseif test_case == 'simple_stack' then
+    elseif test_case == 'round_tower' then
+    elseif test_case == 'plank_tower' then
+      error("hash_split unsupported for '"..test_case.."'")
+    elseif test_case == 'plank_tower2' then
+      error("hash_split unsupported for '"..test_case.."'")
+    else
+      error('unrecognized test-case: '..tostring(test_case))
+    end
+    Boxes.find_plank_iscts:set_cpu_traversal(Boxes.hash_gen(cell_w*2.0))
   elseif traversal == 'scan_scan' then
     -- a-ok
   else

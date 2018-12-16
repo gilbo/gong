@@ -684,6 +684,11 @@ function Exports.GenCppAPI(prefix, structs, funcs, hierarchy)
    '  void destroy() { '..prefix..'DestroyStore(store); }',
    '  char* geterror() { return (char*)('..prefix..'GetError(store)); };',
    '  ',
+   '  void print_profile() { '..prefix..'PrintProfile(store); };',
+   '  ProfilerOutput get_profile() {',
+   '    return '..prefix..'GetProfile(store);',
+   '  };',
+   '  ',
   }
   for jname,j in pairs(ROOT.joins) do
     CPP:insert( tmethod('  ', jname, j) )

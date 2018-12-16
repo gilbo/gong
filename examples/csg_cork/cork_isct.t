@@ -168,6 +168,7 @@ local edge_test = G.Macro(function( uncertain, e, ke, p0, p1, kp0, kp1 )
     var kdot  = AExt.inner(ke, ka)
     var outside   = (dot < 0)
     var reliable  = filterCheck(dot, kdot, COEFF_IT12_S1)
+    --print42('a ',a)
     --G.print('sign/test e: ', reliable? (outside? -1 else 1) else 0,
     --                         dot)
     if reliable and outside then return 1
@@ -219,7 +220,8 @@ local gong function is_empty_filter( input : TriEdgeInput )
     pisct = Ext.neg(pisct)
   end
   --print41('pisct', pisct)
-  --print43('    tri ', t)
+  --print43('    tri  ', t)
+  --print42('    edge ', e)
 
   var uncertain = false
 
@@ -255,6 +257,7 @@ local gong function is_empty_exact_fallback( input : TriEdgeInput )
   var R4, R5, R6 = R2*R2, R2*R3, R3*R3
   var R7, R8, R9, R10 = R3*R4, R4*R4, R4*R5, R5*R5
   --print41('    ep0', ep[0])
+  --print41('    ep1', FExt.to_ext(ep[1], R1))
   --print41('    ep1', ep[1])
   --print41('    tp0', tp[0])
   --print41('    tp1', tp[1])
@@ -268,6 +271,7 @@ local gong function is_empty_exact_fallback( input : TriEdgeInput )
 
   -- the point of intersection, with sign-adjustment for w-coordinate
   var pisct   = FExt.meet( LINE_BITS, e, TRI_BITS, t )
+  --print41('Fpisct', pisct)
   --print41('Fpisct', FExt.to_ext(pisct,R5))
   --print42('    Fedge', FExt.to_ext(e, R2))
   --print43('    Ftri ', FExt.to_ext(t, R3))
@@ -285,8 +289,9 @@ local gong function is_empty_exact_fallback( input : TriEdgeInput )
   var test_e1 = FExt.inner( LINE_BITS, e, LINE_A_BITS, ae1 )
   var sign_e0 = FExt.sign( test_e0 )
   var sign_e1 = FExt.sign( test_e1 )
+  --print42('ae0 ', ae0)
   --print42('ae0 ', FExt.to_ext(ae0,R6))
-  --print42('  Fae1 ', FExt.to_ext(ae1,R6))
+  --print42('ae1 ', FExt.to_ext(ae1,R6))
   --G.print('test e: ', test_e0.limbs,test_e1.limbs)
   --G.print('test e: ', FExt.to_ext(test_e0,R8), FExt.to_ext(test_e1,R8))
   --G.print('sign e: ', sign_e0,sign_e1)
@@ -307,6 +312,9 @@ local gong function is_empty_exact_fallback( input : TriEdgeInput )
   var sign_t0 = FExt.sign(test_t0)
   var sign_t1 = FExt.sign(test_t1)
   var sign_t2 = FExt.sign(test_t2)
+  --G.print('test t: ', FExt.to_ext(test_t0,R10),
+  --                    FExt.to_ext(test_t1,R10),
+  --                    FExt.to_ext(test_t2,R10))
   --G.print('sign t: ', sign_t0,sign_t1,sign_t2)
 
   if sign_e0 < 0 or sign_e1 < 0 or
@@ -323,24 +331,31 @@ end
 
 -------------------------
 
+local DO_DEBUG = false
 local gong function is_empty_exact( input : TriEdgeInput )
   var filter    = is_empty_filter( input )
-  var fallback  = is_empty_exact_fallback( input )
-  --G.print('  filter:', filter)
   if filter == 0 then
     return is_empty_exact_fallback( input )
   elseif filter > 0 then
-    if not result_is_no_isct(fallback) then
-      G.print("ERROR EXPECTED 0 FALLBACK, got", fallback.code)
-      return DegenerateResult()
+    if DO_DEBUG then
+      var fallback  = is_empty_exact_fallback( input )
+      if not result_is_no_isct(fallback) then
+        G.print("ERROR EXPECTED 0 FALLBACK, got", fallback.code)
+        G.print("    e", input.e)
+        G.print("    t", input.t)
+        return DegenerateResult()
+      end
     end
     return NoIsctResult()
   else
-    if not result_is_isct(fallback) then
-      G.print("ERROR EXPECTED 1 FALLBACK, got", fallback.code)
-      --G.print(input.e)
-      --G.print(input.t)
-      return DegenerateResult()
+    if DO_DEBUG then
+      var fallback  = is_empty_exact_fallback( input )
+      if not result_is_isct(fallback) then
+        G.print("ERROR EXPECTED 1 FALLBACK, got", fallback.code)
+        G.print("    e", input.e)
+        G.print("    t", input.t)
+        return DegenerateResult()
+      end
     end
     return YesIsctResult()
   end
@@ -394,6 +409,8 @@ end
 local gong join find_et_iscts ( edge : Edges, tri : Triangles )
   where boxbox_test(edge,tri)
   --G.print('HIT1')
+  --G.print(edge.hd.pos, ';', edge.tl.pos)
+  --G.print(tri.v[0].pos, ';', tri.v[1].pos, ';', tri.v[2].pos)
   var isct_result = find_et_isct(edge,tri)
   where not result_is_no_isct( isct_result )
 do
@@ -419,6 +436,46 @@ do
     has_degeneracies or= true
   end
 end
+
+
+------------------------------------------------------------------------------
+-- Join
+
+local gong function Tris_to_AABB3f( t : Triangles ) : G.AABB3f
+  return { lo = :[i] G.float(:min[j] t.v[j].pos[i] - FLT_EPSILON),
+           hi = :[i] G.float(:max[j] t.v[j].pos[i] + FLT_EPSILON) }
+end
+
+local gong function Edges_to_AABB3f( e : Edges ) : G.AABB3f
+  return { lo = :[i] G.float(G.min( e.hd.pos[i], e.tl.pos[i] ) -FLT_EPSILON),
+           hi = :[i] G.float(G.max( e.hd.pos[i], e.tl.pos[i] ) +FLT_EPSILON) }
+end
+
+local Tri_BVH = G.bvh_index {
+  table       = Triangles,
+  volume      = G.AABB3f,
+  abstract    = Tris_to_AABB3f,
+  vol_union   = G.AABB3f_union,
+  point       = G.AABB3f_midpoint,
+}
+
+local Edge_BVH = G.bvh_index {
+  table       = Edges,
+  volume      = G.AABB3f,
+  abstract    = Edges_to_AABB3f,
+  vol_union   = G.AABB3f_union,
+  point       = G.AABB3f_midpoint,
+}
+
+local BVH_Traversal = G.bvh_bvh_traversal {
+  left        = Edge_BVH,
+  right       = Tri_BVH,
+  vol_isct    = G.AABB3f_isct,
+}
+
+find_et_iscts:set_cpu_traversal(BVH_Traversal)
+has_et_iscts:set_cpu_traversal(BVH_Traversal)
+
 
 ------------------------------------------------------------------------------
 ------------------------------------------------------------------------------

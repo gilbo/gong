@@ -227,8 +227,9 @@ Some way to traverse the data structure relative to another data structure
 --]]
 
 
-function BVH_Index:_INTERNAL_StructLayout()
-  if self._CACHE.BVH then return self._CACHE.BVH end
+function BVH_Index:_INTERNAL_StructLayout(StoreAPI)
+  local CACHE         = self:_INTERNAL_get_CACHE(StoreAPI)
+  if CACHE.BVH then return CACHE.BVH end
 
   local key_t         = T.row(self._table):terratype()
   local vol_t         = self._volume:terratype()
@@ -278,8 +279,8 @@ function BVH_Index:_INTERNAL_StructLayout()
     self.geom_vols:destroy()
   end
 
-  self._CACHE.BVH_node      = BVH_node
-  self._CACHE.BVH           = BVH
+  CACHE.BVH_node    = BVH_node
+  CACHE.BVH         = BVH
 
   return BVH
 end
@@ -299,18 +300,19 @@ function BVH_Index:_INTERNAL_PreJoinUpdate( StoreAPI,
 
   assert(gpu_tblptr == nil, 'INTERNAL: expect BVH_Index on CPU only')
 
-  return quote [idxptr]:update( [storeptr] ) end
+  return quote end
 end
 
 function BVH_Index:_INTERNAL_Construct_Functions(StoreAPI)
-  if self._CACHE.FUNCTIONS_BUILT then return end
+  local CACHE         = self:_INTERNAL_get_CACHE(StoreAPI)
+  if CACHE.FUNCTIONS_BUILT then return end
 
   local ROOT          = self._ROOT
   local RowTyp        = T.row(self._table)
   local key_t         = T.row(self._table):terratype()
   local vol_t         = self._volume:terratype()
 
-  local BVH                 = self._CACHE.BVH
+  local BVH                 = CACHE.BVH
   local LEAF_SIZE           = self._LEAF_SIZE
   local pointfn             = StoreAPI:GetCPUFunction( self._point )
   local absfn               = StoreAPI:GetCPUFunction( self._abstract )
@@ -408,9 +410,11 @@ function BVH_Index:_INTERNAL_Construct_Functions(StoreAPI)
     this.geom_ids:resize(SIZE)
     this.geom_vols:resize(SIZE)
     this.bvh_nodes:resize(0)
+    var w       = [key_t](0)
     [ StoreAPI:Scan( s, RowTyp, k, quote
-        this.geom_ids(k)    = k
-        this.geom_vols(k)   = absfn(s,k)
+        this.geom_ids(w)    = k
+        this.geom_vols(w)   = absfn(s,k)
+        w                   = w + 1
     end ) ]
 
     -- recursively build the tree
@@ -467,20 +471,47 @@ function BVH_Index:_INTERNAL_Construct_Functions(StoreAPI)
     end
   end
 
-  self._CACHE.FUNCTIONS_BUILT     = true
+  CACHE.FUNCTIONS_BUILT     = true
+end
+
+function BVH_BVH_Traversal:_INTERNAL_PreJoinUpdate(
+  L_API, R_API, name, storeptr, idxptr0, idxptr1, gpu_tblptr, gpu_globptr
+)
+  self:_INTERNAL_Construct_Functions(L_API, R_API)
+  assert(not gpu_tblptr, 'INTERNAL: expect BVH to be CPU only')
+  local IS_SAME_IDX         = (self._left == self._right)
+  if IS_SAME_IDX then
+    return quote
+      [idxptr0]:update( [storeptr] )
+    end
+  else
+    return quote
+      [idxptr0]:update( [storeptr] )
+      [idxptr1]:update( [storeptr] )
+    end
+  end
+end
+
+function BVH_BVH_Traversal:_INTERNAL_Split_LoopGen(L_API, R_API, for_gpu)
+  self:_INTERNAL_Construct_Functions(L_API, R_API)
+  local CACHE               = self:_INTERNAL_get_CACHE(L_API)
+  assert(not for_gpu, 'INTERNAL: expect BVH to be CPU only')
+  return CACHE.BVH_BVH_loopgen
 end
 
 function BVH_BVH_Traversal:_INTERNAL_LoopGen(StoreAPI, for_gpu)
-  self:_INTERNAL_Construct_Functions(StoreAPI)
-  assert(not for_gpu, 'INTERNAL: expect BVH to be CPU only')
-  return self._CACHE.BVH_BVH_loopgen
+  return self:_INTERNAL_Split_LoopGen(StoreAPI, StoreAPI, for_gpu)
 end
 
-function BVH_BVH_Traversal:_INTERNAL_Construct_Functions(StoreAPI)
-  if self._CACHE.FUNCTIONS_BUILT then return end
+function BVH_BVH_Traversal:_INTERNAL_Construct_Functions(L_API, R_API)
+  local CACHE               = self:_INTERNAL_get_CACHE(L_API)
+  if CACHE.FUNCTIONS_BUILT then return end
 
-  local BVH_L               = self._left._CACHE.BVH
-  local BVH_R               = self._right._CACHE.BVH
+  self._left:_INTERNAL_Construct_Functions(L_API)
+  self._right:_INTERNAL_Construct_Functions(R_API)
+
+  local BVH_L               = self._left:_INTERNAL_get_CACHE(L_API).BVH
+  local BVH_R               = self._right:_INTERNAL_get_CACHE(R_API).BVH
   local key_t_L             = T.row(self._left._table):terratype()
   local key_t_R             = T.row(self._right._table):terratype()
   local vol_t_L             = self._left._volume:terratype()
@@ -492,11 +523,10 @@ function BVH_BVH_Traversal:_INTERNAL_Construct_Functions(StoreAPI)
   }
 
   local IS_SAME_IDX         = (self._left == self._right)
-  local IS_SAME_TBL         = (self._left._table == self._right._table)
 
-  local isctfn              = StoreAPI:GetCPUFunction( self._vol_isct )
+  local isctfn              = L_API:GetCPUFunction( self._vol_isct )
 
-  local function BVH_BVH_loopgen(storeptr, idxptr0, idxptr1,
+  local function BVH_BVH_loopgen(storeptr, is_self_join, idxptr0, idxptr1,
                                            row0sym, row1sym, args, bodycode)
     assert(terralib.issymbol(storeptr), 'INTERNAL: expect symbol')
     local StorePtrType  = storeptr.type
@@ -552,7 +582,7 @@ function BVH_BVH_Traversal:_INTERNAL_Construct_Functions(StoreAPI)
                 escape
                   -- Case: duplicates have been eliminated everywhere
                   --       except at leaves intersecting themselves
-                  if IS_SAME_IDX and IS_SAME_TBL then emit quote
+                  if IS_SAME_IDX and is_self_join then emit quote
                     if i_L == i_R then
                       check = (row0sym <= row1sym)
                     else
@@ -562,7 +592,7 @@ function BVH_BVH_Traversal:_INTERNAL_Construct_Functions(StoreAPI)
                     end
                   -- Case: because different indices were used, no
                   --       symmetric cases were eliminated in the middle
-                  end elseif not IS_SAME_IDX and IS_SAME_TBL then emit quote
+                  end elseif not IS_SAME_IDX and is_self_join then emit quote
                     check = (row0sym <= row1sym)
                   end end
                 end
@@ -620,8 +650,8 @@ function BVH_BVH_Traversal:_INTERNAL_Construct_Functions(StoreAPI)
     end
   end
 
-  self._CACHE.BVH_BVH_loopgen = BVH_BVH_loopgen
-  self._CACHE.FUNCTIONS_BUILT   = true
+  CACHE.BVH_BVH_loopgen = BVH_BVH_loopgen
+  CACHE.FUNCTIONS_BUILT   = true
 end
 
 

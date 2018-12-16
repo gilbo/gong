@@ -254,13 +254,13 @@ function Context:AccIndexUpdate(name)
   end
 end
 
-function Context:LoopGen(name, rowA, rowB, args, code)
+function Context:LoopGen(name, is_self_join, rowA, rowB, args, code)
   if self:on_GPU() then
-    return self._W:GPU_LoopGen(name, self:StorePtr(),
+    return self._W:GPU_LoopGen(name, self:StorePtr(), is_self_join,
                   self:GPU_Tables_Ptr(), self:GPU_Globals_Ptr(),
                   self._traversal, rowA, rowB, args, code)
   else
-    return self._W:LoopGen(self:StorePtr(),
+    return self._W:LoopGen(self:StorePtr(), is_self_join,
                            self._traversal, rowA, rowB, args, code)
   end
 end
@@ -634,10 +634,11 @@ function AST.Join:codegen(name, ctxt)
   local index_wrap        = nil
   local effect_wrap       = nil
   if idxbuf then
+    local is_self_join    = typA == typB
     index_wrap    = function(body)
       return newlist {
         ctxt:Profile(name..'_loop_time', 'timer_start'),
-        ctxt:LoopGen(name, rowA, rowB, buffered_args, quote
+        ctxt:LoopGen(name, is_self_join, rowA, rowB, buffered_args, quote
           idxbuf:insert(rowA,rowB)
         end),
         ctxt:Profile(name..'_loop_time', 'timer_stop'),
@@ -648,11 +649,12 @@ function AST.Join:codegen(name, ctxt)
       }
     end
   else
+    local is_self_join    = typA == typB
     -- usual case looping over the index without index buffering..
     index_wrap    = function(body)
       return newlist {
         ctxt:Profile(name..'_loop_time', 'timer_start'),
-        ctxt:LoopGen(name, rowA, rowB, buffered_args, body),
+        ctxt:LoopGen(name, is_self_join, rowA, rowB, buffered_args, body),
         ctxt:Profile(name..'_loop_time', 'timer_stop'),
       }
     end

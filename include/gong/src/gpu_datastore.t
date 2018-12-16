@@ -1558,7 +1558,8 @@ function GWrapper:ScanAA(name, storeptr, gpu_tblptr, gpu_globptr,
   end
 end
 
-function GWrapper:LoopGen(name, storeptr, gpu_tblptr, gpu_globptr,
+function GWrapper:LoopGen(name, storeptr, is_self_join,
+                          gpu_tblptr, gpu_globptr,
                           traversal, row0sym, row1sym, args, bodycode)
   local W               = self
   local IndexL, IndexR  = traversal:left(), traversal:right()
@@ -1567,7 +1568,7 @@ function GWrapper:LoopGen(name, storeptr, gpu_tblptr, gpu_globptr,
   local idxptrR         = `&(storeptr.[inameR])
 
   local loopgen   = traversal:_INTERNAL_LoopGen( MW:GetAccAPI(), true )
-  return loopgen( name, storeptr, gpu_tblptr, gpu_globptr,
+  return loopgen( name, storeptr, is_self_join, gpu_tblptr, gpu_globptr,
                   idxptrL, idxptrR, row0sym, row1sym, args, bodycode )
 end
 

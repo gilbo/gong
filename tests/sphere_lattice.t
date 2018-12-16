@@ -110,6 +110,39 @@ local Scan_Hash_Traversal  = G.scan_hash_traversal {
   right_abs_point   = Spheres_to_Point,
 }
 
+local gong function Split_Spheres( s : Spheres ) : G.bool
+  return s.pos[0] < 0.5f or s.pos[1] < 0.5f or s.pos[2] < 0.5f
+end
+
+local Hash_and_BVH      = G.split_index {
+  table       = Spheres,
+  index_A     = BVH,
+  index_B     = HashGrid,
+  split       = Split_Spheres,
+}
+
+local Split_Traversal   = G.split_split_traversal {
+  left        = Hash_and_BVH,
+  right       = Hash_and_BVH,
+  AA_traverse = G.bvh_bvh_traversal {
+    left        = Hash_and_BVH:index_A(),
+    right       = Hash_and_BVH:index_A(),
+    vol_isct    = G.AABB3f_isct,
+  },
+  AB_traverse = G.scan_scan_traversal {
+    left        = Hash_and_BVH:index_A(),
+    right       = Hash_and_BVH:index_B(),
+  },
+  BA_traverse = G.scan_scan_traversal {
+    left        = Hash_and_BVH:index_B(),
+    right       = Hash_and_BVH:index_A(),
+  },
+  BB_traverse = G.hash_hash_traversal {
+    left        = Hash_and_BVH:index_B(),
+    right       = Hash_and_BVH:index_B(),
+  },
+}
+
 
 ------------------------------------------------------------------------------
 
@@ -142,6 +175,14 @@ local API_Scan_Hash = G.CompileLibrary {
   joins         = {sphere_self_isct},
   terra_out     = true,
   gpu           = false --GPU_ON,
+}
+
+sphere_self_isct:set_cpu_traversal(Split_Traversal)
+local API_Split = G.CompileLibrary {
+  tables        = {},
+  joins         = {sphere_self_isct},
+  terra_out     = true,
+  gpu           = false,
 }
 
 local C   = terralib.includecstring [[
@@ -288,6 +329,7 @@ test.eq(gen_exec(API_Scan, false)(), 0)
 test.eq(gen_exec(API_BVH, false)(), 0)
 test.eq(gen_exec(API_Hash, false)(), 0)
 test.eq(gen_exec(API_Scan_Hash, false)(), 0)
+test.eq(gen_exec(API_Split, false)(), 0)
 if GPU_ON then
   test.eq(gen_exec(API_Scan, true)(), 0)
 end

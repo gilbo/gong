@@ -22,9 +22,10 @@ local is_table      = Schemata.is_table
 
 local Functions     = require 'gong.src.functions'
 
-local AccStructs    = require 'gong.src.acc_structs'
+local AccStructs        = require 'gong.src.acc_structs'
+local is_spatial_index  = AccStructs.is_spatial_index
 
-local newlist       = terralib.newlist
+local newlist           = terralib.newlist
 
 -------------------------------------------------------------------------------
 --[[                           Helper Functions                            ]]--
@@ -91,8 +92,8 @@ end
 local scanscan_arg_msg = [[
 new_scan_scan_traversal() expects named arguments
 {
-  left        = gong spatial index to traverse
-  right       = gong spatial index to traverse
+  left        = gong spatial index to traverse (any type of index)
+  right       = gong spatial index to traverse (any type of index)
 }
 ]]
 local function new_scan_scan_traversal(args)
@@ -101,8 +102,8 @@ local function new_scan_scan_traversal(args)
   then
     error(scanscan_arg_msg, 2)
   end
-  if not is_scan_index(args.left) or not is_scan_index(args.right) then
-    error("expected 'left' and 'right' to be Scan_Index objects\n"..
+  if not is_spatial_index(args.left) or not is_spatial_index(args.right) then
+    error("expected 'left' and 'right' to be spatial index objects\n"..
           scanscan_arg_msg, 2)
   end
 
@@ -156,9 +157,15 @@ function Scan_Index:_INTERNAL_Construct_Functions(StoreAPI)
   CACHE.FUNCTIONS_BUILT       = true
 end
 
-function Scan_Scan_Traversal:_INTERNAL_LoopGen(StoreAPI, for_gpu)
-  self:_INTERNAL_Construct_Functions(StoreAPI)
-  local CACHE   = self:_INTERNAL_get_CACHE(StoreAPI)
+function Scan_Scan_Traversal:_INTERNAL_PreJoinUpdate(
+  L_API, R_API, name, storeptr, idxptr0, idxptr1, gpu_tblptr, gpu_globptr
+)
+  return quote end
+end
+
+function Scan_Scan_Traversal:_INTERNAL_Split_LoopGen(L_API, R_API, for_gpu)
+  self:_INTERNAL_Construct_Functions(L_API, R_API)
+  local CACHE   = self:_INTERNAL_get_CACHE(L_API)
 
   if for_gpu then
     return CACHE.Scan_Scan_GPU_loopgen
@@ -167,45 +174,56 @@ function Scan_Scan_Traversal:_INTERNAL_LoopGen(StoreAPI, for_gpu)
   end
 end
 
-function Scan_Scan_Traversal:_INTERNAL_Construct_Functions(StoreAPI)
-  local CACHE   = self:_INTERNAL_get_CACHE(StoreAPI)
+function Scan_Scan_Traversal:_INTERNAL_LoopGen(StoreAPI, for_gpu)
+  return self:_INTERNAL_Split_LoopGen(StoreAPI, StoreAPI, for_gpu)
+end
+
+function Scan_Scan_Traversal:_INTERNAL_Construct_Functions(API_0, API_1)
+  local CACHE   = self:_INTERNAL_get_CACHE(API_0)
   if CACHE.FUNCTIONS_BUILT then return end
+
+  local tbl0type = T.row(self._left._table)
+  local tbl1type = T.row(self._right._table)
   
-  local function Scan_Scan_CPU_loopgen(storeptr, idxptr0, idxptr1,
-                                                 row0sym, row1sym, args,
-                                                 bodycode)
-    local tbl0type = T.row(self._left._table)
-    local tbl1type = T.row(self._right._table)
-    if tbl0type == tbl1type then
+  local function Scan_Scan_CPU_loopgen( storeptr, is_self_join,
+                                        idxptr0, idxptr1,
+                                        row0sym, row1sym, args,
+                                        bodycode )
+    if is_self_join and API_0 == API_1 then
       return quote
-        [ StoreAPI:SelfScan( storeptr, tbl0type,
+        [ API_0:SelfScan( storeptr, tbl0type,
                              row0sym, row1sym, bodycode ) ]
       end
     else
-      return StoreAPI:Scan( storeptr, tbl0type, row0sym,
-                StoreAPI:Scan( storeptr, tbl1type, row1sym,
+      if is_self_join then
+        local body_inner = bodycode
+        bodycode = quote if row0sym <= row1sym then [body_inner] end end
+      end
+      return API_0:Scan( storeptr, tbl0type, row0sym,
+                API_1:Scan( storeptr, tbl1type, row1sym,
                   bodycode
                 ))
     end
   end
   CACHE.Scan_Scan_CPU_loopgen = Scan_Scan_CPU_loopgen
 
-  local function Scan_Scan_GPU_loopgen( name, storeptr,
+  local function Scan_Scan_GPU_loopgen( name, storeptr, is_self_join,
                                         gpu_tblptr, gpu_globptr,
                                         idxptr0, idxptr1,
                                         row0sym, row1sym, args, bodycode)
-    local tbl0type = T.row(self._left._table)
-    local tbl1type = T.row(self._right._table)
-    if tbl0type == tbl1type then
-      return StoreAPI:GPU_SelfScan( name, storeptr,
+    if is_self_join and API_0 == API_1 then
+      return API_0:GPU_SelfScan( name, storeptr,
                                     gpu_tblptr, gpu_globptr,
                                     tbl0type, row0sym, row1sym,
                                     args, bodycode )
-    else
-      return StoreAPI:GPU_DoubleScan( name, storeptr,
+    elseif API_0 == API_1 then -- and NOT is_self_join
+      return API_0:GPU_DoubleScan( name, storeptr,
                                       gpu_tblptr, gpu_globptr,
                                       tbl0type, row0sym, tbl1type, row1sym,
                                       args, bodycode )
+    else
+      -- complicated double join situation...
+      error("TODO: implement multi-\"api\" GPU joins...")
     end
   end
   CACHE.Scan_Scan_GPU_loopgen = Scan_Scan_GPU_loopgen

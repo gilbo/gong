@@ -8,7 +8,7 @@ WARN:
 
 run: CORK_LIB
 	cd cork; \
-	  ./bin/cork -resolve ../triA.off ../triB.off ../trisC; \
+	  ./bin/cork -resolve ../triA.off ../triB.off ../triC.off; \
 	  cd ..
 
 CORK_LIB: cork/obj/cork_isct.o cork/src/cork_isct.h

@@ -35,6 +35,8 @@ local newlist       = terralib.newlist
 --[[                           Helper Functions                            ]]--
 -------------------------------------------------------------------------------
 
+local HIDDEN_CACHE    = {}
+
 -------------------------------------------------------------------------------
 --[[                    Spatial Index Structure Objects                    ]]--
 -------------------------------------------------------------------------------
@@ -54,25 +56,25 @@ function SpatialIndex:_INTERNAL_getsubfuncs() return self._subfuncs:copy() end
 function SpatialIndex:_INTERNAL_geteffects()  return self._effects:copy()  end
 
 local function NewSpatialIndexObj(obj,Class)
-  local subf      = {}
-  local eff       = {}
+  local subf        = {}
+  local eff         = {}
   if obj._subfuncs then for _,f in ipairs(obj._subfuncs) do
-    subf[f]       = true
+    subf[f]         = true
     for _,sf in ipairs(f:_INTERNAL_getsubfuncs()) do
-      subf[sf]    = true
+      subf[sf]      = true
     end
     for _,e in ipairs(f:_INTERNAL_geteffects()) do
-      eff[e]      = true
+      eff[e]        = true
     end
   end end
 
-  obj._subfuncs   = newlist()
-  obj._effects    = newlist()
-  obj._CACHE      = {}
+  obj._subfuncs     = newlist()
+  obj._effects      = newlist()
+  HIDDEN_CACHE[obj] = {}
 
   lazy_load_EC()
-  local is_read   = EC.Effects.Read.check
-  local is_read_g = EC.Effects.ReadG.check
+  local is_read     = EC.Effects.Read.check
+  local is_read_g   = EC.Effects.ReadG.check
 
   local depends_on        = {}
   for f,_ in pairs(subf) do obj._subfuncs:insert(f) end
@@ -98,13 +100,21 @@ end
 Exports.NewSpatialIndexObj    = NewSpatialIndexObj
 
 function SpatialIndex:_INTERNAL_get_CACHE(StoreAPI)
-  if self._CACHE[StoreAPI] then return self._CACHE[StoreAPI] end
-  self._CACHE[StoreAPI] = {}
-  return self._CACHE[StoreAPI]
+  if HIDDEN_CACHE[self][StoreAPI] then return HIDDEN_CACHE[self][StoreAPI] end
+  HIDDEN_CACHE[self][StoreAPI] = {}
+  return HIDDEN_CACHE[self][StoreAPI]
 end
 
 function SpatialIndex:_INTERNAL_depends_on(obj)
   return self._depends_on[obj]
+end
+
+
+function SpatialIndex:_INTERNAL_clone()
+  local obj = {}
+  for k,v in pairs(self) do obj[k] = v end
+  HIDDEN_CACHE[obj] = {}
+  return setmetatable(obj, getmetatable(self))
 end
 
 
@@ -131,26 +141,26 @@ function Traversal:_INTERNAL_getsubfuncs() return self._subfuncs:copy() end
 function Traversal:_INTERNAL_geteffects()  return self._effects:copy()  end
 
 local function NewTraversalObj(obj,Class)
-  local subf      = {}
-  local eff       = {}
-  local depends_on  = {}
+  local subf          = {}
+  local eff           = {}
+  local depends_on    = {}
   if obj._subfuncs then for _,f in ipairs(obj._subfuncs) do
-    subf[f]       = true
+    subf[f]           = true
     for _,sf in ipairs(f:_INTERNAL_getsubfuncs()) do
-      subf[sf]    = true
+      subf[sf]        = true
     end
     for _,e in ipairs(f:_INTERNAL_geteffects()) do
-      eff[e]      = true
+      eff[e]          = true
     end
   end end
 
-  obj._subfuncs   = newlist()
-  obj._effects    = newlist()
-  obj._CACHE      = {}
+  obj._subfuncs       = newlist()
+  obj._effects        = newlist()
+  HIDDEN_CACHE[obj]   = {}
 
   lazy_load_EC()
-  local is_read   = EC.Effects.Read.check
-  local is_read_g = EC.Effects.ReadG.check
+  local is_read       = EC.Effects.Read.check
+  local is_read_g     = EC.Effects.ReadG.check
 
   local depends_on        = {}
   for f,_ in pairs(subf) do obj._subfuncs:insert(f) end
@@ -174,9 +184,17 @@ end
 Exports.NewTraversalObj       = NewTraversalObj
 
 function Traversal:_INTERNAL_get_CACHE(StoreAPI)
-  if self._CACHE[StoreAPI] then return self._CACHE[StoreAPI] end
-  self._CACHE[StoreAPI] = {}
-  return self._CACHE[StoreAPI]
+  if HIDDEN_CACHE[self][StoreAPI] then return HIDDEN_CACHE[self][StoreAPI] end
+  HIDDEN_CACHE[self][StoreAPI] = {}
+  return HIDDEN_CACHE[self][StoreAPI]
+end
+
+
+function Traversal:_INTERNAL_clone()
+  local obj = {}
+  for k,v in pairs(self) do obj[k] = v end
+  HIDDEN_CACHE[obj] = {}
+  return setmetatable(obj, getmetatable(self))
 end
 
 
