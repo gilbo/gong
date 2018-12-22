@@ -209,7 +209,14 @@ int main() {
     //cout << "Frame #"<<k<< " loaded.  Intersecting..." << endl;
 
     double start = taketime();
+#ifdef GPU_ENABLE
+    store.sphere_self_isct_GPU();
+#else
     store.sphere_self_isct();
+#endif
+    // force synced timing if on GPU
+    store.Spheres().pos().read_lock();
+    store.Spheres().pos().read_unlock();
     double stop = taketime();
 
     DrawSpheres(store, N_SPHERES);    

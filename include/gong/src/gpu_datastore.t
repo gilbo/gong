@@ -1562,12 +1562,14 @@ function GWrapper:LoopGen(name, storeptr, is_self_join,
                           gpu_tblptr, gpu_globptr,
                           traversal, row0sym, row1sym, args, bodycode)
   local W               = self
+  local MainW           = W._main_wrap
   local IndexL, IndexR  = traversal:left(), traversal:right()
-  local inameL, inameR  = W._c_cache[IndexL].name, W._c_cache[IndexR].name
+  local inameL, inameR  = MainW._c_cache[IndexL].name,
+                          MainW._c_cache[IndexR].name
   local idxptrL         = `&(storeptr.[inameL])
   local idxptrR         = `&(storeptr.[inameR])
 
-  local loopgen   = traversal:_INTERNAL_LoopGen( MW:GetAccAPI(), true )
+  local loopgen   = traversal:_INTERNAL_LoopGen( MainW:GetAccAPI(), true )
   return loopgen( name, storeptr, is_self_join, gpu_tblptr, gpu_globptr,
                   idxptrL, idxptrR, row0sym, row1sym, args, bodycode )
 end
