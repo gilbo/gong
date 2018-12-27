@@ -44,6 +44,9 @@ OPTIONS:
   --coverage        run with internal code coverage analysis on
                     (for gong developers, not users)
   --debug_gpu_mem   compile with debug messages on gpu memory operations
+  --no_profiling    turn off profiling to ensure no performance effect
+  --slow_verify     turn on a lot of slow sanity checks (array bounds)
+                    to help catch tricky bugs.
 ]])
 end
 
@@ -79,7 +82,7 @@ local incdir_path    = bindir_path..'../include'
 --print(script_path, bindir_path, incdir_path)
 
 -- Now that we have the path, we can use it to extend the Terra
--- searchpath to find the Sew files
+-- searchpath to find the Gong files
 package.terrapath = package.terrapath..';'..incdir_path..'/?.t'
 
 if options.coverage then

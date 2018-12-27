@@ -28,6 +28,11 @@ local RESHRINK    = G.Global('RESHRINK', G.double, 1.0)
 local EPS         = DBL_EPSILON
 local EPS2        = EPS * EPS
 
+
+local BUFFER_EFF  = false
+local BUFFER_IDX  = false
+local VERIFY_IDX  = false
+
 ------------------------------------------------------------------------------
 -- Support Functions / Defs
 
@@ -476,6 +481,22 @@ local BVH_Traversal = G.bvh_bvh_traversal {
 find_et_iscts:set_cpu_traversal(BVH_Traversal)
 has_et_iscts:set_cpu_traversal(BVH_Traversal)
 
+
+------------------------------------------------------------------------------
+-- Profiling & Debugging Help
+
+if BUFFER_EFF then
+  find_et_iscts:buffer_effects_on_cpu(true)
+  has_et_iscts:buffer_effects_on_cpu(true)
+end
+if BUFFER_IDX then
+  find_et_iscts:buffer_index_on_cpu(true)
+  has_et_iscts:buffer_index_on_cpu(true)
+end
+if VERIFY_IDX then
+  find_et_iscts:verify_index(true)
+  has_et_iscts:verify_index(true)
+end
 
 ------------------------------------------------------------------------------
 ------------------------------------------------------------------------------
