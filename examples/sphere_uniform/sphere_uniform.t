@@ -3,6 +3,10 @@ local G = gong.stdlib
 
 local num       = G.float
 
+-- quick hack for control
+local USE_GPU = not not terralib.cudacompile
+print('USE GPU? ', USE_GPU)
+
 local params = { suffix = '', traversal = 'scan_scan' }
 for _,a in ipairs(arg) do
   local _, _, label, value = a:find("^%-([^=]*)=(.*)$")
@@ -101,6 +105,7 @@ local API = G.CompileLibrary {
   joins           = {sphere_self_isct},
   c_obj_file      = 'sphere_uniform'..params.suffix..'.o',
   cpp_header_file = 'sphere_uniform'..params.suffix..'.h',
+  gpu             = USE_GPU,
 }
 
 

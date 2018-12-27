@@ -1180,7 +1180,7 @@ function Wrapper:GPU_Globals_Struct()
   return self._gpu_wrapper:GPU_Globals_Struct()
 end
 -- more pass-through to the gpu wrapper
-for _,nm in ipairs({'LoopGenAA','LoopGenAB',
+for _,nm in ipairs({'LoopGen',
                     'Read','Write','Reduce',
                     'ReadGlobal','ReduceGlobal',
                     'Insert',

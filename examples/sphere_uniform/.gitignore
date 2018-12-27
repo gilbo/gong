@@ -7,3 +7,4 @@ sphere_uniform_scan.o
 sphere_uniform_bvh
 sphere_uniform_bvh.h
 sphere_uniform_bvh.o
+sphere_uniform_gpu_scan
