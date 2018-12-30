@@ -188,6 +188,7 @@ local function batch_compile(fn_inputs)
       C.exit(retcode)
     end
   end
+  cudaloader:setname(next(orig_names)..'_cudaloader')
 
 
   -- Package the compiled code in wrapper functions
@@ -310,24 +311,27 @@ else
   terralib.linklibrary(libdevice)
 end
 
-local cbrt    = externcall("__nv_cbrt", double -> double)
-local sqrt    = externcall("__nv_sqrt", double -> double)
-local cos     = externcall("__nv_cos",  double -> double)
-local acos    = externcall("__nv_acos", double -> double)
-local sin     = externcall("__nv_sin",  double -> double)
-local asin    = externcall("__nv_asin", double -> double)
-local tan     = externcall("__nv_tan",  double -> double)
-local atan    = externcall("__nv_atan", double -> double)
-local log     = externcall("__nv_log",  double -> double)
-local log2    = externcall("__nv_log2",  double -> double)
-local pow     = externcall("__nv_pow",  {double, double} -> double)
-local fmod    = externcall("__nv_fmod", {double, double} -> double)
-local floor   = externcall("__nv_floor", double -> double)
-local ceil    = externcall("__nv_ceil", double -> double)
-local fabs    = externcall("__nv_fabs", double -> double)
+local cbrt    = externcall("__nv_cbrt",   double -> double)
+local sqrt    = externcall("__nv_sqrt",   double -> double)
+local cos     = externcall("__nv_cos",    double -> double)
+local acos    = externcall("__nv_acos",   double -> double)
+local sin     = externcall("__nv_sin",    double -> double)
+local asin    = externcall("__nv_asin",   double -> double)
+local tan     = externcall("__nv_tan",    double -> double)
+local atan    = externcall("__nv_atan",   double -> double)
+local atan2   = externcall("__nv_atan2",  {double, double} -> double)
+local log     = externcall("__nv_log",    double -> double)
+local log2    = externcall("__nv_log2",   double -> double)
+local pow     = externcall("__nv_pow",    {double, double} -> double)
+local fmod    = externcall("__nv_fmod",   {double, double} -> double)
+local floor   = externcall("__nv_floor",  double -> double)
+local ceil    = externcall("__nv_ceil",   double -> double)
+local fabs    = externcall("__nv_fabs",   double -> double)
+local exp     = externcall("__nv_exp",    double -> double)
+local exp2    = externcall("__nv_exp2",   double -> double)
 
-local fmin    = externcall("__nv_fmin", {double,double} -> double)
-local fmax    = externcall("__nv_fmax", {double,double} -> double)
+local fmin    = externcall("__nv_fmin",   {double,double} -> double)
+local fmax    = externcall("__nv_fmax",   {double,double} -> double)
 
 Exports.cbrt  = cbrt
 Exports.sqrt  = sqrt
@@ -337,6 +341,7 @@ Exports.sin   = sin
 Exports.asin  = asin
 Exports.tan   = tan
 Exports.atan  = atan
+Exports.atan2 = atan2
 Exports.floor = floor
 Exports.ceil  = ceil
 Exports.fabs  = fabs
@@ -344,6 +349,8 @@ Exports.log   = log
 Exports.log2  = log2
 Exports.pow   = pow
 Exports.fmod  = fmod
+Exports.exp   = exp
+Exports.exp2  = exp2
 
 Exports.fmin  = fmin
 Exports.fmax  = fmax

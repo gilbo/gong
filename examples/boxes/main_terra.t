@@ -40,6 +40,7 @@ local params = { debug_draw     = false,
                  verify         = false,
                  test_case      = 'round_tower',
                  max_iters      = 50,
+                 gpu            = false,
                }
 for _,a in ipairs(arg) do
   local _, _, label, value = a:find("^%-([^=]*)=(.*)$")
@@ -55,6 +56,7 @@ local use_projectile        = not boolparam(params.no_projectile)
 local effect_buffer         = boolparam(params.effect_buffer)
 local index_buffer          = boolparam(params.index_buffer)
 local verify                = boolparam(params.verify)
+local use_gpu               = boolparam(params.gpu)
 
 local timestep              = 1/60
 local inv_timestep          = 1/timestep
@@ -111,10 +113,15 @@ local function GenBoxAPI()
   end
   Boxes.find_plank_iscts:verify_index(verify)
 
+  if use_gpu then
+    Boxes.PPContacts:setGPUSizeLinear(3,Boxes.Planks,64)
+  end
+
   local API = G.CompileLibrary {
     tables            = Boxes.tables,
     joins             = Boxes.joins,
     terra_out         = true,
+    gpu               = use_gpu,
   }
 
   local blockout = {
@@ -151,6 +158,12 @@ Prelude.API_Extend(API)
 
 ------------------------------------------------------------------------------
 -- Build box configuration
+
+local terra loadContacts( store : API.Store )
+  var contacts = store:PPContacts()
+  contacts:beginload(0)
+  contacts:endload()
+end
 
 local terra loadBoxesSlantGround( store : API.Store )
   var boxes = store:Planks()
@@ -268,7 +281,7 @@ local terra loadBoxesRoundTower( store : API.Store )
                  )
   if use_projectile then
     -- projectile box
-    boxes:loadrow( v3(20,14.5,0),   -- position
+    boxes:loadrow( v3(20,14.65,0),   -- position
                    q4(0,0,0,1),   -- rotation
                    v3(-60,-30,0), -- linear velocity
                    v3(0,0,0),     -- angular velocity
@@ -517,9 +530,9 @@ end)
 
 local terra draw_boxes( store : API.Store )
   var n_box = store:Planks():getsize()
-  var pos   = store:Planks():pos():readwrite_lock()
-  var rot   = store:Planks():rot():readwrite_lock()
-  var dims  = store:Planks():dims():readwrite_lock()
+  var pos   = store:Planks():pos():read_lock()
+  var rot   = store:Planks():rot():read_lock()
+  var dims  = store:Planks():dims():read_lock()
 
   for b=0,n_box do
     -- compute the box frame vectors
@@ -569,17 +582,17 @@ local terra draw_boxes( store : API.Store )
     end
   end
 
-  store:Planks():pos():readwrite_unlock()
-  store:Planks():rot():readwrite_unlock()
-  store:Planks():dims():readwrite_unlock()
+  store:Planks():pos():read_unlock()
+  store:Planks():rot():read_unlock()
+  store:Planks():dims():read_unlock()
 end
 
 local terra print_boxes( store : API.Store )
   var n_box = store:Planks():getsize()
-  var pos   = store:Planks():pos():readwrite_lock()
-  var vel   = store:Planks():linvel():readwrite_lock()
-  var rot   = store:Planks():rot():readwrite_lock()
-  var dims  = store:Planks():dims():readwrite_lock()
+  var pos   = store:Planks():pos():read_lock()
+  var vel   = store:Planks():linvel():read_lock()
+  var rot   = store:Planks():rot():read_lock()
+  var dims  = store:Planks():dims():read_lock()
 
   for b=0,n_box do
     -- compute the box frame vectors
@@ -590,24 +603,24 @@ local terra print_boxes( store : API.Store )
               b, p(0), p(1), p(2), v(0), v(1), v(2) )
   end
 
-  store:Planks():pos():readwrite_unlock()
-  store:Planks():linvel():readwrite_unlock()
-  store:Planks():rot():readwrite_unlock()
-  store:Planks():dims():readwrite_unlock()
+  store:Planks():pos():read_unlock()
+  store:Planks():linvel():read_unlock()
+  store:Planks():rot():read_unlock()
+  store:Planks():dims():read_unlock()
 end
 
 local terra draw_contacts( store : API.Store )
   var nC_alloc  = store:PPContacts():get_n_alloc()
   var is_live   = store:PPContacts():is_live():read_lock()
-  var n_pts     = store:PPContacts():n_pts():readwrite_lock()
-  var pts       = store:PPContacts():pts():readwrite_lock()
-  var basis     = store:PPContacts():basis():readwrite_lock()
+  var n_pts     = store:PPContacts():n_pts():read_lock()
+  var pts       = store:PPContacts():pts():read_lock()
+  var basis     = store:PPContacts():basis():read_lock()
 
-  var c_b0      = store:PPContacts():p0():readwrite_lock()
-  var c_b1      = store:PPContacts():p1():readwrite_lock()
+  var c_b0      = store:PPContacts():p0():read_lock()
+  var c_b1      = store:PPContacts():p1():read_lock()
 
-  var pos       = store:Planks():pos():readwrite_lock()
-  var rot       = store:Planks():rot():readwrite_lock()
+  var pos       = store:Planks():pos():read_lock()
+  var rot       = store:Planks():rot():read_lock()
 
   for c=0,nC_alloc do if is_live[c] then
     --C.printf('    drawing contact %d\n', c)
@@ -631,16 +644,16 @@ local terra draw_contacts( store : API.Store )
     end
   end end
 
-  store:Planks():pos():readwrite_unlock()
-  store:Planks():rot():readwrite_unlock()
+  store:Planks():pos():read_unlock()
+  store:Planks():rot():read_unlock()
 
-  store:PPContacts():p0():readwrite_unlock()
-  store:PPContacts():p1():readwrite_unlock()
+  store:PPContacts():p0():read_unlock()
+  store:PPContacts():p1():read_unlock()
 
   store:PPContacts():is_live():read_unlock()
-  store:PPContacts():n_pts():readwrite_unlock()
-  store:PPContacts():pts():readwrite_unlock()
-  store:PPContacts():basis():readwrite_unlock()
+  store:PPContacts():n_pts():read_unlock()
+  store:PPContacts():pts():read_unlock()
+  store:PPContacts():basis():read_unlock()
 end
 
 
@@ -762,6 +775,7 @@ local terra mainLoop()
   end else
     error('unrecognized test-case: '..tostring(test_case))
   end end
+  loadContacts(store)
 
     vdb.vbegin()
     vdb.frame()
@@ -791,7 +805,9 @@ local terra mainLoop()
       C.usleep([int](wait_time*1e6))
     end
 
-    drawStore(store)
+    if ([int32](N_FRAMES-1)-[int32](k))%60 == 0 then
+      drawStore(store)
+    end
     --print_boxes(store)
   end
 

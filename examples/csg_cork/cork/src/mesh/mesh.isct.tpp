@@ -1005,7 +1005,12 @@ bool Mesh<VertData,TriData>::IsctProblem::verifyGongIsctResults() {
     //  Perform the Join
     // ****
     Timer join_time;
+#ifdef GPU_ENABLE
+    gongctxt.find_et_iscts_GPU();
+#else
     gongctxt.find_et_iscts();
+#endif
+    uint32_t abcdef     = gongctxt.ET_Iscts().size();
     std::cout << "* * * JOIN TIME * " << join_time.stop() << std::endl;
     gongctxt.print_profile();
 
@@ -1027,7 +1032,7 @@ bool Mesh<VertData,TriData>::IsctProblem::verifyGongIsctResults() {
               << gongctxt.degeneracy_count().read() << std::endl;
 
     // For each Gong-derived intersection, attempt to locate it...
-
+    /*
     uint N_TRI = TopoCache::tris.size();
     std::vector< std::vector< Eptr > > te_cache(N_TRI);
     for( uint32_t i=0; i<N_ISCT; i++ ) {
@@ -1059,7 +1064,7 @@ bool Mesh<VertData,TriData>::IsctProblem::verifyGongIsctResults() {
             }
         }
     }
-
+    */
 
     // check for all intersections found...
     glue_pts.for_each([&](GluePt glue){
@@ -1067,6 +1072,10 @@ bool Mesh<VertData,TriData>::IsctProblem::verifyGongIsctResults() {
         Vptr    e0      = e->verts[0];
         Vptr    e1      = e->verts[1];
         Tptr t = glue->t[0];
+    //std::cerr << "cork " << e0->ref << " " << e1->ref << " ; "
+    //          << t->verts[0]->ref << " " << t->verts[1]->ref
+    //                              << " " << t->verts[2]->ref << std::endl;
+        /*
         bool found = false;
         for (auto ep : te_cache[t->ref]) {
             if(ep == e) { found = true; break; }
@@ -1085,9 +1094,9 @@ bool Mesh<VertData,TriData>::IsctProblem::verifyGongIsctResults() {
                            << " " << vPos(t->verts[2])
                       << std::endl;
             error = true;
-        }
+        }*/
     });
-
+    
     gongctxt.Edges().id().read_unlock();
     gongctxt.Triangles().id().read_unlock();
     gongctxt.ET_Iscts().edge().read_unlock();
@@ -1108,7 +1117,12 @@ bool Mesh<VertData,TriData>::IsctProblem::useGongToFindIntersections()
     //  Perform the Join
     // ****
     Timer join_time;
+#ifdef GPU_ENABLE
+    gongctxt.find_et_iscts_GPU();
+#else
     gongctxt.find_et_iscts();
+#endif
+    uint32_t abcdef     = gongctxt.ET_Iscts().size();
     std::cout << "* * * JOIN TIME * " << join_time.stop() << std::endl;
     gongctxt.print_profile();
 

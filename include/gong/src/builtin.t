@@ -25,6 +25,9 @@ local NewMacro        = Macro.NewMacro
 local C               = require 'gong.src.c'
 local GPU             = require 'gong.src.gpu_util'
 
+local PARAM           = (require 'gong.src.params').get_param
+local GPU_ENABLED     = PARAM('GPU_ENABLED')
+
 local newlist         = terralib.newlist
 
 -------------------------------------------------------------------------------
@@ -93,6 +96,10 @@ B.id      = NewBuiltIn {
 
 local function unary_arg_builtin(nm)
   local cpu_fn    = assert(C[nm])
+  local gpu_fn    = nil
+  if GPU_ENABLED then
+        gpu_fn    = assert(GPU[nm], 'cannot find intrinsic: '..nm)
+  end
 
   local b         = NewBuiltIn {
     name = nm,
@@ -118,9 +125,10 @@ local function unary_arg_builtin(nm)
       end,
     effectcheck = function() return newlist() end,
     codegen     = function(args, ast, ctxt)
+        local fn = (ctxt:on_GPU() and gpu_fn) or cpu_fn
         local a         = args[1]
         local ttype     = ast.type:terratype()
-        return `[ttype](cpu_fn(a))
+        return `[ttype](fn(a))
       end,
   }
 
@@ -129,6 +137,10 @@ end
 
 local function binary_arg_builtin(nm)
   local cpu_fn    = assert(C[nm])
+  local gpu_fn    = nil
+  if GPU_ENABLED then
+        gpu_fn    = assert(GPU[nm], 'cannot find intrinsic: '..nm)
+  end
 
   local b         = NewBuiltIn {
     name = nm,
@@ -162,9 +174,10 @@ local function binary_arg_builtin(nm)
       end,
     effectcheck = function() return newlist() end,
     codegen     = function(args, ast, ctxt)
+        local fn = (ctxt:on_GPU() and gpu_fn) or cpu_fn
         local a0, a1    = args[1], args[2]
         local ttype     = ast.type:terratype()
-        return `[ttype](cpu_fn(a0,a1))
+        return `[ttype](fn(a0,a1))
       end,
   }
 
@@ -231,6 +244,18 @@ local function printSingle(typ, e, args)
     args:insert(`terralib.select(e, "true ", "false"))
     return "%s"
   elseif  typ:is_float() then
+    local TYPE = e.type
+    if not TYPE then TYPE = e:gettype() end
+    --print('','',TYPE)
+    --if TYPE == float then --typ == T.float then
+    --  --assert(e.type == float, 'SANITY')
+    --  args:insert(quote var x : float = e in @[&uint32](&x) end)
+    --  return "%08x_F"
+    --else
+    --  assert(TYPE == double, 'SANITY')
+    --  args:insert(quote var x : double = e in @[&uint64](&x) end)
+    --  return "%016lx_D"
+    --end
     args:insert(e)
     return "%g"
   elseif  typ:is_signed() then
@@ -321,6 +346,9 @@ B.print = NewBuiltIn {
       end
       print_spec:insert('\n')
       local fmtstr = print_spec:concat('')
+      --print("PRINT DEBUG")
+      --print(ast)
+      --for i,a in ipairs(args) do print("",a) end
 
       local printf = (ctxt:on_GPU() and GPU.printf) or C.printf
       local printquote = quote [defs]; printf(fmtstr, print_args) end
@@ -464,6 +492,8 @@ B.mul_lohi = NewBuiltIn {
   codegen     = function(args, ast, ctxt)
       local x,y   = args[1], args[2]
       local ttype = ast.type:terratype()
+      if ctxt:on_GPU() then
+        print('TODO: GPU mul_lohi in builtin.t') end
       return quote
         var lo,hi = pure_lohi_mul(x,y)
       in [ttype]({ lo, hi }) end

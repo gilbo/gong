@@ -37,6 +37,7 @@ PLATFORM := $(shell uname)
 CPP11_FLAGS := -std=c++11
 CC  := clang
 CXX := clang++
+CUDA_DIR ?= /usr/local/cuda
 ifeq ($(PLATFORM),Darwin) # on mac
     CPP11_FLAGS := $(CPP11_FLAGS) -stdlib=libc++ -Wno-c++11-extensions
 endif
@@ -76,9 +77,32 @@ LINK         := $(CXXFLAGS) $(GMPLD)
 LINKD        := $(CXXDFLAGS) $(GMPLD)
 ifeq ($(PLATFORM),Darwin)
   LINK  := $(LINK) -Wl,-no_pie
-  LINKD := $(LINK) -Wl,-no_pie
+  LINKD := $(LINKD) -Wl,-no_pie
 endif
 
+ifeq ($(wildcard $(CUDA_DIR)/b*n),)
+  $(info Did not find CUDA_DIR)
+else
+  $(info Found CUDA_DIR!)
+  CXXFLAGS  := $(CXXFLAGS) -D GPU_ENABLE
+  CXXDFLAGS := $(CXXDFLAGS) -D GPU_ENABLE
+  LINK  := $(LINK) -L $(CUDA_DIR)/lib64 -lcuda -lcudart \
+           -Wl,-rpath=$(CUDA_DIR)/lib64 -D GPU_ENABLE
+  LINKD := $(LINKD) -L $(CUDA_DIR)/lib64 -lcuda -lcudart \
+           -Wl,-rpath=$(CUDA_DIR)/lib64 -D GPU_ENABLE
+endif
+#	if [ -d $(CUDA_DIR) ]; then \
+#	  $(CPP) -std=c++11 \
+#	         -L $(CUDA_DIR)/lib64 -lcuda -lcudart \
+#	         -Wl,-rpath=$(CUDA_DIR)/lib64 \
+#	         -D GPU_ENABLE \
+#	         -D USE_SCAN \
+#	         -o self_trimesh_scan self_trimesh_scan.o main.cpp; \
+#	else \
+#	  $(CPP) -std=c++11 \
+#	         -D USE_SCAN \
+#	         -o self_trimesh_scan self_trimesh_scan.o main.cpp; \
+#	fi
 
 # ***********************
 # * SOURCE DECLARATIONS *

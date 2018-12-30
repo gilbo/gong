@@ -666,6 +666,11 @@ function obb_isct( p0 : Planks, p1 : Planks ) : { G.int32, vec3, ContactT[4] }
       norm  = -norm
     end
     var cs : ContactT[4] = NullContacts()
+    --G.print('A ',A_pts)
+    --G.print('R0',R0)
+    --G.print('pA',posA)
+    --G.print('d ',depths)
+    --G.print('on',off_norm)
     for k=0,n_pts do
       -- the A_pts are on the surface of B, in the local coordinates of A
       -- convert the point back to the world frame
@@ -676,6 +681,26 @@ function obb_isct( p0 : Planks, p1 : Planks ) : { G.int32, vec3, ContactT[4] }
       var relA, relB  = (world_ptA-posA), (world_ptB-posB)
       var ptA         = :[i] +[j] R0[i,j] * relA[j]
       var ptB         = :[i] +[j] R1[i,j] * relB[j]
+      --G.print('pt',p0, p1, pt)
+      --G.print('wp',world_ptA, world_ptB)
+      --var uh = :[i,j] ( R0[j,i] * A_pts[j,k])
+      --G.print('uh',uh)
+      --G.print('ih',:[i] +[j] uh[i,j])
+      --G.print('  ',(uh[2,0] + uh[2,1]) + uh[2,2])
+      --G.print('  ',uh[2,0] + (uh[2,1] + uh[2,2]))
+      --G.print('  ',0 + uh[2,0] + uh[2,1] + uh[2,2])
+      --var aax = G.float(0)
+      --var aa  = aax + uh[2,0]
+      --var ddx = uh[2,0]
+      --G.print('  ',aa,ddx,aa-ddx,aa==ddx)
+      --var bb = aa + uh[2,1]
+      --var dd = ddx + uh[2,1]
+      --G.print('  ',aa+uh[2,1] == ddx + uh[2,1], bb == dd)
+      --var cc = bb + uh[2,2]
+      --var ee = dd + uh[2,2]
+      --G.print('  ',bb+uh[2,2] == dd+uh[2,2], cc == ee)
+      --G.print('- ',aax,aa,bb,cc,ddx,dd,ee)
+      --G.print('IH',:[i] (+[j] R0[j,i] * A_pts[j,k]))
 
       if case_code >= 3 then
         swap(ptA,ptB)

@@ -325,7 +325,9 @@ end
 
 function Context:PostMerge(dsttype, rm_var, rm_body)
   if self:on_GPU() then
-    return self._W:GPU_PostMerge(self:StorePtr(), self:GPU_Tables_Ptr(),
+    return self._W:GPU_PostMerge(self:StorePtr(),
+                                 self:GPU_Tables_Ptr(),
+                                 self:GPU_Globals_Ptr(),
                                  dsttype, rm_var, rm_body)
   else
     return self._W:PostMerge(self:StorePtr(), dsttype, rm_var, rm_body)
@@ -350,8 +352,8 @@ function Context:KeepRow(dsttype, row)
   end
 end
 
-function Context:Profile(name, type)
-  if self:on_GPU() then return quote end
+function Context:Profile(name, type, gpu_safe)
+  if self:on_GPU() and not gpu_safe then return quote end
   else
     return self._W:Profile(self:StorePtr(), name, type)
   end
@@ -653,9 +655,9 @@ function AST.Join:codegen(name, ctxt)
     -- usual case looping over the index without index buffering..
     index_wrap    = function(body)
       return newlist {
-        ctxt:Profile(name..'_loop_time', 'timer_start'),
+        ctxt:Profile(name..'_loop_time', 'timer_start', true),
         ctxt:LoopGen(name, is_self_join, rowA, rowB, buffered_args, body),
-        ctxt:Profile(name..'_loop_time', 'timer_stop'),
+        ctxt:Profile(name..'_loop_time', 'timer_stop', true),
       }
     end
   end
@@ -775,9 +777,9 @@ function AST.Join:codegen(name, ctxt)
     emit( ctxt:PrepareData( ctxt.effects ) )
 
     -- do index maintenance now if needed
-    emit( ctxt:Profile(name..'_index_updates', 'timer_start') )
+    emit( ctxt:Profile(name..'_index_updates', 'timer_start', true) )
     emit( ctxt:AccIndexUpdate( name ) )
-    emit( ctxt:Profile(name..'_index_updates', 'timer_stop') )
+    emit( ctxt:Profile(name..'_index_updates', 'timer_stop', true) )
 
     -- buffer initialization
     emit quote [buffer_init] end
@@ -796,7 +798,7 @@ function AST.Join:codegen(name, ctxt)
 
     -- cleanup any merge tables
     if next(mergetbls) then
-      emit( ctxt:Profile(name..'_merge_cleanup_time', 'timer_start') )
+      emit( ctxt:Profile(name..'_merge_cleanup_time', 'timer_start', true) )
       for dst,_ in pairs(mergetbls) do
         local mstmt           = ctxt:GetMergeRemove(dst)
         local rm_var, rm_body = nil, nil
@@ -811,7 +813,7 @@ function AST.Join:codegen(name, ctxt)
         end
         emit( ctxt:PostMerge(dst, rm_var, rm_body) )
       end
-      emit( ctxt:Profile(name..'_merge_cleanup_time', 'timer_stop') )
+      emit( ctxt:Profile(name..'_merge_cleanup_time', 'timer_stop', true) )
     end
     if next(emittbls) then
       for dst,_ in pairs(emittbls) do
@@ -1241,6 +1243,22 @@ local function tensorop_loops( names, dims, body )
     return quote for [nm]=0,d do [subcall] end end
   end
 end
+local function unroll_tensorop_loops( names, dims, body )
+  if #names == 0 then
+    return newlist{ body }
+  else
+    local nm            = names:remove()
+    local d             = dims:remove()
+    local sub           = unroll_tensorop_loops(names, dims, body)
+    local out           = newlist()
+    for _,e in ipairs(sub) do
+      for i=1,d do
+        out:insert(quote var [nm] = [i-1] in [e] end)
+      end
+    end
+    return out
+  end
+end
 local function tensorop_prelude(self, ctxt)
   local names         = newlist()
   local mapdims       = newlist()
@@ -1300,11 +1318,17 @@ function AST.TensorFold:codegen(ctxt)
         for k=0,td do REDUCE_OP(op, res.d[k], etmp.d[k]) end
       end)] end
     else
-      emit quote
-      INIT_REDOP(op, ttype, res)
-      [tensorop_loops(names, mapdims, quote
-        REDUCE_OP(op, res, expr)
-      end)] end
+      local es = unroll_tensorop_loops(names, mapdims, expr)
+      emit quote res = [ es[1] ] end
+      for i=2,#es do
+        emit quote REDUCE_OP(op, res, [ es[i] ]) end
+      end
+
+      --emit quote
+      --INIT_REDOP(op, ttype, res)
+      --[tensorop_loops(names, mapdims, quote
+      --  REDUCE_OP(op, res, expr)
+      --end)] end
     end end
   in res end
 end

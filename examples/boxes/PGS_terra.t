@@ -221,10 +221,16 @@ local function GeneratePGSSolver(API, params)
 
     -- box parallel from store
     escape for _,name in ipairs{
-      'pos', 'rot', 'linvel', 'angvel', 'force', 'torque', 'mass', 'dims',
+      'pos', 'rot', 'linvel', 'angvel', 'force', 'torque',
     } do emit quote
       self.[name]       = bs:[name]():readwrite_lock()
     end end end
+    escape for _,name in ipairs{
+      'mass', 'dims',
+    } do emit quote
+      self.[name]       = bs:[name]():read_lock()
+    end end end
+
 
     -- contact parallel additional
     escape for _,name in ipairs{
@@ -241,29 +247,36 @@ local function GeneratePGSSolver(API, params)
     self.fric_mult      = [&num]( cs:fric_mult():readwrite_lock() )
 
     -- contact parallel from store
-    self.b0             = cs:p0():readwrite_lock()
-    self.b1             = cs:p1():readwrite_lock()
+    self.b0             = cs:p0():read_lock()
+    self.b1             = cs:p1():read_lock()
     self.is_live        = cs:is_live():read_lock()
     escape for _,name in ipairs{
       'n_pts', 'pts', 'basis',
     } do emit quote
-      self.[name]       = cs:[name]():readwrite_lock()
+      self.[name]       = cs:[name]():read_lock()
     end end end
   end
   terra PGS_State:unlock_store()
     var bs              = self.store:Planks()
     var cs              = self.store:PPContacts()
     escape for _,name in ipairs{
-      'pos', 'rot', 'linvel', 'angvel', 'force', 'torque', 'mass', 'dims',
+      'pos', 'rot', 'linvel', 'angvel', 'force', 'torque',
     } do emit quote
       bs:[name]():readwrite_unlock()
     end end end
+    escape for _,name in ipairs{
+      'mass', 'dims',
+    } do emit quote
+      bs:[name]():read_unlock()
+    end end end
 
+    cs:l_mult():readwrite_unlock()
+    cs:fric_mult():readwrite_unlock()
     cs:is_live():read_unlock()
     escape for _,name in ipairs{
-      'n_pts', 'pts', 'basis', 'p0', 'p1', 'l_mult', 'fric_mult'
+      'n_pts', 'pts', 'basis', 'p0', 'p1',
     } do emit quote
-      cs:[name]():readwrite_unlock()
+      cs:[name]():read_unlock()
     end end end
   end
   terra PGS_State:relock_store()
@@ -278,9 +291,14 @@ local function GeneratePGSSolver(API, params)
 
     -- box parallel from store
     escape for _,name in ipairs{
-      'pos', 'rot', 'linvel', 'angvel', 'force', 'torque', 'mass', 'dims',
+      'pos', 'rot', 'linvel', 'angvel', 'force', 'torque',
     } do emit quote
       self.[name]       = bs:[name]():readwrite_lock()
+    end end end
+    escape for _,name in ipairs{
+      'mass', 'dims',
+    } do emit quote
+      self.[name]       = bs:[name]():read_lock()
     end end end
 
     -- contact parallel additional
@@ -299,13 +317,13 @@ local function GeneratePGSSolver(API, params)
     self.fric_mult  = [&num]( cs:fric_mult():readwrite_lock() )
 
     -- contact parallel from store
-    self.b0         = cs:p0():readwrite_lock()
-    self.b1         = cs:p1():readwrite_lock()
+    self.b0         = cs:p0():read_lock()
+    self.b1         = cs:p1():read_lock()
     self.is_live    = cs:is_live():read_lock()
     escape for _,name in ipairs{
       'n_pts', 'pts', 'basis',
     } do emit quote
-      self.[name]   = cs:[name]():readwrite_lock()
+      self.[name]   = cs:[name]():read_lock()
     end end end
   end
   terra PGS_State:free()
@@ -324,10 +342,16 @@ local function GeneratePGSSolver(API, params)
 
     -- box parallel from store
     escape for _,name in ipairs{
-      'pos', 'rot', 'linvel', 'angvel', 'force', 'torque', 'mass', 'dims',
+      'pos', 'rot', 'linvel', 'angvel', 'force', 'torque',
     } do emit quote
       self.[name] = nil
       bs:[name]():readwrite_unlock()
+    end end end
+    escape for _,name in ipairs{
+      'mass', 'dims',
+    } do emit quote
+      self.[name] = nil
+      bs:[name]():read_unlock()
     end end end
 
     -- contact parallel additional
@@ -341,15 +365,18 @@ local function GeneratePGSSolver(API, params)
       self.[name] = nil
     end end end
 
+    cs:l_mult():readwrite_unlock()
+    cs:fric_mult():readwrite_unlock()
+
     -- contact parallel from store
-    cs:p0():readwrite_unlock()
-    cs:p1():readwrite_unlock()
+    cs:p0():read_unlock()
+    cs:p1():read_unlock()
     cs:is_live():read_unlock()
     escape for _,name in ipairs{
-      'n_pts', 'pts', 'basis', 'l_mult', 'fric_mult'
+      'n_pts', 'pts', 'basis',
     } do emit quote
       self.[name] = nil
-      cs:[name]():readwrite_unlock()
+      cs:[name]():read_unlock()
     end end end
   end
 
@@ -362,12 +389,16 @@ local function GeneratePGSSolver(API, params)
   terra PGS_State:print()
     --
     C.printf("  BOXES       #%d\n", self.n_boxes)
-   C.printf(["           pos     -       -               ;"..
-                       " linvel  -       -       \n"])
-   C.printf(["           rot     -       -       -       ;"..
-                       " angvel  -       -       \n"])
+    C.printf(["           pos     -       -               ;"..
+                        " linvel  -       -       \n"])
+    C.printf(["           rot     -       -       -       ;"..
+                        " angvel  -       -       \n"])
   --C.printf("           force   -       -       ; torque  -       -       \n")
-    for b=0,self.n_boxes do
+    var max_nbox = self.n_boxes
+    var max_n_c  = self.n_c_alloc
+    if max_nbox > 100 then max_nbox = 100 end
+    if max_n_c > 100 then max_n_c = 100 end
+    for b=0,max_nbox do
       var p, v = self.pos[b], self.linvel[b]
       var r, w = self.rot[b], self.angvel[b]
   --  var f, t = self.force[b], self.torque[b]
@@ -384,7 +415,7 @@ local function GeneratePGSSolver(API, params)
     --C.printf("              fric_dir        -       ; invJ    invJfric\n")
     --C.printf("              norm    -       -       ; ctct_pt -       -\n")
     --C.printf("              rel0    -       -       ; rel1    -       -\n")
-    for c=0,self.n_c_alloc do if self.is_live[c] then
+    for c=0,max_n_c do if self.is_live[c] then
       var n             = self.basis[c].norm
     C.printf(["    %4d: (%d)  %4d, %4d ; "..vfmt.."\n"],
              c, self.n_pts[c], self.b0[c], self.b1[c], n(0), n(1), n(2))
@@ -900,7 +931,11 @@ local function GeneratePGSSolver(API, params)
     --pgs:print()
     pgs:unlock_store()
     --C.printf("    unlocked\n")
-    pgs.store:find_plank_iscts()
+    escape if API.Store.methods.find_plank_iscts_GPU then emit quote
+      pgs.store:find_plank_iscts_GPU()
+    end else emit quote
+      pgs.store:find_plank_iscts()
+    end end end
     pgs.store:PPContacts():sort()
     --C.printf("    locking\n")
     pgs:relock_store() -- resize constraint-value arrays

@@ -28,7 +28,7 @@ local is_table      = Schemata.is_table
 local is_field      = Schemata.is_field
 local is_index      = Schemata.is_index
 
---local CodeGen       = require 'gong.src.codegen'
+local CodeGen       = require 'gong.src.codegen'
 
 -----------------------------------------
 
@@ -440,11 +440,12 @@ local function PreInstallStructMethods(W)
       local tblname           = W._c_cache[Table].name
       local tblvalidname      = W._cv_cache[Table].name
 
-      -- we start with everything valid, but empty
+      -- we start with CPU only valid, and empty
       emit quote
         this.cpu_meta.[tblname]._alloc_size         = MIN_INIT_SIZE
         this.cpu_meta.[tblname]._size               = 0
-        this.store_valid.[tblvalidname]._size_valid = Valid_All
+        this.store_valid.[tblvalidname]._size_valid = Valid_CPU_Only
+          gpu_mem_log('set-valid-cpu',['init-size-'..Table:name()])
       end
 
       if Table._is_live then emit quote
@@ -459,7 +460,8 @@ local function PreInstallStructMethods(W)
         local ftype           = Field:type():terratype()
         emit quote
           this.cpu_meta.[tblname].[fname] = gmalloc_ptr(ftype, MIN_INIT_SIZE)
-          this.store_valid.[tblvalidname].[fvname] = Valid_All
+          this.store_valid.[tblvalidname].[fvname] = Valid_CPU_Only
+          gpu_mem_log('set-valid-cpu',['init-'..Field:fullname()])
         end
       end
 
@@ -482,6 +484,7 @@ local function PreInstallStructMethods(W)
       emit quote
         this.cpu_meta.[iname]:init(this)
         this.store_valid.[ivname] = Valid_CPU_Only
+        gpu_mem_log('set-valid-cpu',['init-index-'..Index:fullname()])
       end
     end end
 
@@ -495,6 +498,8 @@ local function PreInstallStructMethods(W)
     gpu_mem_log('all-data','INTIIALIZE')
     self.meta_valid     = Valid_All
     self.globals_valid  = Valid_All
+    gpu_mem_log('set-valid-all','init-meta-data')
+    gpu_mem_log('set-valid-all','init-globals')
   end
   terra GMetaData:destroy()
     var this                  = self
@@ -618,6 +623,7 @@ local function Install_Data_Extensions(W, MainW, MAIN_WRAP_ROOT)
                       sizeof(GStore))
     gpu_mem_log('memcpy_to_gpu','meta-data')
     self._gpu_data.meta_valid = Valid_All
+    gpu_mem_log('set-valid-all','meta-data')
   end
   terra CStore:meta_from_gpu()
     -- short-circuit
@@ -630,6 +636,7 @@ local function Install_Data_Extensions(W, MainW, MAIN_WRAP_ROOT)
                         sizeof(GStore))
     gpu_mem_log('memcpy_from_gpu','meta-data')
     self._gpu_data.meta_valid = Valid_All
+    gpu_mem_log('set-valid-all','meta-data')
   end
   terra CStore:globals_to_gpu()
     -- short-circuit
@@ -651,6 +658,7 @@ local function Install_Data_Extensions(W, MainW, MAIN_WRAP_ROOT)
                       sizeof(GGlobalFile))
     gpu_mem_log('memcpy_to_gpu','globals')
     self._gpu_data.globals_valid = Valid_All
+    gpu_mem_log('set-valid-all','globals')
   end
   terra CStore:globals_from_gpu()
     -- short-circuit
@@ -663,6 +671,7 @@ local function Install_Data_Extensions(W, MainW, MAIN_WRAP_ROOT)
                         sizeof(GGlobalFile))
     gpu_mem_log('memcpy_from_gpu','globals')
     self._gpu_data.globals_valid = Valid_All
+    gpu_mem_log('set-valid-all','globals')
 
     -- Scatter global data back into the CPU structure locations
     escape for iGlobal,Global in ipairs(W._globals) do
@@ -768,8 +777,10 @@ local function Install_Data_Extensions(W, MainW, MAIN_WRAP_ROOT)
             var valid_loc     = storeptr._gpu_data.store_valid.[ivname]
             if valid_loc:ok_CPU() then
               storeptr._gpu_data.store_valid.[ivname] = Valid_CPU_Only
+              gpu_mem_log('set-valid-cpu',['resize-index-'..Index:fullname()])
             else
               storeptr._gpu_data.store_valid.[ivname] = Invalid_All
+              gpu_mem_log('set-valid-none',['resize-index-'..Index:fullname()])
             end
           end
         end
@@ -823,6 +834,8 @@ local function Install_Data_Extensions(W, MainW, MAIN_WRAP_ROOT)
       storeptr._gpu_data.store_valid.[tblvalidname]
                                     ._size_valid      = Valid_All
       storeptr._gpu_data.meta_valid                   = Valid_CPU_Only
+      gpu_mem_log('set-valid-all',['size-'..Table:name()])
+      gpu_mem_log('set-valid-cpu',['meta-data'])
     end
 
     terra GTable:size_from_gpu(storeptr : &CStore)
@@ -869,6 +882,7 @@ local function Install_Data_Extensions(W, MainW, MAIN_WRAP_ROOT)
 
       -- finally, validate the table size
       storeptr._gpu_data.store_valid.[tblvalidname]._size_valid = Valid_All
+      gpu_mem_log('set-valid-all',['size-'..Table:name()])
     end
 
     if Table._is_live then
@@ -927,11 +941,14 @@ local function Install_Data_Extensions(W, MainW, MAIN_WRAP_ROOT)
                                       .[f0_valid_name]  = Valid_All
         storeptr._gpu_data.store_valid.[tblvalidname]
                                       .[f1_valid_name]  = Valid_All
+        gpu_mem_log('set-valid-all',[f0:fullname()])
+        gpu_mem_log('set-valid-all',[f1:fullname()])
 
         storeptr._gpu_data.cpu_meta.[iname]:rebuild_already_sorted(storeptr)
 
         -- validate the index on the GPU
         storeptr._gpu_data.store_valid.[ivname]         = Valid_All
+        gpu_mem_log('set-valid-all',['index-'..DST_Index:fullname()])
       end
 
       terra GTable:index_from_gpu(storeptr : &CStore)
@@ -960,11 +977,14 @@ local function Install_Data_Extensions(W, MainW, MAIN_WRAP_ROOT)
                                       .[f0_valid_name]  = Valid_All
         storeptr._gpu_data.store_valid.[tblvalidname]
                                       .[f1_valid_name]  = Valid_All
+        gpu_mem_log('set-valid-all',[f0:fullname()])
+        gpu_mem_log('set-valid-all',[f1:fullname()])
 
         storeptr.[cpu_iname]:rebuild(storeptr)
 
         -- validate the index on the CPU
         storeptr._gpu_data.store_valid.[ivname]         = Valid_All
+        gpu_mem_log('set-valid-all',['index-'..DST_Index:fullname()])
       end
     end
   end
@@ -1063,10 +1083,14 @@ end
 function GWrapper:PrepareReadWriteGlobals(storeptr, on_gpu)
   if on_gpu then
     return quote  storeptr:globals_to_gpu()
-                  storeptr._gpu_data.globals_valid = Valid_GPU_Only   end
+                  storeptr._gpu_data.globals_valid = Valid_GPU_Only
+                  gpu_mem_log('set-valid-gpu',['readwrite-globals'])
+             end
   else
     return quote  storeptr:globals_from_gpu()
-                  storeptr._gpu_data.globals_valid = Valid_CPU_Only   end
+                  storeptr._gpu_data.globals_valid = Valid_CPU_Only
+                  gpu_mem_log('set-valid-cpu',['readwrite-globals'])
+             end
   end
 end
 function GWrapper:PrepareReadGlobals(storeptr, on_gpu)
@@ -1091,14 +1115,19 @@ function GWrapper:PrepareOverWrite(storeptr, tbltype, field_name, on_gpu)
     return handle_is_live_edge_case(W, storeptr, tbltype, on_gpu) end
   local metatbl, fbytes, fvalid, fc_ptr, fg_ptr
                   = prepare_prelude(W, storeptr, tbltype, field_name)
+  local ffullname = tbltype:table()[field_name]:fullname()
 
   -- no need to copy; only invalidate
   if on_gpu then
     return quote  [metatbl]:size_to_gpu(storeptr)
-                  fvalid = Valid_GPU_Only end
+                  fvalid = Valid_GPU_Only
+                  gpu_mem_log('set-valid-gpu',['overwrite-'..ffullname])
+             end
   else
     return quote  [metatbl]:size_from_gpu(storeptr)
-                  fvalid = Valid_CPU_Only end
+                  fvalid = Valid_CPU_Only
+                  gpu_mem_log('set-valid-cpu',['overwrite-'..ffullname])
+             end
   end
 end
 
@@ -1108,6 +1137,7 @@ function GWrapper:PrepareReadWrite(storeptr, tbltype, field_name, on_gpu)
     return handle_is_live_edge_case(W, storeptr, tbltype, on_gpu) end
   local metatbl, fbytes, fvalid, fc_ptr, fg_ptr
                   = prepare_prelude(W, storeptr, tbltype, field_name)
+  local ffullname = tbltype:table()[field_name]:fullname()
 
   -- need to copy & invalidate
   if on_gpu then
@@ -1120,7 +1150,9 @@ function GWrapper:PrepareReadWrite(storeptr, tbltype, field_name, on_gpu)
                                 ['readwrite-'..tbltype:table():name()..
                                  '.'..field_name])
                   end
-                  fvalid = Valid_GPU_Only end
+                  fvalid = Valid_GPU_Only
+                  gpu_mem_log('set-valid-gpu',['readwrite-'..ffullname])
+             end
   else
     return quote  [metatbl]:size_from_gpu(storeptr)
                   if not fvalid:ok_CPU() then
@@ -1131,7 +1163,9 @@ function GWrapper:PrepareReadWrite(storeptr, tbltype, field_name, on_gpu)
                                 ['readwrite-'..tbltype:table():name()..
                                  '.'..field_name])
                   end
-                  fvalid = Valid_CPU_Only end
+                  fvalid = Valid_CPU_Only
+                  gpu_mem_log('set-valid-cpu',['readwrite-'..ffullname])
+             end
   end
 end
 
@@ -1141,6 +1175,7 @@ function GWrapper:PrepareRead(storeptr, tbltype, field_name, on_gpu)
     return handle_is_live_edge_case(W, storeptr, tbltype, on_gpu) end
   local metatbl, fbytes, fvalid, fc_ptr, fg_ptr
                   = prepare_prelude(W, storeptr, tbltype, field_name)
+  local ffullname = tbltype:table()[field_name]:fullname()
 
   -- need to copy; no need to invalidate
   if on_gpu then
@@ -1153,6 +1188,7 @@ function GWrapper:PrepareRead(storeptr, tbltype, field_name, on_gpu)
                                 ['read-'..tbltype:table():name()..
                                  '.'..field_name])
                     fvalid = Valid_All
+                    gpu_mem_log('set-valid-all',['read-'..ffullname])
                   end end
   else
     return quote  [metatbl]:size_from_gpu(storeptr)
@@ -1164,6 +1200,7 @@ function GWrapper:PrepareRead(storeptr, tbltype, field_name, on_gpu)
                                 ['read-'..tbltype:table():name()..
                                  '.'..field_name])
                     fvalid = Valid_All
+                    gpu_mem_log('set-valid-all',['read-'..ffullname])
                   end end
   end
 end
@@ -1175,6 +1212,7 @@ function GWrapper:PrepareFinal(storeptr, on_gpu, gpu_size_modified)
     -- CPU-side metadata to force a refresh of it when next needed
     local cpu_meta_invalidate = quote
       storeptr._gpu_data.meta_valid = Valid_GPU_Only
+      gpu_mem_log('set-valid-gpu',['meta-data (final)'])
     end
     if not gpu_size_modified then cpu_meta_invalidate = quote end end
     return quote
@@ -1196,10 +1234,11 @@ function GWrapper:Clear(storeptr, tbltype, on_gpu)
   local fields        = Table:_INTERNAL_GPU_fields()
 
   local ivname        = nil
+  local Index         = nil
   if Table._is_live then
     local indices     = W._c_cache[Table].dst_indices
     assert(#indices == 1, 'INTERNAL: expect exactly 1 index')
-    local Index       = indices[1]
+    Index             = indices[1]
     local ivname      = W._cv_cache[Index].name
   end
 
@@ -1214,10 +1253,12 @@ function GWrapper:Clear(storeptr, tbltype, on_gpu)
 
       -- since we wrote to the metadatablock, mark it for refresh onto the GPU
       storeptr._gpu_data.meta_valid = Valid_CPU_Only
+      gpu_mem_log('set-valid-cpu',['meta-data (clear)'])
 
       -- but note that the size on the CPU is now invalid
       storeptr._gpu_data.store_valid.[tblvalidname]
                                     ._size_valid = Valid_GPU_Only
+      gpu_mem_log('set-valid-gpu',['size-'..Table:name()..' (clear)'])
       -- then we need to prepare to overwrite the data in question
       escape for iField,Field in ipairs(fields) do
         local fname           = Field:name()
@@ -1227,6 +1268,7 @@ function GWrapper:Clear(storeptr, tbltype, on_gpu)
       -- mark the index as valid on the gpu only
       escape if Table._is_live then emit quote
         storeptr._gpu_data.store_valid.[ivname] = Valid_GPU_Only
+        gpu_mem_log('set-valid-gpu',['index-'..Index:fullname()..' (clear)'])
       end end end
     end
   else
@@ -1236,6 +1278,7 @@ function GWrapper:Clear(storeptr, tbltype, on_gpu)
       -- note that the size on the GPU is now invalid
       storeptr._gpu_data.store_valid.[tblvalidname]
                                     ._size_valid = Valid_CPU_Only
+      gpu_mem_log('set-valid-cpu',['size-'..Table:name()..' (clear)'])
       -- then we need to prepare to read-write the data in question
       escape for iField,Field in ipairs(fields) do
         local fname           = Field:name()
@@ -1245,6 +1288,7 @@ function GWrapper:Clear(storeptr, tbltype, on_gpu)
       -- mark the index as valid on the cpu only
       escape if Table._is_live then emit quote
         storeptr._gpu_data.store_valid.[ivname] = Valid_CPU_Only
+        gpu_mem_log('set-valid-cpu',['index-'..Index:fullname()..' (clear)'])
       end end end
     end
   end
@@ -1271,12 +1315,14 @@ function GWrapper:CPU_PrepareLoadTable(storeptr, tbltype)
   stmts:insert(quote 
     storeptr._gpu_data.store_valid.[tblvalidname]
                                   ._size_valid = Valid_CPU_Only
+    gpu_mem_log('set-valid-cpu',['load-size-'..Table:name()])
   end)
   for iField,Field in ipairs(fields) do
     local fvname      = self._cv_cache[Field].name
     stmts:insert(quote
       storeptr._gpu_data.store_valid.[tblvalidname]
                                     .[fvname] = Valid_CPU_Only
+      gpu_mem_log('set-valid-cpu',['load-'..Field:fullname()])
     end)
   end
   return quote [stmts] end
@@ -1286,6 +1332,7 @@ function GWrapper:CPU_index_rebuild(storeptr, Index)
   local ivname        = self._cv_cache[Index].name
   return quote
     storeptr._gpu_data.store_valid.[ivname]   = Valid_CPU_Only
+    gpu_mem_log('set-valid-cpu',['rebuild-index-'..Index:fullname()])
   end
 end
 
@@ -1334,11 +1381,14 @@ function GWrapper:PreMerge(storeptr, tbltype, on_gpu)
 
       -- since we wrote to the metadatablock, mark it for refresh onto the GPU
       storeptr._gpu_data.meta_valid = Valid_CPU_Only
+      gpu_mem_log('set-valid-cpu',['meta-data (pre-merge)'])
 
       -- note that merging modifies the size on the GPU, invalidating the CPU
       storeptr._gpu_data.store_valid.[tblvalidname]
                                     ._size_valid  = Valid_GPU_Only
       storeptr._gpu_data.store_valid.[ivname]     = Valid_GPU_Only
+      gpu_mem_log('set-valid-gpu',['size-'..Table:name()..' (pre-merge)'])
+      gpu_mem_log('set-valid-gpu',['index-'..Index:fullname()..' (pre-merge)'])
       -- then we need to prepare to read-write the data in question
       escape for iField,Field in ipairs(fields) do
         local fname           = Field:name()
@@ -1356,6 +1406,8 @@ function GWrapper:PreMerge(storeptr, tbltype, on_gpu)
       storeptr._gpu_data.store_valid.[tblvalidname]
                                     ._size_valid  = Valid_CPU_Only
       storeptr._gpu_data.store_valid.[ivname]     = Valid_CPU_Only
+      gpu_mem_log('set-valid-cpu',['size-'..Table:name()..' (pre-merge)'])
+      gpu_mem_log('set-valid-cpu',['index-'..Index:fullname()..' (pre-merge)'])
       -- then we need to prepare to read-write the data in question
       escape for iField,Field in ipairs(fields) do
         local fname           = Field:name()
@@ -1499,6 +1551,8 @@ function GWrapper:ScanAB(name, storeptr, gpu_tblptr, gpu_globptr,
     -- figure out how many threads to launch
     var SIZE0     = storeptr.[main_tbl0name]:size()
     var SIZE1     = storeptr.[main_tbl1name]:size()
+    assert(SIZE0 <= 65530, 'Cannot launch double-scan on 64k+ rows')
+    assert(SIZE1 <= 65530, 'Cannot launch double-scan on 64k+ rows')
     var SZ0_hi    = (SIZE0+7)/8
     var SZ1_hi    = (SIZE1+7)/8
     var N_launch  = SZ0_hi * SZ1_hi * 64
@@ -1507,6 +1561,7 @@ function GWrapper:ScanAB(name, storeptr, gpu_tblptr, gpu_globptr,
     var globptr   = storeptr._gpu_data.gpu_globals
     -- launch the GPU kernel
     gpu_kernel(N_launch, tblptr, globptr, [args])
+    GPU.sync()
   end
 end
 
@@ -1545,9 +1600,10 @@ function GWrapper:ScanAA(name, storeptr, gpu_tblptr, gpu_globptr,
   -- code snippet that computes the number of threads to launch
   -- based on the storeptr values
   return quote
-    C.printf("WARNING TODO: need to tighten symmetric launch...\n")
+    --C.printf("WARNING TODO: need to tighten symmetric launch...\n")
     -- figure out how many threads to launch
     var SIZE      = storeptr.[main_tblname]:size()
+    assert(SIZE <= 65530, 'Cannot launch double-scan on 64k+ rows')
     var SZ_hi     = (SIZE+7)/8
     var N_launch  = SZ_hi * SZ_hi * 64
     -- extract the tblptr and globptr
@@ -1555,6 +1611,7 @@ function GWrapper:ScanAA(name, storeptr, gpu_tblptr, gpu_globptr,
     var globptr   = storeptr._gpu_data.gpu_globals
     -- launch the GPU kernel
     gpu_kernel(N_launch, tblptr, globptr, [args])
+    GPU.sync()
   end
 end
 
@@ -1807,7 +1864,7 @@ function GWrapper:_INTERNAL_was_visited(gpuptr, tbltype, row)
 end
 
 
-function GWrapper:PostMerge(storeptr, gpuptr, tbltype, rm_var, rm_body)
+function GWrapper:PostMerge(storeptr,gpuptr,globptr, tbltype, rm_var, rm_body)
   local GW              = self
   local Table, main_tblname, sub_tblname, tblvalidname
                         = unpack_prepare_tbl(GW, tbltype)
@@ -1839,7 +1896,7 @@ function GWrapper:PostMerge(storeptr, gpuptr, tbltype, rm_var, rm_body)
   --  5)  shuffle all non-key data arrays
 
   -- (Step 1)
-  args = newlist { size_bound, gpuptr, sortkey_in, idx_in }
+  args = newlist { size_bound, gpuptr, globptr, sortkey_in, idx_in }
   local terra post_merge_pack( [args] )
     var N               = size_bound
     var Old_N           = gpuptr.[sub_tblname]._old_size
@@ -1895,6 +1952,7 @@ function GWrapper:PostMerge(storeptr, gpuptr, tbltype, rm_var, rm_body)
     storeptr:meta_from_gpu()
 
     var [gpuptr]        = storeptr._gpu_data.gpu_meta
+    var [globptr]       = storeptr._gpu_data.gpu_globals
     var [size_bound]    = storeptr._gpu_data.cpu_meta.[sub_tblname]._size   
 
     var align           = 64  -- 64*4-byte alignment
@@ -1913,12 +1971,13 @@ function GWrapper:PostMerge(storeptr, gpuptr, tbltype, rm_var, rm_body)
     var max_bits        = max_bit_0 + max_bit_1 + 1
 
     -- (Step 1)
-    post_merge_pack(size_bound, size_bound, gpuptr, sortkey_in, idx_in)
+    post_merge_pack(size_bound, size_bound, gpuptr,globptr, sortkey_in, idx_in)
     -- (Step 2)
     GPU.sort64(size_bound, max_bits, sortkey_in, sortkey_out, idx_in, idx_out)
 
     -- get the new size (computed in step 1) back from the GPU
     storeptr._gpu_data.meta_valid = Valid_GPU_Only
+    gpu_mem_log('set-valid-gpu',['meta-data (post-merge)'])
     storeptr:meta_from_gpu()
     size_bound          = storeptr._gpu_data.cpu_meta.[sub_tblname]._size
 
@@ -1928,6 +1987,7 @@ function GWrapper:PostMerge(storeptr, gpuptr, tbltype, rm_var, rm_body)
 
     -- clean up the scratch space
     gfree_ptr(scratchptr)
+    GPU.sync()
   end
 end
 
@@ -2038,6 +2098,7 @@ function GWrapper:PostEmit(storeptr, tbltype)
 
     -- clean up the scratch space
     gfree_ptr(scratchptr)
+    GPU.sync()
   end
 end
 
@@ -2056,6 +2117,7 @@ function GWrapper:_INTERNAL_common_index_rebuild(
   assert(#Table:primary_key() == 2, 'INTERNAL: expect 2 primary keys')
   local Index           = dst_indices[1]
   local iname           = GW._c_cache[Index].name
+  local ivname          = GW._cv_cache[Index].name
   local f0,f1           = unpack(Table:primary_key())
   local f0name          = self._c_cache[f0].name
   local f1name          = self._c_cache[f1].name
@@ -2123,9 +2185,13 @@ function GWrapper:_INTERNAL_common_index_rebuild(
         end
       end
     end end
+    -- the index should now be valid, but only on the GPU
+    storeptr._gpu_data.store_valid.[ivname]         = Valid_GPU_Only
+    gpu_mem_log('set-valid-gpu',['index-'..Index:fullname()..' (post-merge)'])
     -- the meta data is only valid on the CPU now that we've
     -- swapped the field pointers around
     storeptr._gpu_data.meta_valid = Valid_CPU_Only
+    gpu_mem_log('set-valid-cpu',['meta-data (post-merge)'])
   end
 end
 

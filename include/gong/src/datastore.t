@@ -1975,7 +1975,11 @@ function Wrapper:GenExternCAPI(prefix, export_funcs, gpu_on)
       local name = gpu_name(jf)
       add_func(name, HIERARCHY.joins, name,
       terra( hdl : ExtStore, [args] )
+        [ W:Profile( `to_store(hdl),
+                     jf:getname()..'_GPU_launches', 'timer_start' )]
         tfunc( to_store(hdl), [args] )
+        [ W:Profile( `to_store(hdl),
+                     jf:getname()..'_GPU_launches', 'timer_stop' )]
       end)
     end
     add_func_note("")
@@ -1988,6 +1992,7 @@ function Wrapper:GenExternCAPI(prefix, export_funcs, gpu_on)
   if gpu_on then
     local terra do_cuda_init()
       escape for _,initfn in ipairs(GW._cuda_loaders) do emit quote
+        --C.printf("INIT %s\n", [initfn:getname()])
         initfn()
       end end end
     end

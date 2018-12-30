@@ -1,6 +1,9 @@
 import 'gong'
 local G = gong.stdlib
 
+-- quick hack for control
+local USE_GPU = not not terralib.cudacompile
+print('USE GPU? ', USE_GPU)
 
 local prelude       = require 'prelude'
 local num           = prelude.num
@@ -93,6 +96,9 @@ local has_degeneracies  = G.Global('has_degeneracies',  G.bool, false)
 local has_intersections = G.Global('has_intersections', G.bool, false)
 
 
+if USE_GPU then
+  ET_Iscts:setGPUSizeLinear(2, Edges, 2, Triangles, 64)
+end
 
 ------------------------------------------------------------------------------
 -- SubRoutines
@@ -412,15 +418,27 @@ end
 -- Join
 
 local gong join find_et_iscts ( edge : Edges, tri : Triangles )
+  if G.id(edge.hd) == 16781 and G.id(edge.tl) == 16793 and
+     G.id(tri.v[0]) == 116740 then
+    G.print('HIT1')
+    G.print(edge.hd.pos, ';', edge.tl.pos)
+    G.print(tri.v[0].pos, ';', tri.v[1].pos, ';', tri.v[2].pos)
+  end
+  if G.id(edge.hd) == 16350 and G.id(edge.tl) == 16525 and
+     G.id(tri.v[0]) == 114463 then
+    G.print('HIT1')
+    G.print(edge.hd.pos, ';', edge.tl.pos)
+    G.print(tri.v[0].pos, ';', tri.v[1].pos, ';', tri.v[2].pos)
+  end
   where boxbox_test(edge,tri)
-  --G.print('HIT1')
-  --G.print(edge.hd.pos, ';', edge.tl.pos)
-  --G.print(tri.v[0].pos, ';', tri.v[1].pos, ';', tri.v[2].pos)
   var isct_result = find_et_isct(edge,tri)
   where not result_is_no_isct( isct_result )
 do
   if result_is_isct( isct_result ) then
     --G.print('code', isct_result.code)
+    --G.print()
+    G.print('e t ', '(',edge,tri,') ',
+            edge.hd, edge.tl, ';', tri.v[0], tri.v[1], tri.v[2])
     --G.print('edge', edge.tl.pos, edge.hd.pos)
     --G.print('tri ', tri.v[0].pos)
     emit { edge=edge, tri=tri } in ET_Iscts
@@ -507,6 +525,7 @@ local API = G.CompileLibrary {
   joins           = {find_et_iscts, has_et_iscts},
   c_obj_file      = 'cork_isct.o',
   cpp_header_file = 'cork_isct.h',
+  gpu             = USE_GPU,
 }
 
 
