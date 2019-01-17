@@ -417,15 +417,27 @@ function obb_isct( p0 : Planks, p1 : Planks ) : { G.int32, vec3, ContactT[4] }
   var BB_1in0   = :[i] hw0[i] + (+[j] Q[i,j] * hw1[j])
   var BB_0in1   = :[i] hw1[i] + (+[j] Q[j,i] * hw0[j])
   -- p0-centered cases
-  for axis = 0,3 do
-    face_vert_obb( dp0, BB_1in0, R0, 0, axis,
-                   min_depth, norm, inv_norm, case_code )
-  end
+  face_vert_obb( dp0, BB_1in0, R0, 0, 0,
+                 min_depth, norm, inv_norm, case_code )
+  face_vert_obb( dp0, BB_1in0, R0, 0, 1,
+                 min_depth, norm, inv_norm, case_code )
+  face_vert_obb( dp0, BB_1in0, R0, 0, 2,
+                 min_depth, norm, inv_norm, case_code )
+  --for axis = 0,3 do
+  --  face_vert_obb( dp0, BB_1in0, R0, 0, axis,
+  --                 min_depth, norm, inv_norm, case_code )
+  --end
   -- p1-centered cases
-  for axis = 0,3 do
-    face_vert_obb( dp1, BB_0in1, R1, 3, axis,
-                   min_depth, norm, inv_norm, case_code )
-  end
+  face_vert_obb( dp1, BB_0in1, R1, 3, 0,
+                 min_depth, norm, inv_norm, case_code )
+  face_vert_obb( dp1, BB_0in1, R1, 3, 1,
+                 min_depth, norm, inv_norm, case_code )
+  face_vert_obb( dp1, BB_0in1, R1, 3, 2,
+                 min_depth, norm, inv_norm, case_code )
+  --for axis = 0,3 do
+  --  face_vert_obb( dp1, BB_0in1, R1, 3, axis,
+  --                 min_depth, norm, inv_norm, case_code )
+  --end
 
   -- guard against false edge-edge intersections with an epsilon
   Q = :[i,j] Q[i,j] + OBB_EPSILON
@@ -1055,6 +1067,7 @@ local function hash_gen(cell_w)
     key         = G.vec3i,
     abs_range   = Box_to_GridRange,
     hash        = G.hash3i,
+    brute_force = Split_Boxes,
   }
 
   local Hash_Traversal  = G.hash_hash_traversal {
@@ -1062,6 +1075,7 @@ local function hash_gen(cell_w)
     right       = HashGrid,
   }
 
+--[[
   local Scan_and_Hash      = G.split_index {
     table       = Planks,
     index_A     = G.scan_index { table = Planks },
@@ -1091,6 +1105,8 @@ local function hash_gen(cell_w)
   }
 
   return Split_Traversal
+  --]]
+  return Hash_Traversal
 end
 
 

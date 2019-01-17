@@ -1592,9 +1592,9 @@ function Wrapper:KeepRow(storeptr, tbltype, row)
   return W:_INTERNAL_visit(storeptr, tbltype, row)
 end
 
-function Wrapper:Profile(storeptr, name, metric_type)
+function Wrapper:Profile(storeptr, name, metric_type, ...)
   local W               = self
-  return W._profiler:hook( `storeptr._profiler, name, metric_type )
+  return W._profiler:hook( `storeptr._profiler, name, metric_type, ... )
 end
 
 -------------------------------------------------------------------------------

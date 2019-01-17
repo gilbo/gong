@@ -1245,11 +1245,25 @@ local function tensorop_loops( names, dims, body )
 end
 local function unroll_tensorop_loops( names, dims, body )
   if #names == 0 then
-    return newlist{ body }
+    return body
   else
     local nm            = names:remove()
     local d             = dims:remove()
-    local sub           = unroll_tensorop_loops(names, dims, body)
+    local subs          = newlist()
+    for i=0,d-1 do
+      subs:insert(quote do var [nm] = [i-1]; [body] end end)
+    end
+    body = quote [subs] end
+    return unroll_tensorop_loops(names, dims, body)
+  end
+end
+local function unroll_tensorop_list( names, dims, expr )
+  if #names == 0 then
+    return newlist{ expr }
+  else
+    local nm            = names:remove()
+    local d             = dims:remove()
+    local sub           = unroll_tensorop_list(names, dims, expr)
     local out           = newlist()
     for _,e in ipairs(sub) do
       for i=1,d do
@@ -1296,6 +1310,13 @@ function AST.TensorMap:codegen(ctxt)
       emit(tensorop_loops(names, mapdims, quote
         res.d[offset]     = [expr]
       end))
+      --print("ANFSDF:LNJ")
+      --emit(quote C.printf("LOOP B\n") end)
+      --emit(unroll_tensorop_loops(names, mapdims, quote
+      --  res.d[offset]     = [expr]
+      --end))
+      --print("A(NUF)(*&HEWPO:LNJ")
+      --emit(quote C.printf("  LOOP E\n") end)
     end end
   in res end
 end
@@ -1311,14 +1332,23 @@ function AST.TensorFold:codegen(ctxt)
   return quote
     var res : ttype
     escape if typ:is_tensor() then
-      emit quote
-      for k=0,td do INIT_REDOP(op, btyp, res.d[k]) end
-      [tensorop_loops(names, mapdims, quote
-        var etmp          = [expr]
-        for k=0,td do REDUCE_OP(op, res.d[k], etmp.d[k]) end
-      end)] end
+      local es = unroll_tensorop_list(names, mapdims, expr)
+      emit quote res = [ es[1] ] end
+      for i=2,#es do emit quote
+        var etmp = [ es[i] ]
+      escape for k=0,td-1 do emit quote
+        REDUCE_OP(op, res.d[k], empt.d[k])
+      end end end
+      end end
+
+      --emit quote
+      --for k=0,td do INIT_REDOP(op, btyp, res.d[k]) end
+      --[tensorop_loops(names, mapdims, quote
+      --  var etmp          = [expr]
+      --  for k=0,td do REDUCE_OP(op, res.d[k], etmp.d[k]) end
+      --end)] end
     else
-      local es = unroll_tensorop_loops(names, mapdims, expr)
+      local es = unroll_tensorop_list(names, mapdims, expr)
       emit quote res = [ es[1] ] end
       for i=2,#es do
         emit quote REDUCE_OP(op, res, [ es[i] ]) end

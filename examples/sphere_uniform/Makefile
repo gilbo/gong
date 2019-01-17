@@ -5,12 +5,14 @@ CPP=clang++
 
 TERRA_FILES = sphere_uniform.t
 
-run: Sphere_Check sphere_uniform_scan sphere_uniform_gpu_scan sphere_uniform_bvh
+run: Sphere_Check sphere_uniform_scan sphere_uniform_gpu_scan sphere_uniform_bvh sphere_uniform_hash sphere_uniform_grid
 	./sphere_uniform_scan
 	if [ -d $(CUDA_DIR) ]; then \
 	  ./sphere_uniform_gpu_scan; \
 	fi
 	./sphere_uniform_bvh
+	./sphere_uniform_hash
+	./sphere_uniform_grid
 
 # make sure the data to run on is present or present
 # a somewhat comprehensible error to the user otherwise
@@ -27,6 +29,12 @@ sphere_uniform_scan.o sphere_uniform_scan.h: $(TERRA_FILES)
 
 sphere_uniform_bvh.o sphere_uniform_bvh.h: $(TERRA_FILES)
 	../../bin/gong sphere_uniform.t -suffix=_bvh -traversal=bvh_bvh
+
+sphere_uniform_hash.o sphere_uniform_hash.h: $(TERRA_FILES)
+	../../bin/gong sphere_uniform.t -suffix=_hash -traversal=hash_scan
+
+sphere_uniform_grid.o sphere_uniform_grid.h: $(TERRA_FILES)
+	../../bin/gong sphere_uniform.t -suffix=_grid -traversal=grid_scan
 
 sphere_uniform_scan: sphere_uniform_scan.o sphere_uniform_scan.h main.cpp
 	if [ -d $(CUDA_DIR) ]; then \
@@ -64,10 +72,37 @@ sphere_uniform_bvh: sphere_uniform_bvh.o sphere_uniform_bvh.h main.cpp
 	         -o sphere_uniform_bvh sphere_uniform_bvh.o main.cpp; \
 	fi
 
+sphere_uniform_hash: sphere_uniform_hash.o sphere_uniform_hash.h main.cpp
+	if [ -d $(CUDA_DIR) ]; then \
+	  $(CPP) -std=c++11 \
+	         -L $(CUDA_DIR)/lib64 -lcuda -lcudart \
+	         -Wl,-rpath=$(CUDA_DIR)/lib64 \
+	         -D USE_HASH \
+	         -o sphere_uniform_hash sphere_uniform_hash.o main.cpp; \
+	else \
+	  $(CPP) -std=c++11 \
+	         -D USE_HASH \
+	         -o sphere_uniform_hash sphere_uniform_hash.o main.cpp; \
+	fi
+
+sphere_uniform_grid: sphere_uniform_grid.o sphere_uniform_grid.h main.cpp
+	if [ -d $(CUDA_DIR) ]; then \
+	  $(CPP) -std=c++11 \
+	         -L $(CUDA_DIR)/lib64 -lcuda -lcudart \
+	         -Wl,-rpath=$(CUDA_DIR)/lib64 \
+	         -D USE_GRID \
+	         -o sphere_uniform_grid sphere_uniform_grid.o main.cpp; \
+	else \
+	  $(CPP) -std=c++11 \
+	         -D USE_GRID \
+	         -o sphere_uniform_grid sphere_uniform_grid.o main.cpp; \
+	fi
+
 clean:
 	rm sphere_uniform_scan.h \
 	   sphere_uniform_scan.o \
-	   sphere_uniform_scan
+	   sphere_uniform_scan \
+	   sphere_uniform_gpu_scan
 	rm sphere_uniform_bvh.h \
 	   sphere_uniform_bvh.o \
 	   sphere_uniform_bvh

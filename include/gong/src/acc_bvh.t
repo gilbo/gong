@@ -227,7 +227,7 @@ Some way to traverse the data structure relative to another data structure
 --]]
 
 
-function BVH_Index:_INTERNAL_StructLayout(StoreAPI)
+function BVH_Index:_INTERNAL_StructLayout(StoreAPI, gpu_on)
   local CACHE         = self:_INTERNAL_get_CACHE(StoreAPI)
   if CACHE.BVH then return CACHE.BVH end
 

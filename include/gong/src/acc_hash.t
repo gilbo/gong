@@ -72,6 +72,10 @@ new_hash_index expects named arguments
   hash        = gong function : key -> uint...
                 (if hash is not supplied and the key is a primitive uint type,
                  then the default hash function just returns the key)
+  brute_force = gong function : table -> bool  (optional)
+                (if supplied, then any row where brute_force returns true
+                 is not hashed, and simply tested against every other row)
+                (use this function to exclude a few rows that hash poorly)
   
   BIN_TO_ROW  = ratio of hash-bins to table-rows (optional, default: 2)
 }
@@ -146,6 +150,16 @@ local function new_hash_index(args)
           hash_arg_msg, 2)
   end
 
+  if args.brute_force then
+    if not Functions.is_function(args.brute_force) or
+       #args.brute_force:argtypes() ~= 1 or
+       args.brute_force:argtypes()[1] ~= T.row(args.table) or
+       args.brute_force:rettype() ~= T.bool
+    then
+      error("expected 'brute_force' to be a gong function of type\n"..
+            "  table -> bool\n"..hash_arg_msg, 2)
+    end
+  end
 
   local key_base    = (args.key:is_primitive() and args.key)
                                                 or args.key:basetype()
@@ -154,6 +168,7 @@ local function new_hash_index(args)
   if args.abs_range then subfs:insert(args.abs_range) end
   if args.abs_point then subfs:insert(args.abs_point) end
   if args.hash      then subfs:insert(args.hash)      end
+  if args.brute_force then subfs:insert(args.brute_force) end
 
   local hashidx = AccStructs.NewSpatialIndexObj({
     _table          = args.table,
@@ -165,8 +180,9 @@ local function new_hash_index(args)
     _abs_point      = args.abs_point,
 
     _hash           = args.hash,
+    _brute_force    = args.brute_force,
 
-    _SLOT_BYTES     = 32,
+    _SLOT_BYTES     = 64,
     _BIN_TO_ROW     = args.BIN_TO_ROW or 2,
 
     _subfuncs       = subfs,
@@ -341,7 +357,7 @@ end
 -------------------------------------------------------------------------------
 
 
-function Hash_Index:_INTERNAL_StructLayout(StoreAPI)
+function Hash_Index:_INTERNAL_StructLayout(StoreAPI, gpu_on)
   local CACHE         = self:_INTERNAL_get_CACHE(StoreAPI)
   if CACHE.HASH then return CACHE.HASH end
 
@@ -357,6 +373,8 @@ function Hash_Index:_INTERNAL_StructLayout(StoreAPI)
   local NULL_ROW      = fullbitmask[row_t]
   local NULL_BIN      = fullbitmask[bin_t]
   local NULL_U32      = fullbitmask[uint32]
+
+  local use_brute_force = not not self._brute_force
 
   local SLOT_IDS      = 1
   do
@@ -398,6 +416,41 @@ function Hash_Index:_INTERNAL_StructLayout(StoreAPI)
     rebuild         : bool
     refit           : bool
   }
+  if use_brute_force then
+    HashTable.entries:insert{'unhashed_list',vector(row_t)}
+  end
+  if gpu_on then
+    local struct GPU_HashTable {
+      data : &uint32
+    }
+    HashTable.entries:insertall{
+      {'cpu_data',GPU_HashTable},
+      {'gpu_data',&GPU_HashTable},
+      {'cpu_valid',bool},
+      {'gpu_valid',bool},
+    }
+
+    terra GPU_HashTable:init()
+      assert(false,"TODO")
+    end
+    terra GPU_HashTable:destroy()
+      assert(false,"TODO")
+    end
+    terra HashTable:to_gpu()
+      assert(self.cpu_valid, 'expected hash table valid on CPU')
+      if self.gpu_valid then return end
+      --MEMCPY to GPU
+      assert(false,"TODO")
+      self.gpu_valid = true
+    end
+    terra GPU_HashTable:to_cpu()
+      assert(self.gpu_valid, 'expected hash table valid on GPU')
+      if self.cpu_valid then return end
+      --MEMCPY to CPU
+      assert(false,"TODO")
+      self.cpu_valid = true
+    end
+  end
   --terra HashTable.methods.init     :: &HashTable -> {}
   --terra HashTable.methods.destroy  :: &HashTable -> {}
   terra HashTable:init()
@@ -406,10 +459,16 @@ function Hash_Index:_INTERNAL_StructLayout(StoreAPI)
     self.slots:init()
     self.rebuild  = true
     self.refit    = true
+    escape if use_brute_force then emit quote
+      self.unhashed_list:init()
+    end end end
   end
   terra HashTable:destroy()
     self.bins:destroy()
     self.slots:destroy()
+    escape if use_brute_force then emit quote
+      self.unhashed_list:destroy()
+    end end end
   end
 
   CACHE.HashTable     = HashTable
@@ -440,6 +499,8 @@ function Hash_Index:_INTERNAL_Construct_Functions(StoreAPI)
   if CACHE.FUNCTIONS_BUILT then return end
   CACHE.FUNCTIONS_BUILT = true
 
+  local HashIndexName   = self:name()
+
   local row_t           = T.row(self._table):terratype()
   local key_t           = self._key:terratype()
   local key_bt          = self._key_base:terratype()
@@ -453,7 +514,7 @@ function Hash_Index:_INTERNAL_Construct_Functions(StoreAPI)
   local HashTable       = CACHE.HashTable
   local BIN_TO_ROW      = terralib.constant(double, self._BIN_TO_ROW)
 
-  local abs_range, abs_point, hash
+  local abs_range, abs_point, hash, brute_force
   if self._abs_range then
         abs_range       = StoreAPI:GetCPUFunction( self._abs_range )
   end
@@ -465,9 +526,13 @@ function Hash_Index:_INTERNAL_Construct_Functions(StoreAPI)
   else
         hash            = macro(function(storeptr, key) return key end)
   end
+  if self._brute_force then
+        brute_force     = StoreAPI:GetCPUFunction( self._brute_force )
+  end
   CACHE.abs_range       = abs_range
   CACHE.abs_point       = abs_point
   CACHE.hash            = hash
+  CACHE.brute_force     = brute_force
 
   local key_eq, key_loop, key_join, slot_print
   if self._key:is_primitive() then
@@ -582,6 +647,14 @@ function Hash_Index:_INTERNAL_Construct_Functions(StoreAPI)
       slot_print(s)
       C.printf('\n')
     end
+    escape if brute_force then emit quote
+      var n_unhashed    = self.unhashed_list:size()
+        C.printf('unhashed (%d)\n', n_unhashed)
+      for k=0,n_unhashed do
+        var r = self.unhashed_list(k)
+        C.printf('  %6d\n', k)
+      end
+    end end end
   end
 
   terra HashTable:clear( s : StorePtr )
@@ -592,6 +665,9 @@ function Hash_Index:_INTERNAL_Construct_Functions(StoreAPI)
                                             BIN_TO_ROW ) )
     self.bins:resize(n_bins)
     C.memset(self.bins:ptr(), 0xFF, n_bins*sizeof(bin_t))
+    escape if brute_force then emit quote
+      self.unhashed_list:resize(0)
+    end end end
   end
   terra HashTable:build( s : StorePtr )
     var this    = self
@@ -601,6 +677,21 @@ function Hash_Index:_INTERNAL_Construct_Functions(StoreAPI)
     var bin     : bin_t
     var N_BIN   = [bin_t](self.bins:size())
     escape
+      -- by default the choice is simply always hash...
+      local choose_to_hash  = function(body) return body end
+      if brute_force then
+        choose_to_hash      = function(body) return quote
+          if brute_force(s, row) then
+            var i = this.unhashed_list:size()
+            this.unhashed_list:resize(i+1)
+            this.unhashed_list(i) = row
+            [StoreAPI:Profile( s, HashIndexName..'_n_unhashed',
+                                  'framed_counter')]
+          else
+            [body]
+          end
+        end end
+      end
       local new_slot    = quote
         var slot                = this.slots:size()
         this.slots:resize(slot+1)
@@ -625,8 +716,12 @@ function Hash_Index:_INTERNAL_Construct_Functions(StoreAPI)
       local insert_code = quote
         var prev_slot   = NULL_BIN
         var slot        = this.bins(bin)
+        var new_key     = true
+        [StoreAPI:Profile(s, HashIndexName..'_n_entries', 'framed_counter')]
         if slot == NULL_BIN then
-          this.n_bin_occupied = this.n_bin_occupied + 1
+          [ StoreAPI:Profile( s, HashIndexName..'_n_bin_occupied',
+                                 'framed_counter' ) ]
+          --this.n_bin_occupied = this.n_bin_occupied + 1
         end
         -- keep going until either we reach the end of the
         -- linked list of slots at this bin, or we find a spot in
@@ -634,6 +729,7 @@ function Hash_Index:_INTERNAL_Construct_Functions(StoreAPI)
         while slot ~= NULL_BIN do
           -- try to add the row to the current slot
           if key_eq( this.slots(slot).key, key ) then
+            new_key = false
             if add_row(slot) then break end
           end
           -- if we got here, then we could not add this row to this slot,
@@ -654,9 +750,13 @@ function Hash_Index:_INTERNAL_Construct_Functions(StoreAPI)
             this.slots(prev_slot).nxt   = new_s
           end
         end
+        if new_key then
+          [ StoreAPI:Profile( s, HashIndexName..'_n_keys',
+                                 'framed_counter' ) ]
+        end
       end
       if abs_range then
-        emit(StoreAPI:Scan( s, RowTyp, row, quote
+        emit(StoreAPI:Scan( s, RowTyp, row, choose_to_hash(quote
           var lohi      = abs_range(s, row)
           --C.printf('scan %5d:  %5d %5d %5d ; %5d %5d %5d\n', row,
           --          lohi._0.d[0], lohi._0.d[1], lohi._0.d[2],
@@ -666,14 +766,27 @@ function Hash_Index:_INTERNAL_Construct_Functions(StoreAPI)
               --C.printf('             bin    %5d\n', bin)
               [insert_code]
             end ) ]
-        end))
+        end)))
       else assert(abs_point, 'INTERNAL')
-        emit(StoreAPI:Scan( s, RowTyp, row, quote
+        emit(StoreAPI:Scan( s, RowTyp, row, choose_to_hash(quote
           key         = abs_point(s, row)
           bin         = hash(s, key) % N_BIN
           [insert_code]
-        end))
+        end)))
       end
+
+      emit(StoreAPI:Profile( s, HashIndexName..'_n_entries',
+                                'end_framed_counter'))
+      if brute_force then
+        emit(StoreAPI:Profile( s, HashIndexName..'_n_unhashed',
+                                  'end_framed_counter'))
+      end
+      emit(StoreAPI:Profile( s, HashIndexName..'_n_keys',
+                                'end_framed_counter'))
+      emit(StoreAPI:Profile( s, HashIndexName..'_n_bin_occupied',
+                                'end_framed_counter' ))
+      emit(StoreAPI:Profile( s, HashIndexName..'_n_bin',
+                                'report', `this.bins:size() ))
     end
 
     self.refit = false
@@ -697,8 +810,49 @@ function Hash_Index:_INTERNAL_Construct_Functions(StoreAPI)
     end
   end
 
+  if brute_force then
+    HashTable.methods.unhashed_self_scan = function(
+      self, storeptr, row0sym, row1sym, bodycode
+    )
+      return quote
+        var row_A = 0
+        var n_unhashed = self.unhashed_list:size()
+        -- Strategy: go over the entire array
+        --           at each point, go over the unhashed rows.
+        --           quit the unhashed scan when we find this row is unhashed
+        --           in order to avoid double-counting
+        [ StoreAPI:Scan( storeptr, RowTyp, row_A, quote
+          -- blah
+          for i=0,n_unhashed do
+            var row_B = self.unhashed_list(i)
+            var [row0sym] = row_A
+            var [row1sym] = row_B
+            if row0sym > row1sym then
+              row0sym, row1sym = row1sym, row0sym
+            end
+            [bodycode]
+            if row_A == row_B then break end
+          end
+        end) ]
+      end
+    end
+    HashTable.unhashed_scan = function(
+      self, storeptr, row_sym, bodycode
+    )
+      return quote
+        var n_unhashed = self.unhashed_list:size()
+        for i=0,n_unhashed do
+          var [row_sym] = self.unhashed_list(i)
+          [bodycode]
+        end
+      end
+    end
+  else
+    HashTable.methods.unhashed_self_scan = function() return quote end end
+    HashTable.methods.unhashed_scan = function() return quote end end
+  end
   HashTable.methods.self_scan = function(
-    self, key_sym, row0sym, row1sym, bodycode
+    self, storeptr, key_sym, row0sym, row1sym, bodycode
   )
     -- loop over the slots, using the trick that the left-hand-row
     -- is only ever assigned based on the current slot, no matter how
@@ -853,8 +1007,12 @@ function Hash_Hash_Traversal:_INTERNAL_Construct_Functions(L_API, R_API)
 
     local join_loop     = nil
     if IS_SAME_IDX then
-      join_loop = Hash_L.methods.self_scan( idxptr0, key,
-                                            row0sym, row1sym, deduped_body )
+      join_loop = quote
+        [ Hash_L.methods.self_scan( idxptr0, storeptr, key,
+                                    row0sym, row1sym, deduped_body ) ]
+        [ Hash_L.methods.unhashed_self_scan( idxptr0, storeptr,
+                                             row0sym, row1sym, bodycode )]
+      end
     elseif HASH_LEFT then
       -- SCAN RIGHT ; LOOKUP IN LEFT
       if abs_point_R then
@@ -862,14 +1020,18 @@ function Hash_Hash_Traversal:_INTERNAL_Construct_Functions(L_API, R_API)
             var [key]     = abs_point_R(storeptr, row1sym)
             [ Hash_L.methods.query_loop( idxptr0, storeptr,
                                          key, row0sym, deduped_body ) ]
+            [ Hash_L.methods.unhashed_scan( idxptr0, storeptr,
+                                            row0sym, bodycode) ]
           end)
       else assert(abs_range_R, 'INTERNAL')
         join_loop = R_API:Scan( storeptr, RowTyp_R, row1sym, quote
             var [key]
-            var lo, hi    = abs_range_R(storeptr, row1sym)
-            [ key_loop( lo, hi, key,
+            var lohi      = abs_range_R(storeptr, row1sym)
+            [ key_loop( `lohi._0, `lohi._1, key,
                 Hash_L.methods.query_loop( idxptr0, storeptr,
                                            key, row0sym, deduped_body ) ) ]
+            [ Hash_L.methods.unhashed_scan( idxptr0, storeptr,
+                                            row0sym, bodycode) ]
           end)
       end
     else -- hash right
@@ -879,14 +1041,18 @@ function Hash_Hash_Traversal:_INTERNAL_Construct_Functions(L_API, R_API)
             var [key]     = abs_point_L(storeptr, row0sym)
             [ Hash_R.methods.query_loop( idxptr1, storeptr,
                                          key, row1sym, deduped_body ) ]
+            [ Hash_R.methods.unhashed_scan( idxptr1, storeptr,
+                                            row1sym, bodycode) ]
           end)
       else assert(abs_range_L, 'INTERNAL')
         join_loop = L_API:Scan( storeptr, RowTyp_L, row0sym, quote
             var [key]
-            var lo, hi    = abs_range_L(storeptr, row0sym)
-            [ key_loop( lo, hi, key,
+            var lohi      = abs_range_L(storeptr, row0sym)
+            [ key_loop( `lohi._0, `lohi._1, key,
                 Hash_R.methods.query_loop( idxptr1, storeptr,
                                            key, row1sym, deduped_body ) ) ]
+            [ Hash_R.methods.unhashed_scan( idxptr1, storeptr,
+                                            row1sym, bodycode) ]
           end)
       end
     end
@@ -1003,14 +1169,18 @@ function Scan_Hash_Travesal:_INTERNAL_Construct_Functions(L_API, R_API)
             var [key]     = abs_point_R(storeptr, row1sym)
             [ Hash_L.methods.query_loop( idxptr0, storeptr,
                                          key, row0sym, deduped_body ) ]
+            [ Hash_L.methods.unhashed_scan( idxptr0, storeptr,
+                                            row0sym, bodycode) ]
           end)
       else assert(abs_range_R, 'INTERNAL')
         join_loop = R_API:Scan( storeptr, RowTyp_R, row1sym, quote
             var [key]
-            var lo, hi    = abs_range_R(storeptr, row1sym)
-            [ key_loop( lo, hi, key,
+            var lohi      = abs_range_R(storeptr, row1sym)
+            [ key_loop( `lohi._0, `lohi._1, key,
                 Hash_L.methods.query_loop( idxptr0, storeptr,
                                            key, row0sym, deduped_body ) ) ]
+            [ Hash_L.methods.unhashed_scan( idxptr0, storeptr,
+                                            row0sym, bodycode) ]
           end)
       end
     else -- hash right
@@ -1020,14 +1190,18 @@ function Scan_Hash_Travesal:_INTERNAL_Construct_Functions(L_API, R_API)
             var [key]     = abs_point_L(storeptr, row0sym)
             [ Hash_R.methods.query_loop( idxptr1, storeptr,
                                          key, row1sym, deduped_body ) ]
+            [ Hash_R.methods.unhashed_scan( idxptr1, storeptr,
+                                            row1sym, bodycode) ]
           end)
       else assert(abs_range_L, 'INTERNAL')
         join_loop = L_API:Scan( storeptr, RowTyp_L, row0sym, quote
             var [key]
-            var lo, hi    = abs_range_L(storeptr, row0sym)
-            [ key_loop( lo, hi, key,
+            var lohi      = abs_range_L(storeptr, row0sym)
+            [ key_loop( `lohi._0, `lohi._1, key,
                 Hash_R.methods.query_loop( idxptr1, storeptr,
                                            key, row1sym, deduped_body ) ) ]
+            [ Hash_R.methods.unhashed_scan( idxptr1, storeptr,
+                                            row1sym, bodycode) ]
           end)
       end
     end

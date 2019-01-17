@@ -5,6 +5,12 @@
 #ifdef USE_BVH
 #include "sphere_uniform_bvh.h"
 #endif
+#ifdef USE_HASH
+#include "sphere_uniform_hash.h"
+#endif
+#ifdef USE_GRID
+#include "sphere_uniform_grid.h"
+#endif
 
 #include <iostream>
 #include <iomanip>
@@ -238,6 +244,8 @@ int main() {
        << setw(10) << min_time*1e3 << "  "
        << setw(10) << max_time*1e3 << "  "
        << endl;
+
+  store.print_profile();
 
   cout << "sphere_uniform done" << endl;
   return 0;

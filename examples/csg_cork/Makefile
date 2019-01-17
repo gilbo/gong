@@ -20,7 +20,7 @@ cork/src/cork_isct.h: cork cork_isct.o cork_isct.h
 	cp cork_isct.o cork/debug/
 
 cork_isct.o cork_isct.h: $(TERRA_FILES)
-	../../bin/gong --debug_gpu_mem cork_isct.t
+	../../bin/gong cork_isct.t
 
 # download a copy of the library
 cork:

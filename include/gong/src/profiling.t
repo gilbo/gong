@@ -22,6 +22,8 @@ local ProfileMetric           = {}
 ProfileMetric.__index         = ProfileMetric
 local ProfileCounter          = setmetatable({}, ProfileMetric)
 ProfileCounter.__index        = ProfileCounter
+local ProfileReport           = setmetatable({}, ProfileMetric)
+ProfileReport.__index         = ProfileReport
 local ProfileElapsed          = setmetatable({}, ProfileMetric)
 ProfileElapsed.__index        = ProfileElapsed
 local ProfileFramedCounter    = setmetatable({}, ProfileMetric)
@@ -29,6 +31,8 @@ ProfileFramedCounter.__index  = ProfileFramedCounter
 
 local function is_profile_metric(obj)
   return getmetatable(getmetatable(obj)) == ProfileMetric end
+local function is_profile_report(obj)
+  return getmetatable(obj) == ProfileReport end
 local function is_profile_counter(obj)
   return getmetatable(obj) == ProfileCounter end
 local function is_profile_elapsed(obj)
@@ -50,6 +54,12 @@ local struct CounterImplementation {
   _count    : uint32
   _padding  : uint32  -- align with doubles below
 }
+local struct ReportImplementation {
+  _n_reports    : uint32
+  _sum          : double
+  _min          : double
+  _max          : double
+}
 local struct ElapsedImplementation {
   -- runtime-state
   _start_time   : double
@@ -69,11 +79,19 @@ local struct FramedCounterImplementation {
   _max_count    : double
 }
 ProfileCounter._implementation          = CounterImplementation
+ProfileReport._implementation           = ReportImplementation
 ProfileElapsed._implementation          = ElapsedImplementation
 ProfileFramedCounter._implementation    = FramedCounterImplementation
 
 local struct CounterOutput {
   count         : uint32
+}
+local struct ReportOutput {
+  n_reports     : uint32
+  avg           : double
+  sum           : double
+  min           : double
+  max           : double
 }
 local struct ElapsedOutput {
   count         : uint32
@@ -93,6 +111,12 @@ local struct FramedCounterOutput {
 terra CounterImplementation:init()
   self._count         = 0
 end
+terra ReportImplementation:init()
+  self._n_reports     = 0
+  self._sum           = 0
+  self._min           = [math.huge]
+  self._max           = [-math.huge]
+end
 terra ElapsedImplementation:init()
   self._start_time    = 0
   self._count         = 0
@@ -109,11 +133,19 @@ terra FramedCounterImplementation:init()
 end
 
 terra CounterImplementation:count() return self._count                  end
+--
+terra ReportImplementation:avg()    return self._sum / self._n_reports  end
+terra ReportImplementation:sum()    return self._sum                    end
+terra ReportImplementation:min()    return self._min                    end
+terra ReportImplementation:max()    return self._max                    end
+terra ReportImplementation:n_reports()        return self._n_reports    end
+--
 terra ElapsedImplementation:avg()   return self._sum_time / self._count end
 terra ElapsedImplementation:sum()   return self._sum_time               end
 terra ElapsedImplementation:min()   return self._min_time               end
 terra ElapsedImplementation:max()   return self._max_time               end
 terra ElapsedImplementation:count() return self._count                  end
+--
 terra FramedCounterImplementation:avg()
                                 return self._sum_count / self._n_frames end
 terra FramedCounterImplementation:sum()       return self._sum_count    end
@@ -124,6 +156,15 @@ terra FramedCounterImplementation:n_frames()  return self._n_frames     end
 terra CounterImplementation:output()
   return CounterOutput {
     count   = self:count()
+  }
+end
+terra ReportImplementation:output()
+  return ReportOutput {
+    n_reports = self:n_reports(),
+    avg       = self:avg(),
+    sum       = self:sum(),
+    min       = self:min(),
+    max       = self:max(),
   }
 end
 terra ElapsedImplementation:output()
@@ -147,6 +188,12 @@ end
 
 terra CounterImplementation:increment()
   self._count         = self._count + 1
+end
+terra ReportImplementation:report( val : double )
+  self._sum           = self._sum + val
+  self._n_reports     = self._n_reports + 1
+  if val > self._max then self._max = val end
+  if val < self._min then self._min = val end
 end
 terra ElapsedImplementation:start()
   assert(self._start_time == 0, 'cannot start a running timer')
@@ -187,6 +234,14 @@ local function NewProfileCounter(name, offset)
     _output         = CounterOutput,
   }, ProfileCounter)
 end
+local function NewProfileReport(name, offset)
+  return setmetatable({
+    _name           = name,
+    _offset         = offset,
+    _impl           = ReportImplementation,
+    _output         = ReportOutput,
+  }, ProfileReport)
+end
 local function NewProfileElapsed(name, offset)
   return setmetatable({
     _name           = name,
@@ -223,6 +278,12 @@ function ProfileCounter:increment( pptr )
   return quote
     var m   = [self:impl_ptr( pptr )]
     m:increment()
+  end
+end
+function ProfileReport:report( pptr, val )
+  return quote
+    var m   = [self:impl_ptr( pptr )]
+    m:report(val)
   end
 end
 function ProfileElapsed:start( pptr )
@@ -324,6 +385,7 @@ local valid_metric_types = {
   ['timer_start']         = true,
   ['timer_stop']          = true,
   ['counter']             = true,
+  ['report']              = true,
   ['framed_counter']      = true,
   ['end_framed_counter']  = true,
 }
@@ -335,6 +397,8 @@ local function add_metric_to_profiler( profiler, name, metric_str )
   local metric = nil
   if metric_str == 'counter' then
     metric              = NewProfileCounter(name, off)
+  elseif metric_str == 'report' then
+    metric              = NewProfileReport(name, off)
   elseif metric_str == 'timer_start' or metric_str == 'timer_stop' then
     metric              = NewProfileElapsed(name, off)
   elseif metric_str == 'framed_counter' or
@@ -357,6 +421,7 @@ local function get_metric( profiler, name, metric_str )
   end
   -- check metric type
   if    (metric_str == 'counter' and not is_profile_counter(m))
+     or (metric_str == 'report' and not is_profile_report(m))
      or ( (metric_str == 'timer_start' or metric_str == 'timer_stop')
           and not is_profile_elapsed(m) )
      or ( (metric_str == 'framed_counter' or
@@ -372,13 +437,15 @@ local function check_metric_type( metric_str )
   return valid_metric_types[metric_str]
 end
 
-function Profiler:hook( handle, metric_name, metric_type )
+function Profiler:hook( handle, metric_name, metric_type, arg )
   if PROFILING_OFF then return quote end end
   if not check_metric_type(metric_type) then
     INTERNAL_ERR("could not find profiling metric type: "..metric_type) end
   local m               = get_metric(self, metric_name, metric_type)
   if      metric_type == 'counter' then
     return m:increment(`handle._id)
+  elseif  metric_type == 'report' then
+    return m:report((`handle._id), arg)
   elseif  metric_type == 'timer_start' then
     return m:start(`handle._id)
   elseif  metric_type == 'timer_stop' then
@@ -406,12 +473,21 @@ function Profiler:print_profile( handle )
   end
   local MNL             = tostring(max_name_len)
   local h_len           = MNL+3+10+3+11*3+2+10
+  if PROFILING_OFF then
+    return quote
+      C.printf("   ---------------------------------------- \n")
+      C.printf("  | No Profile.  Profiling was turned off. |\n")
+      C.printf("   ---------------------------------------- \n")
+    end
+  end
   return quote
     var out             = [ self:get_output(handle) ]
     C.printf(["  %"..MNL.."s | \n"],
              "metric name", "count", "avg", "min", "max", "total time")
     C.printf(["  %"..MNL.."s | %10s | %10s %10s %10s   %10s\n"],
              "(raw counts)", "count", "-", "-", "-", "-")
+    C.printf(["  %"..MNL.."s | %10s | %10s %10s %10s   %10s\n"],
+             "(raw reports)", "n_reports", "avg", "min", "max", "sum")
     C.printf(["  %"..MNL.."s | %10s | %10s %10s %10s | %10s\n"],
              "(timers in ms)", "count", "avg", "min", "max", "total time")
     C.printf(["  %"..MNL.."s | %10s | %10s %10s %10s | %10s\n"],
@@ -422,6 +498,11 @@ function Profiler:print_profile( handle )
       if is_profile_counter(m) then emit quote
         C.printf(["  %"..MNL.."s | %10d | %10s %10s %10s   %10s\n"],
                  nm, out.[nm].count, "-", "-", "-", "-")
+      end elseif is_profile_report(m) then emit quote
+        C.printf(["  %"..MNL.."s | %10d | %10.3f %10.3f %10.3f | %10.3f\n"],
+                 nm, out.[nm].n_reports,
+                 out.[nm].avg, out.[nm].min, out.[nm].max,
+                 out.[nm].sum)
       end elseif is_profile_elapsed(m) then emit quote
         C.printf(["  %"..MNL.."s | %10d | %10.5f %10.5f %10.5f | %10.3f\n"],
                  nm, out.[nm].count,

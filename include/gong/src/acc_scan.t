@@ -128,7 +128,7 @@ end
 -------------------------------------------------------------------------------
 
 
-function Scan_Index:_INTERNAL_StructLayout(StoreAPI)
+function Scan_Index:_INTERNAL_StructLayout(StoreAPI, gpu_on)
   local CACHE   = self:_INTERNAL_get_CACHE(StoreAPI)
   if CACHE.SCAN then return CACHE.SCAN end
 

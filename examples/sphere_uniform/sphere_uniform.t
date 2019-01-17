@@ -88,10 +88,60 @@ local BVH_Traversal   = G.bvh_bvh_traversal {
   vol_isct    = G.AABB3f_isct,
 }
 
+local CELL_WIDTH = gong `4f * RADIUS * 1.1f
+local gong function Spheres_to_DilatedGridRange( s : Spheres )
+  -- floating point bounding box...
+  var r     = 2f*{RADIUS, RADIUS, RADIUS}
+  var lo    = s.pos-r
+  var hi    = s.pos+r
+  -- grid cell width
+  var w     = CELL_WIDTH
+  var inv_w = 1.0f / w
+  var lo_i  = :[i] G.int32( G.floor( lo[i] * inv_w ) )
+  var hi_i  = :[i] G.int32( G.floor( hi[i] * inv_w ) )
+  return lo_i, hi_i
+end
+
+local gong function Spheres_to_Point( s : Spheres )
+  -- grid cell width
+  var w       = CELL_WIDTH
+  var inv_w   = 1.0f / w
+  return :[i] G.int32( G.floor( s.pos[i] * inv_w ) )
+end
+
+local hash_function = G.hash3i
+if params.traversal == 'grid_scan' then
+  local factor = 4
+  local gong function grid_hash( k : G.vec3i )
+    var x = G.uint32(  ((k[0] % 80) + 80) % 80  )
+    var y = G.uint32(  ((k[1] % 80) + 80) % 80  )
+    return x*80 + y
+  end
+  hash_function = grid_hash
+end
+
+local DilatedHashGrid   = G.hash_index {
+  table       = Spheres,
+  key         = G.vec3i,
+  abs_point   = Spheres_to_Point,
+  hash        = hash_function,
+}
+
+local Hash_Traversal  = G.scan_hash_traversal {
+  left              = DilatedHashGrid,
+  right             = Spheres,
+  right_abs_range   = Spheres_to_DilatedGridRange,
+}
+
+
 if params.traversal == 'scan_scan' then
   -- leave the default traversal
 elseif params.traversal == 'bvh_bvh' then
   sphere_self_isct:set_cpu_traversal(BVH_Traversal)
+elseif params.traversal == 'hash_scan' then
+  sphere_self_isct:set_cpu_traversal(Hash_Traversal)
+elseif params.traversal == 'grid_scan' then
+  sphere_self_isct:set_cpu_traversal(Hash_Traversal)
 else
   error('unrecognized traversal option: '..params.traversal)
 end
