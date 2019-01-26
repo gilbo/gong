@@ -295,13 +295,30 @@ Exports.printf = printf
 -- link the bitcode for libdevice so that we can access device math functions
 -- CUDA libdevice has all the math functions:
 -- http://docs.nvidia.com/cuda/libdevice-users-guide/#axzz3CND85k3B
-local cuda_success, cuda_version =
+local cuda_success, cuda_version  =
   pcall(function() return cudalib.localversion() end)
-cuda_version = (cuda_success and cuda_version) or 32
+local max_version, min_version    = 100000, 32 -- i.e. 3.2
+if cuda_success then max_version  = cuda_version end
+cuda_version                      = nil
+
+-- determine which valid version if any exists
+local device_dir_path = terralib.cudahome.."/nvvm/libdevice"
+local DevDirFiles     = io.popen('ls '..device_dir_path,'r')
+local fname           = DevDirFiles:read("*line")
+while fname do
+  local _,_,version   = fname:find("libdevice%.compute_(%d*)%.10%.bc")
+  local v             = tonumber(version)
+  if v >= min_version and v <= max_version then
+    cuda_version = cuda_version or v
+    if v > cuda_version then cuda_version = v end
+  end
+  fname               = DevDirFiles:read("*line")
+end
+DevDirFiles:close()
 
 local externcall    = terralib.externfunction
-local libdevice     = terralib.cudahome..
-  string.format("/nvvm/libdevice/libdevice.compute_%d.10.bc",cuda_version)
+local libdevice     = device_dir_path..
+  string.format('/libdevice.compute_%d.10.bc',cuda_version)
 if terralib.linkllvm then
   local llvmbc = terralib.linkllvm(libdevice)
   externcall = function(name, ftype)

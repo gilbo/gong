@@ -38,8 +38,6 @@ local cuda_dir        = (cudalib_dir .. '..'):cleanpath()
 
 local lib_dir         = Pathname.gong_root:abspath() .. 'gong/libs'
 
-print(lib_dir)
-
 local cub_dir         = lib_dir..'cub-1.8.0'
 local cub_wrap_obj    = lib_dir..'libcub_wrap.so'
 local cub_wrap_src    = lib_dir..'cub_wrap.cu'
@@ -192,6 +190,9 @@ local h_file_text = [[
 #ifndef __GONG_CUB_WRAP__H_
 #define __GONG_CUB_WRAP__H_
 
+#include <stdint.h>
+#include <stdlib.h>
+
 ]]..sigs:concat('\n')..[[
 
 
@@ -220,20 +221,34 @@ local cufout = io.open(tostring(cub_wrap_src), "w")
 cufout:write(cu_file_text)
 cufout:close()
 
+-- Determine the local version to feed to NVCC
+local cuda_success, cuda_version  =
+  pcall(function() return cudalib.localversion() end)
+if not cuda_success then
+  error("could not determine local CUDA version")
+else
+local sm = cuda_version
+
 -- Command to compile the shared-object from the .cu file
 print('generating cub_wrap.so wrapper around needed CUDA UnBound code\n'..
       '  in order to expose C calls to Gong...\n')
-local compile_so = "nvcc -I "..tostring(cub_dir)..'\\\n'..
-                   '     -gencode=arch=compute_30,code=sm_30 \\\n'..
+local compile_so = 'nvcc -I '..tostring(cub_dir)..'\\\n'..
+                   '     -gencode=arch=compute_'..tostring(sm)..
+                                     ',code=sm_'..tostring(sm)..' \\\n'..
                    '     --compiler-options \'-fPIC\' --shared \\\n'..
+                   '     -O3 \\\n'..
                    '     '..tostring(cub_wrap_src)..
                             ' -o '..tostring(cub_wrap_obj)
 print(compile_so)
-os.execute(compile_so)
+local SO_success = os.execute(compile_so)
 os.execute('rm '..tostring(cub_wrap_src))
-print('\nlibcub_wrap.so generated.')
-
-end
+if SO_success == 0 then
+  print('\nlibcub_wrap.so generated.')
+else
+  error("libcub_wrap.so compilation FAILED: "..tostring(SO_success))
+end -- SO_success
+end -- cuda_success
+end -- obj_fresh
 
 -------------------------------------------------------------------------------
 --[[                            Library Linking                            ]]--
@@ -242,12 +257,15 @@ end
 -- link library?
 terralib.linklibrary(tostring(cub_wrap_obj))
 
-local CUB = terralib.includecstring(
-  '#include <stdint.h>\n'..
-  '#include <stdlib.h>\n'..
-  --'#define bool uint8_t\n'..
-  sigs:concat('\n')
-)
+local CUB       = terralib.includecstring([[
+#include "cub_wrap.h"]], {"-I", tostring(lib_dir)})
+
+--local CUB = terralib.includecstring( '#include ""'
+--  '#include <stdint.h>\n'..
+--  '#include <stdlib.h>\n'..
+--  --'#define bool uint8_t\n'..
+--  sigs:concat('\n')
+--)
 
 
 for _,k in ipairs(names) do Exports[k] = CUB[k] end
