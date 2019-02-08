@@ -357,7 +357,7 @@ end
 -------------------------------------------------------------------------------
 
 
-function Hash_Index:_INTERNAL_StructLayout(StoreAPI, gpu_on)
+function Hash_Index:_INTERNAL_StructLayout(StoreAPI)
   local CACHE         = self:_INTERNAL_get_CACHE(StoreAPI)
   if CACHE.HASH then return CACHE.HASH end
 
@@ -419,7 +419,7 @@ function Hash_Index:_INTERNAL_StructLayout(StoreAPI, gpu_on)
   if use_brute_force then
     HashTable.entries:insert{'unhashed_list',vector(row_t)}
   end
-  if gpu_on then
+  if StoreAPI:HasGPUSupport() then
     local struct GPU_HashTable {
       data : &uint32
     }
@@ -443,7 +443,7 @@ function Hash_Index:_INTERNAL_StructLayout(StoreAPI, gpu_on)
       assert(false,"TODO")
       self.gpu_valid = true
     end
-    terra GPU_HashTable:to_cpu()
+    terra HashTable:to_cpu()
       assert(self.gpu_valid, 'expected hash table valid on GPU')
       if self.cpu_valid then return end
       --MEMCPY to CPU

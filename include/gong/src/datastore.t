@@ -1864,9 +1864,18 @@ function Wrapper:GetAccAPI()
   if W._cached_acc_API then return W._cached_acc_API end
   W._cached_acc_API   = {
     StoreTyp          = function(api) return W:Store_Struct() end,
+    GPU_TablesTyp     = function(api) return W:GPU_Tables_Struct() end,
+    GPU_GlobalsTyp    = function(api) return W:GPU_Globals_Struct() end,
     HasGPUSupport     = function(api) return W:has_GPU_support() end,
     Size              = function(api, storeptr, tbltype)
-                          return W:Size(storeptr, tbltype)
+                          if W:has_GPU_support() then
+                            return quote
+                              [W._gpu_wrapper:CPU_SizeRefresh( storeptr,
+                                                               tbltype )]
+                            in [W:Size(storeptr, tbltype)] end
+                          else
+                            return W:Size(storeptr, tbltype)
+                          end
                         end,
     IndexPtr          = function(api, storeptr, SpatialIndex)
                           local iname = W._c_cache[SpatialIndex].name
@@ -1877,6 +1886,9 @@ function Wrapper:GetAccAPI()
                         end,
     SelfScan          = function(api, ...)
                           return W:SelfScan(...)
+                        end,
+    GPU_Scan          = function(api, ...)
+                          return W._gpu_wrapper:Scan(...)
                         end,
     GPU_DoubleScan    = function(api, ...)
                           return W._gpu_wrapper:ScanAB(...)

@@ -744,6 +744,8 @@ Exports.atomic_mul_uint64_SLOW  = generate_slow_atomic_64(mul,uint64)
 --Exports.atomic_max_double_SLOW  = generate_slow_atomic_64(max,double)
 --Exports.atomic_max_float_SLOW   = generate_slow_atomic_32(max,float)
 
+Exports.clz_b32                 = clz_b32
+
 -------------------------------------------------------------------------------
 -- Other exposed GPU instructions
 -------------------------------------------------------------------------------

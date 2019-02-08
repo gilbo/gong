@@ -1511,6 +1511,39 @@ function GWrapper:GPU_Globals_Struct()
   return self._c_cache[WRAPPER_ROOT].GGlobalFile
 end
 
+function GWrapper:Scan(name, storeptr, gpu_tblptr, gpu_globptr,
+                       tbltype, rowsym, args, bodycode)
+  local Table, main_tblname, sub_tblname, tblvalidname
+                      = unpack_prepare_tbl(self, tbltype)
+
+  local kargs         = newlist{ gpu_tblptr, gpu_globptr }
+        kargs:insertall(args)
+  local gpu_kernel = terra( [kargs] )
+    -- lookup table sizes...
+    var N             = [gpu_tblptr].[sub_tblname]._size
+    var [rowsym]      = GPU.global_tid()
+    if [rowsym] < N then
+      [bodycode]
+    end
+  end
+  gpu_kernel:setname(name..'_cudakernel')
+  local loader = nil
+  gpu_kernel, loader = GPU.simple_compile(gpu_kernel)
+  self._cuda_loaders:insert(loader)
+
+  -- code snippet that computes the number of threads to launch
+  -- based on the storeptr values
+  return quote
+    -- figure out how many threads to launch
+    var SIZE      = storeptr.[main_tblname]:size()
+    -- extract the tblptr and globptr
+    var tblptr    = storeptr._gpu_data.gpu_meta
+    var globptr   = storeptr._gpu_data.gpu_globals
+    -- launch the GPU kernel
+    gpu_kernel(SIZE, tblptr, globptr, [args])
+    GPU.sync()
+  end
+end
 
 function GWrapper:ScanAB(name, storeptr, gpu_tblptr, gpu_globptr,
                          tbl0type, row0sym, tbl1type, row1sym,

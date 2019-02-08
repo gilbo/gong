@@ -64,6 +64,7 @@ do
   s0.isct_count += 1
   s1.isct_count += 1
 end
+--sphere_self_isct:buffer_index_on_cpu()
 
 ------------------------------------------------------------------------------
 

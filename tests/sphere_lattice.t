@@ -110,6 +110,7 @@ local Scan_Hash_Traversal  = G.scan_hash_traversal {
   right_abs_point   = Spheres_to_Point,
 }
 
+--[[
 local gong function Split_Spheres( s : Spheres ) : G.bool
   return s.pos[0] < 0.5f or s.pos[1] < 0.5f or s.pos[2] < 0.5f
 end
@@ -142,6 +143,7 @@ local Split_Traversal   = G.split_split_traversal {
     right       = Hash_and_BVH:index_B(),
   },
 }
+--]]
 
 
 ------------------------------------------------------------------------------
@@ -153,13 +155,27 @@ local API_Scan = G.CompileLibrary {
   gpu           = GPU_ON,
 }
 
+local default_gpu_trav  = sphere_self_isct:get_gpu_traversal()
+if GPU_ON then sphere_self_isct:set_gpu_traversal(BVH_Traversal) end
 sphere_self_isct:set_cpu_traversal(BVH_Traversal)
 local API_BVH = G.CompileLibrary {
   tables        = {},
   joins         = {sphere_self_isct},
   terra_out     = true,
-  gpu           = false --GPU_ON,
+  gpu           = GPU_ON,
 }
+if GPU_ON then sphere_self_isct:set_gpu_traversal(default_gpu_trav) end
+
+--local API_GPU_BVH = nil
+--if GPU_ON then
+--  sphere_self_isct:set_cpu_traversal(BVH_Traversal)
+--  API_GPU_BVH = G.CompileLibrary {
+--    tables        = {},
+--    joins         = {sphere_self_isct},
+--    terra_out     = true,
+--    gpu           = true,
+--  }
+--end
 
 sphere_self_isct:set_cpu_traversal(Hash_Traversal)
 local API_Hash = G.CompileLibrary {
@@ -177,13 +193,13 @@ local API_Scan_Hash = G.CompileLibrary {
   gpu           = false --GPU_ON,
 }
 
-sphere_self_isct:set_cpu_traversal(Split_Traversal)
-local API_Split = G.CompileLibrary {
-  tables        = {},
-  joins         = {sphere_self_isct},
-  terra_out     = true,
-  gpu           = false,
-}
+--sphere_self_isct:set_cpu_traversal(Split_Traversal)
+--local API_Split = G.CompileLibrary {
+--  tables        = {},
+--  joins         = {sphere_self_isct},
+--  terra_out     = true,
+--  gpu           = false,
+--}
 
 local C   = terralib.includecstring [[
 #include<stdio.h>
@@ -329,9 +345,10 @@ test.eq(gen_exec(API_Scan, false)(), 0)
 test.eq(gen_exec(API_BVH, false)(), 0)
 test.eq(gen_exec(API_Hash, false)(), 0)
 test.eq(gen_exec(API_Scan_Hash, false)(), 0)
-test.eq(gen_exec(API_Split, false)(), 0)
+--test.eq(gen_exec(API_Split, false)(), 0)
 if GPU_ON then
   test.eq(gen_exec(API_Scan, true)(), 0)
+  test.eq(gen_exec(API_BVH, true)(), 0)
 end
 
 ------------------------------------------------------------------------------

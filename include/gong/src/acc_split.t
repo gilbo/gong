@@ -250,7 +250,7 @@ function Split_Index:_INTERNAL_B_API(StoreAPI)
   return CACHE.B_API
 end
 
-function Split_Index:_INTERNAL_StructLayout(StoreAPI, gpu_on)
+function Split_Index:_INTERNAL_StructLayout(StoreAPI)
   local CACHE       = self:_INTERNAL_get_CACHE(StoreAPI)
   if CACHE.SPLIT then return CACHE.SPLIT end
   local A_API       = self:_INTERNAL_A_API(StoreAPI)
