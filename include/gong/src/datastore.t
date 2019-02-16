@@ -2099,6 +2099,7 @@ function Wrapper:GenExternCAPI(prefix, export_funcs, gpu_on)
     else
       add_func('GetSize_'..tname, HIERARCHY.tables[tname], 'GetSize',
       terra( hdl : ExtStore ) : SizeT
+        --C.printf("CALLING GETSIZE on %s\n", tbl_cname)
         [ (gpu_on and GW:CPU_SizeRefresh(`to_store(hdl), T.row(Table)))
                   or {} ]
         return to_store(hdl).[tbl_cname]:size()

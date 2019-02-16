@@ -22,6 +22,7 @@ end
 
 local gong join sphere_self_isct ( a : Spheres, b : Spheres )
   where a ~= b
+  --G.print('comp',a,b)
   var r2          = 4*radius*radius
   var d           = a.pos - b.pos
   where (+[i] d[i]*d[i]) <= r2

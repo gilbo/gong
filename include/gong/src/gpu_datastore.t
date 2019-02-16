@@ -1511,10 +1511,23 @@ function GWrapper:GPU_Globals_Struct()
   return self._c_cache[WRAPPER_ROOT].GGlobalFile
 end
 
+local function assert_is_sym(name, obj)
+  if not terralib.issymbol(obj) then
+    error("expected '"..name.."' to be a symbol", 2)
+  end
+end
+
 function GWrapper:Scan(name, storeptr, gpu_tblptr, gpu_globptr,
                        tbltype, rowsym, args, bodycode)
   local Table, main_tblname, sub_tblname, tblvalidname
                       = unpack_prepare_tbl(self, tbltype)
+
+  -- certify arguments are symbols as needed...
+  assert_is_sym('gpu_tblptr', gpu_tblptr)
+  assert_is_sym('gpu_globptr', gpu_globptr)
+  assert_is_sym('rowsym', rowsym)
+  for i,a in ipairs(args) do assert_is_sym('args_'..i, a) end
+  --print('SCAN GPU', gpu_tblptr, gpu_globptr, rowsym)
 
   local kargs         = newlist{ gpu_tblptr, gpu_globptr }
         kargs:insertall(args)
@@ -1881,6 +1894,7 @@ function GWrapper:_INTERNAL_NewRow(gpuptr, tbltype)
     var tid             = GPU.global_tid()
     var row             = GPU.reserve_idx(tid, &(gpuptr.[sub_tblname]._size))
     -- Overflow Error Condition
+    --GPU.printf("[%04d] newrow %04d; MAX %4d\n", tid, row, MAX_SIZE)
     if row >= MAX_SIZE then GPU.trap() end
   in row end
 end

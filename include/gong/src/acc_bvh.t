@@ -347,6 +347,7 @@ function BVH_Index:_INTERNAL_StructLayout(StoreAPI)
       self.gpu_data   = gmalloc(CACHE.GPU_BVH, 1)
       self.cpu_valid  = true
       self.gpu_valid  = false
+      self:bvh_meta_to_gpu()
       self.gpu_refit    = true
       self.gpu_rebuild  = true
     end end end
@@ -597,10 +598,71 @@ function BVH_Index:_INTERNAL_Construct_GPU_Functions(StoreAPI)
   local tblptr              = symbol(&GTbl, 'gpu_tables')
   local globptr             = symbol(&GGlob, 'gpu_tables')
 
-  terra BVH:gpu_fit_volumes( s : StorePtr )
-    C.printf("REFIT GPU BVH\n")
+
+  --  local struct GPU_BVH_node {
+  --    left      : key_t
+  --    right     : key_t
+  --  }
+  --  local struct GPU_BVH {
+  --    n_geom    : uint32
+  --    nodes     : &GPU_BVH_node
+  --    --parents   : &key_t
+  --    node_vols : &vol_t
+  --    geom_vols : &vol_t
+  --    ids       : &key_t
+  --  }
+  --  BVH.entries:insertall{
+  --    {'cpu_data',GPU_BVH},
+  --    {'gpu_data',&GPU_BVH},
+  --    {'cpu_valid',bool},
+  --    {'gpu_valid',bool},
+  --    {'gpu_refit',bool},
+  --    {'gpu_rebuild',bool},
+  --  }
+
+  terra BVH:gpu_debug_print()
+    if not self.cpu_valid then self:bvh_meta_to_cpu() end
     var this      = self
-    var row       : key_t
+    var N         = this.cpu_data.n_geom
+    var nodes     = [&GPU_BVH_node](C.malloc( sizeof(GPU_BVH_node) * N ))
+    var node_vols = [&vol_t](C.malloc( sizeof(vol_t) * N ))
+    var geom_vols = [&vol_t](C.malloc( sizeof(vol_t) * N ))
+    var ids       = [&key_t](C.malloc( sizeof(key_t) * N ))
+    GPU.memcpy_from_gpu( nodes, this.cpu_data.nodes, N*sizeof(GPU_BVH_node) )
+    GPU.memcpy_from_gpu( node_vols, this.cpu_data.node_vols, N*sizeof(vol_t) )
+    GPU.memcpy_from_gpu( geom_vols, this.cpu_data.geom_vols, N*sizeof(vol_t) )
+    GPU.memcpy_from_gpu( ids, this.cpu_data.ids, N*sizeof(key_t) )
+
+    C.printf("BVH GPU size #%d\n", N)
+    C.printf("Nodes\n")
+    for k=0,N do
+      C.printf("%6d:  %6d %6d\n", k, nodes[k].left, nodes[k].right)
+      var vol = node_vols[k]
+      C.printf(
+        "                       %7.3f %7.3f %7.3f , %7.3f %7.3f %7.3f\n",
+               vol.lo.d[0], vol.lo.d[1], vol.lo.d[2],
+               vol.hi.d[0], vol.hi.d[1], vol.hi.d[2])
+    end
+
+    C.printf("Leaves\n")
+    for k=0,N do
+      var vol = geom_vols[k]
+      C.printf("%6d:->%6d   %7.3f %7.3f %7.3f , %7.3f %7.3f %7.3f\n",
+               k, ids[k],
+               vol.lo.d[0], vol.lo.d[1], vol.lo.d[2],
+               vol.hi.d[0], vol.hi.d[1], vol.hi.d[2])
+    end
+
+    C.free(nodes)
+    C.free(node_vols)
+    C.free(geom_vols)
+    C.free(ids)
+  end
+
+  terra BVH:gpu_fit_volumes( s : StorePtr )
+    --C.printf("REFIT GPU BVH\n")
+    var this      = self
+    var id        : key_t
     var N         = this.cpu_data.n_geom
     var gpu_data  = this.gpu_data
 
@@ -609,27 +671,29 @@ function BVH_Index:_INTERNAL_Construct_GPU_Functions(StoreAPI)
 
     -- first, update the leaf node volumes
     [ StoreAPI:GPU_Scan( name..'_leaffit', s, tblptr, globptr,
-                         RowTyp, row, newlist{ gpu_data },
+                         RowTyp, id, newlist{ gpu_data },
       quote
         var N         = gpu_data.n_geom
 
         -- first, update the leaf node volume
+        var row       = gpu_data.ids[id]
         var leaf_vol  = absfn(tblptr, globptr, row)
-        gpu_data.geom_vols[row] = leaf_vol
+        gpu_data.geom_vols[id] = leaf_vol
       end) ]
 
     -- then, update the internal nodes
     for iter=1,31 do
       [ StoreAPI:GPU_Scan( name..'_volfit', s, tblptr, globptr,
-                           RowTyp, row, newlist{ gpu_data, visits, iter },
+                           RowTyp, id, newlist{ gpu_data, visits, iter },
         quote
           var N           = gpu_data.n_geom
+          if id == N-1 then return end
           --var root_visit  = visits[0]
           ---- early exit on superfluous later iterations...
           --if root_visit > 0 and root_visit < iter then return end
 
           -- otherwise, see if this node can be updated...
-          var i           = row
+          var i           = id
           var i_visit     = visits[i]
           -- exit if the node was already updated
           if i_visit > 0 and i_visit < iter then return end
@@ -654,16 +718,18 @@ function BVH_Index:_INTERNAL_Construct_GPU_Functions(StoreAPI)
           gpu_data.node_vols[i] = vol
 
           -- and mark this node as visited
+          --GPU.printf("fitting visit to %6d on round %6d\n", i, iter)
           visits[i]       = iter
         end) ]
     end
+    --this:gpu_debug_print()
 
     gfree(visits)
   end
 
   local INFTY = constant(float, math.huge)
   terra BVH:gpu_build( s : StorePtr )
-    C.printf("BUILD GPU BVH\n")
+    --C.printf("BUILD GPU BVH\n")
     var this      = self
     var row       : key_t
     var SIZE      = [ StoreAPI:Size( s, RowTyp ) ]
@@ -709,15 +775,15 @@ function BVH_Index:_INTERNAL_Construct_GPU_Functions(StoreAPI)
         var vol       = absfn(tblptr, globptr, row)
         var pt        = pointfn(tblptr, globptr, vol)
         pts[row]      = pt
-        GPU.reduce_min_float(&lo_pt.d[0], pt.d[0])
-        GPU.reduce_min_float(&lo_pt.d[1], pt.d[1])
-        GPU.reduce_min_float(&lo_pt.d[2], pt.d[2])
-        GPU.reduce_max_float(&hi_pt.d[0], pt.d[0])
-        GPU.reduce_max_float(&hi_pt.d[1], pt.d[1])
-        GPU.reduce_max_float(&hi_pt.d[2], pt.d[2])
+        GPU.reduce_min_float(&(lo_pt.d[0]), pt.d[0])
+        GPU.reduce_min_float(&(lo_pt.d[1]), pt.d[1])
+        GPU.reduce_min_float(&(lo_pt.d[2]), pt.d[2])
+        GPU.reduce_max_float(&(hi_pt.d[0]), pt.d[0])
+        GPU.reduce_max_float(&(hi_pt.d[1]), pt.d[1])
+        GPU.reduce_max_float(&(hi_pt.d[2]), pt.d[2])
       end )]
     [ StoreAPI:GPU_Scan( name..'_gencodes', s, tblptr, globptr,
-                         RowTyp, row, newlist{ codes, id_tmp,
+                         RowTyp, row, newlist{ code_tmp, id_tmp,
                                                pts, lo_pt, hi_pt },
       quote
         var pt              = pts[row]
@@ -750,12 +816,23 @@ function BVH_Index:_INTERNAL_Construct_GPU_Functions(StoreAPI)
         z = (z or (z << 2))  and 0x9249249
 
         var code            = x or (y << 1) or (z << 2)
-        codes[row]          = code
+        code_tmp[row]          = code
         id_tmp[row]         = row
+        --GPU.printf("(%6d) code %8x\n", row, code)
       end )]
 
     -- Kernel(s) 2 : sort the data by Morton code
-    GPU.sort32( SIZE, 30, codes, code_tmp, id_tmp, gpu_data.ids )
+    GPU.sort32( SIZE, 30, code_tmp, codes, id_tmp, this.cpu_data.ids )
+    --this:gpu_debug_print()
+    --do
+    --  var cpucodes  = [&uint32](C.malloc(SIZE*sizeof(uint32)))
+    --  GPU.memcpy_from_gpu(cpucodes, codes, SIZE*sizeof(uint32))
+    --  C.printf("CODES\n")
+    --  for k=0,SIZE do
+    --    C.printf("%6d) %08x\n", k, cpucodes[k])
+    --  end
+    --  C.free(cpucodes)
+    --end
 
     -- Kernel(s) 3 : compute the BVH-tree nodes
     -- Some code details adapted from Tero Karras
@@ -769,21 +846,36 @@ function BVH_Index:_INTERNAL_Construct_GPU_Functions(StoreAPI)
         var code          = codes[node_i]
         var prv_code      = codes[node_i-1]
         var nxt_code      = codes[node_i+1]
+        -- length of prefix in common
         var nxt_prefix    = GPU.clz_b32(code ^ nxt_code)
         var prv_prefix    = GPU.clz_b32(code ^ prv_code)
         var diff_prefix   = [int32](nxt_prefix) - [int32](prv_prefix)
         var sign : int32  = terralib.select( diff_prefix > 0, 1,
                               terralib.select( diff_prefix < 0, -1, 0 ))
+        -- the longer prefix is the side we want to extend the range
+        -- into, because those codes are more in common
+        -- If this is the previous side, then sign is -1
+        -- If this is the next side, then sign is 1
 
         if sign ~= 0 then
           -- find limit on range
           var lim         = 2
+          -- we want to find all codes that have strictly GREATER than
+          -- min_pre (prv_prefix if we are extending positively) prefixes
+          -- in common with the code at this position
           var min_pre     = prv_prefix
+          -- since we are extending positively, we want to step
+          -- strictly less than the end of the array
           var max_lim     = N - node_i
           if sign < 0 then
+            -- in the negative case, we use the other prefix as minimum
+            -- and we want to avoid stepping into negative values
             min_pre       = nxt_prefix
             max_lim       = node_i + 1
           end
+          -- here we keep increasing the limit of our search until we
+          -- blow out or until we have a prefix that (being less or equal)
+          -- (to the lower bound prefix length) is out of the range
           while lim < max_lim do
             var pre       = GPU.clz_b32(code ^ codes[ node_i + sign*lim ])
             if pre <= min_pre then break end
@@ -791,8 +883,14 @@ function BVH_Index:_INTERNAL_Construct_GPU_Functions(StoreAPI)
           end
           -- clamp limit value
           if lim > max_lim then lim = max_lim end
+          -- because we are clamping the limit to the maximum
+          -- (which lies outside the index-able range)
+          -- and because the other condition is that the limit indexes
+          -- an out-of-range value; we are guaranteed that the bound
+          -- we want must be a step strictly less than this 'lim'
 
           -- binary search step for precise end of range
+          --var old_lim     = lim
           var step        = 0
           repeat
             -- note this cycles through sequences like...
@@ -803,16 +901,22 @@ function BVH_Index:_INTERNAL_Construct_GPU_Functions(StoreAPI)
             -- and therefore may try to step out of range
 
             -- candidate update to step
-            var maybe     = step + sign * lim
+            var maybe     = step + lim
             if maybe < max_lim then
-              var maybe_pre = GPU.clz_b32(code ^ codes[node_i+maybe])
+              var maybe_pre = GPU.clz_b32(code ^ codes[node_i + sign*maybe])
               -- if the proposal remains in the prefix code set
               if maybe_pre > min_pre then
                 step = maybe
               end
             end
           until lim <= 1
-          return node_i, node_i + step
+          --GPU.printf("    %6d -(%2d)- lim %6d step %6d \n",
+          --           node_i, sign, old_lim, step)
+          if sign < 0 then
+            return node_i + sign*step, node_i
+          else
+            return node_i, node_i + sign*step
+          end
 
         else -- the next and previous codes are the same as this code...
           -- In this edge-case we have to find the range of equal
@@ -908,6 +1012,7 @@ function BVH_Index:_INTERNAL_Construct_GPU_Functions(StoreAPI)
         -- find the split point; sub-ranges will be
         --    [lo_i,split] [split+1,hi_i]
         var split           = findSplit( codes, lo_i, hi_i )
+        --GPU.printf("RANGE %6d) [%6d,%6d] @ %6d\n", row, lo_i, hi_i, split)
         
         -- assign node data...
         var left_leaf       = terralib.select(split == lo_i,   N, 0)
@@ -968,7 +1073,7 @@ function BVH_BVH_Traversal:_INTERNAL_PreJoinUpdate(
   self:_INTERNAL_Construct_Functions(L_API, R_API)
   local on_gpu              = not not gpu_tblptr
   if on_gpu then self:_INTERNAL_Construct_GPU_Functions(L_API, R_API) end
-  print('prejoin traversal; gpu: ', on_gpu)
+
   local IS_SAME_IDX         = (self._left == self._right)
   if IS_SAME_IDX then
     if on_gpu then
@@ -1213,6 +1318,7 @@ function BVH_BVH_Traversal:_INTERNAL_Construct_GPU_Functions(L_API, R_API)
     --print('end')
     local terra bvh_gpu_loop( [t_args] )
       idxptr1:bvh_meta_to_gpu()
+      --C.printf("BVH TRAVERSE\n")
       --var N_0           = [ L_API:Size( storeptr, RowTyp0 ) ]
       var gpu_data_1    = idx_R.gpu_data
 
@@ -1221,6 +1327,7 @@ function BVH_BVH_Traversal:_INTERNAL_Construct_GPU_Functions(L_API, R_API)
                         gpu_tblptr, gpu_globptr,
                         RowTyp0, row0sym, newlist{ gpu_data_1 },
         quote
+          --GPU.printf("HERE for row %d\n", row0sym)
           var N_R       = gpu_data_1.n_geom
 
           -- assemble traversal-constant data and scratchpad
@@ -1230,23 +1337,31 @@ function BVH_BVH_Traversal:_INTERNAL_Construct_GPU_Functions(L_API, R_API)
           var node_R    = 0
           --var idx_L     = row0sym
           var vol_L     = absfn_L(gpu_tblptr, gpu_globptr, row0sym)
+          var iter      = 0
 
           repeat
+            iter = iter + 1
             -- leaf node
-            if node_R > N_R then
+            if node_R >= N_R then
               var i_R       = node_R - N_R
               var vol_R     = gpu_data_1.geom_vols[i_R]
               -- test for intersection
-              if isctfn(gpu_tblptr, gpu_globptr, vol_L, vol_R) then
+              var is_isct = isctfn(gpu_tblptr, gpu_globptr, vol_L, vol_R)
+              if is_isct then
                 var [row1sym] = gpu_data_1.ids[i_R]
                 escape if is_self_join then emit quote
                   if row0sym <= row1sym then
+                    --GPU.printf("emit %4d %4d\n", row0sym, row1sym)
                     [bodycode]
                   end
                 end else emit quote
                   [bodycode]
                 end end end
               end
+              var isct_char = terralib.select(is_isct, 'x', ' ')
+              --GPU.printf("[%4d/%4d] %4d:%4d [%4d.%4d] (%s)\n",
+              --  row0sym, iter, stack_i, node_R,
+              --  row0sym, gpu_data_1.ids[i_R], isct_char)
               -- pop the stack
               node_R        = stack[stack_i]
               stack_i       = stack_i - 1
@@ -1254,7 +1369,11 @@ function BVH_BVH_Traversal:_INTERNAL_Construct_GPU_Functions(L_API, R_API)
             else
               var i_R       = node_R
               var vol_R     = gpu_data_1.node_vols[i_R]
-              if isctfn(gpu_tblptr, gpu_globptr, vol_L, vol_R) then
+              var is_isct   = isctfn(gpu_tblptr, gpu_globptr, vol_L, vol_R)
+              --GPU.printf("[%4d/%4d] %4d:%4d < %4d %4d >\n",
+              --  row0sym, iter, stack_i, i_R,
+              --  gpu_data_1.nodes[i_R].left, gpu_data_1.nodes[i_R].right)
+              if is_isct then
                 var node    = gpu_data_1.nodes[i_R]
                 -- push the right child and immediately traverse the left
                 stack_i     = stack_i + 1
@@ -1268,6 +1387,7 @@ function BVH_BVH_Traversal:_INTERNAL_Construct_GPU_Functions(L_API, R_API)
             end
           until node_R == NULL_R
         end) ]
+      --C.printf("post-loop!\n    TRAVERSE\n")
     end
 
     return quote

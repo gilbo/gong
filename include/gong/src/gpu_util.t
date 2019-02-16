@@ -179,16 +179,18 @@ local function batch_compile(fn_inputs)
   )
 
   local ERR_BUF_SIZE = 2048
+  local first_name   = next(orig_names)
   local cudaloader = terra()
     var error_buf : int8[ERR_BUF_SIZE]
     var retcode = CUDA_load_fn(nil,nil,error_buf,ERR_BUF_SIZE)
     if 0 ~= retcode then
-      C.printf("CUDA LOAD ERROR: %s\n", error_buf)
+      C.printf("CUDA LOAD ERROR while loading %s\n%s\n",
+               first_name, error_buf)
       terralib.traceback(nil)
       C.exit(retcode)
     end
   end
-  cudaloader:setname(next(orig_names)..'_cudaloader')
+  cudaloader:setname(first_name..'_cudaloader')
 
 
   -- Package the compiled code in wrapper functions
@@ -489,10 +491,10 @@ local terra reduce_max_uint64(address : &uint64, operand : uint64)
   terralib.asm(terralib.types.unit,
     "red.global.max.u64 [$0], $1;","l,l",true,address,operand)
 end
-local terra reduce_max_float(address : &float, operand : float)
-  terralib.asm(terralib.types.unit,
-    "red.global.max.f32 [$0], $1;","l,f",true,address,operand)
-end
+--local terra reduce_max_float(address : &float, operand : float)
+--  terralib.asm(terralib.types.unit,
+--    "red.global.max.f32 [$0], $1;","l,f",true,address,operand)
+--end
 
 local terra reduce_min_int32(address : &int32, operand : int32)
   terralib.asm(terralib.types.unit,
@@ -510,10 +512,10 @@ local terra reduce_min_uint64(address : &uint64, operand : uint64)
   terralib.asm(terralib.types.unit,
     "red.global.min.u64 [$0], $1;","l,l",true,address,operand)
 end
-local terra reduce_min_float(address : &float, operand : float)
-  terralib.asm(terralib.types.unit,
-    "red.global.min.f32 [$0], $1;","l,f",true,address,operand)
-end
+--local terra reduce_min_float(address : &float, operand : float)
+--  terralib.asm(terralib.types.unit,
+--    "red.global.min.f32 [$0], $1;","l,f",true,address,operand)
+--end
 
 
 local terra reduce_and_b32(address : &uint32, operand : uint32)
@@ -599,7 +601,7 @@ end
 
 local terra cas_uint32(address : &uint32, compare : uint32, value : uint32)
   return terralib.asm(terralib.types.uint32,
-    "atom.global.cas.32 $0, [$1], $2, $3;",
+    "atom.global.cas.b32 $0, [$1], $2, $3;",
     "=r,l,r,r",true,address,compare,value)
 end
 
@@ -692,14 +694,14 @@ Exports.reduce_max_int32        = reduce_max_int32
 Exports.reduce_max_uint32       = reduce_max_uint32
 Exports.reduce_max_int64        = reduce_max_int64
 Exports.reduce_max_uint64       = reduce_max_uint64
-Exports.reduce_max_float        = reduce_max_float
+Exports.reduce_max_float        = generate_slow_atomic_32(max,float)
 Exports.reduce_max_double       = generate_slow_atomic_64(max,double)
 
 Exports.reduce_min_int32        = reduce_min_int32
 Exports.reduce_min_uint32       = reduce_min_uint32
 Exports.reduce_min_int64        = reduce_min_int64
 Exports.reduce_min_uint64       = reduce_min_uint64
-Exports.reduce_min_float        = reduce_min_float
+Exports.reduce_min_float        = generate_slow_atomic_32(min,float)
 Exports.reduce_min_double       = generate_slow_atomic_64(min,double)
 
 Exports.reduce_and_b32          = reduce_and_b32
@@ -1199,6 +1201,8 @@ local reserve_idx = macro(function(tid, write_idx_ptr)
     var start_idx : uint32 = 0
     if is_leader then -- reserve space for the whole warp
       start_idx       = atomic_add_uint32(write_idx_ptr, write_count)
+      --printf("[%4d] leader_id %4d writes %4d mask %08x start %4d\n",
+      --       tid, leader_id, write_count, activemask, start_idx)
     end
     -- scatter the starting value to all active threads
     start_idx         = shuffle_index_b32(start_idx, leader_id, activemask)
@@ -1207,6 +1211,18 @@ local reserve_idx = macro(function(tid, write_idx_ptr)
     start_idx + active_lower
   end
 end)
+
+-- unreliable, so instead
+reserve_idx = macro(function(tid, write_idx_ptr)
+  assert(write_idx_ptr:gettype() == &uint32, 'INTERNAL: bad ptr type')
+  return quote
+    var start_idx = atomic_add_uint32(write_idx_ptr, 1)
+    --printf("[%4d] start %4d\n", tid, start_idx)
+  in
+    start_idx
+  end
+end)
+
 
 -- recipe decrements the value once for every thread that executes it
 -- but coallesces those decrements for efficiency purposes
@@ -1233,6 +1249,13 @@ local warp_dec_32 = macro(function(tid, write_idx_ptr)
   end
 end)
 
+-- unreliable, so instead
+warp_dec_32 = macro(function(tid, write_idx_ptr)
+  assert(write_idx_ptr:gettype() == &uint32, 'INTERNAL: bad ptr type')
+  return quote
+    reduce_add_uint32(write_idx_ptr, -1)
+  end
+end)
 
 
 Exports.reserve_idx   = reserve_idx

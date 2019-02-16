@@ -56,6 +56,16 @@ local terra inc_buf( N : uint32, buf : &uint32 )
 end
 inc_buf = compile(inc_buf)
 
+local terra max_f32_reduce( N : uint32, buf : &uint32, top : &uint32 )
+  var tid = [uint32](GPU.global_tid())
+  if tid < N then
+    var buf_f = [&float](buf)
+    var top_f = [&float](top)
+    GPU.reduce_max_float( top_f, buf_f[tid] )
+  end
+end
+max_f32_reduce = compile(max_f32_reduce)
+
 local terra raw_reduce( N : uint32, buf : &uint32, res : &uint32 )
   var tid = [uint32](GPU.global_tid())
   if tid < N then
@@ -103,6 +113,7 @@ write_rand = compile(write_rand)
 
 
 -- Woah, this makes a big difference in execution time
+-- or it doesn't...
 local terra read_nc_uint32(address : &uint32) : uint32
   return terralib.asm(terralib.types.uint32,
     "ld.global.nc.u32 $0, [$1];","=r,l",true,address)
@@ -113,7 +124,7 @@ local terra unsafe_gather( N : uint32, rand : GPU.RandBuffer,
   var tid         = [uint32](GPU.global_tid())
   if tid < N then
     var rand_id = rand:rand(tid) % N
-    var val     = read_nc_uint32(buf_in+rand_id) --buf_in[rand_id]
+    var val     = buf_in[rand_id]
     buf_out[tid] = val
   end
 end
@@ -431,6 +442,7 @@ local randbuf = GPU.NewRandBuffer(0)
 GPU.memzero(globreg, 8)
 GPU.memzero(buffer, N*4)
 gpu_time('inc_buf', inc_buf, N, N, buffer)
+gpu_time('max_f32_reduce', max_f32_reduce, N, N, buffer, globreg)
 gpu_time('raw_reduce', raw_reduce, N, N, buffer, globreg)
 gpu_time('block_reduce', block_reduce, N, N, buffer, globreg)
 
@@ -470,6 +482,12 @@ gpu_time('inc_buf', inc_buf, N, N, buffer)
 gpu_time('inc_buf', inc_buf, N, N, buffer)
 gpu_time('inc_buf x 100', run_n_times, 100, inc_buf, N, N, buffer)
 gpu_time('inc_buf', inc_buf, N, N, buffer)
+
+gpu_time('max_f32_reduce', max_f32_reduce, N, N, buffer, globreg)
+gpu_time('max_f32_reduce x 100', run_n_times, 100,
+                           max_f32_reduce, N, N, buffer, globreg)
+gpu_time('max_f32_reduce', max_f32_reduce, N, N, buffer, globreg)
+gpu_time('max_f32_reduce', max_f32_reduce, N, N, buffer, globreg)
 
 --
 gpu_time('raw_reduce', raw_reduce, N, N, buffer, globreg)
