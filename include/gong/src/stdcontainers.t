@@ -85,6 +85,12 @@ local function vector(T, MINALLOC)
     return `self._data[i]
   end)
 
+  terra V:push_back( x : T )
+    var N = self:size()
+    self:resize(N+1)
+    self(N) = x
+  end
+
   return V
 end
 vector = Util.memoize(vector)

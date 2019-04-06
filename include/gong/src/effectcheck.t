@@ -243,10 +243,18 @@ function Context:add_effect(eff, opt)
           end
         end
       end
+    elseif E.ReduceG.check(eff) then
+      if not self:in_joindo() then
+        err = true
+        self:error(eff, "reductions are only allowed inside join do blocks")
+      elseif not self:try_reduce(eff, eff.dst, eff.path) then
+        err = true
+      end
     else
       err = true
-      self:error("no effects beside writing and reducing "..
-                 "the merge variable are allowed inside a merge-statement")
+      self:error(eff, "no effects beside writing and reducing "..
+                      "the merge variable are allowed inside a "..
+                      "merge-statement")
     end
 
   elseif E.Filter.check(eff) then

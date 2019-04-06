@@ -495,26 +495,41 @@ function Profiler:print_profile( handle )
     C.printf(["  "..string.rep('-',h_len).."\n"])
     escape for _,m in ipairs(self._metrics) do
       local nm          = m:name()
-      if is_profile_counter(m) then emit quote
-        C.printf(["  %"..MNL.."s | %10d | %10s %10s %10s   %10s\n"],
-                 nm, out.[nm].count, "-", "-", "-", "-")
-      end elseif is_profile_report(m) then emit quote
-        C.printf(["  %"..MNL.."s | %10d | %10.3f %10.3f %10.3f | %10.3f\n"],
-                 nm, out.[nm].n_reports,
-                 out.[nm].avg, out.[nm].min, out.[nm].max,
-                 out.[nm].sum)
-      end elseif is_profile_elapsed(m) then emit quote
-        C.printf(["  %"..MNL.."s | %10d | %10.5f %10.5f %10.5f | %10.3f\n"],
-                 nm, out.[nm].count,
-                 out.[nm].avg*1e3, out.[nm].min*1e3, out.[nm].max*1e3,
-                 out.[nm].sum*1e3)
-      end elseif is_profile_framed_counter(m) then emit quote
-        C.printf(["  %"..MNL.."s | %10d | %10.3f %10.0f %10.0f | %10.0f\n"],
-                 nm, out.[nm].n_frames,
-                 out.[nm].avg, out.[nm].min, out.[nm].max, out.[nm].sum)
-      end else
+      local pstmt       = nil
+      local ptest       = nil
+      if is_profile_counter(m) then
+        pstmt = quote
+          C.printf(["  %"..MNL.."s | %10d | %10s %10s %10s   %10s\n"],
+                   nm, out.[nm].count, "-", "-", "-", "-")
+        end
+        ptest = (`true)
+      elseif is_profile_report(m) then
+        pstmt = quote
+          C.printf(["  %"..MNL.."s | %10d | %10.3f %10.3f %10.3f | %10.3f\n"],
+                   nm, out.[nm].n_reports,
+                   out.[nm].avg, out.[nm].min, out.[nm].max,
+                   out.[nm].sum)
+        end
+        ptest = (`out.[nm].n_reports ~= 0)
+      elseif is_profile_elapsed(m) then
+        pstmt = quote
+          C.printf(["  %"..MNL.."s | %10d | %10.5f %10.5f %10.5f | %10.3f\n"],
+                   nm, out.[nm].count,
+                   out.[nm].avg*1e3, out.[nm].min*1e3, out.[nm].max*1e3,
+                   out.[nm].sum*1e3)
+        end
+        ptest = (`out.[nm].count ~= 0)
+      elseif is_profile_framed_counter(m) then
+        pstmt = quote
+          C.printf(["  %"..MNL.."s | %10d | %10.3f %10.0f %10.0f | %10.0f\n"],
+                   nm, out.[nm].n_frames,
+                   out.[nm].avg, out.[nm].min, out.[nm].max, out.[nm].sum)
+        end
+        ptest = (`out.[nm].n_frames ~= 0)
+      else
         INTERNAL_ERR('unexpected metric type')
       end
+      emit quote if [ptest] then [pstmt] end end
     end end
   end
 end

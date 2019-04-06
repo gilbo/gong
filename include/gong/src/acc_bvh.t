@@ -620,10 +620,11 @@ function BVH_Index:_INTERNAL_Construct_GPU_Functions(StoreAPI)
   --    {'gpu_rebuild',bool},
   --  }
 
-  terra BVH:gpu_debug_print()
+  terra BVH:gpu_debug_print(max : uint32)
     if not self.cpu_valid then self:bvh_meta_to_cpu() end
     var this      = self
     var N         = this.cpu_data.n_geom
+    if max == 0 then max = N end
     var nodes     = [&GPU_BVH_node](C.malloc( sizeof(GPU_BVH_node) * N ))
     var node_vols = [&vol_t](C.malloc( sizeof(vol_t) * N ))
     var geom_vols = [&vol_t](C.malloc( sizeof(vol_t) * N ))
@@ -635,7 +636,7 @@ function BVH_Index:_INTERNAL_Construct_GPU_Functions(StoreAPI)
 
     C.printf("BVH GPU size #%d\n", N)
     C.printf("Nodes\n")
-    for k=0,N do
+    for k=0,max do
       C.printf("%6d:  %6d %6d\n", k, nodes[k].left, nodes[k].right)
       var vol = node_vols[k]
       C.printf(
@@ -645,7 +646,7 @@ function BVH_Index:_INTERNAL_Construct_GPU_Functions(StoreAPI)
     end
 
     C.printf("Leaves\n")
-    for k=0,N do
+    for k=0,max do
       var vol = geom_vols[k]
       C.printf("%6d:->%6d   %7.3f %7.3f %7.3f , %7.3f %7.3f %7.3f\n",
                k, ids[k],
@@ -682,7 +683,7 @@ function BVH_Index:_INTERNAL_Construct_GPU_Functions(StoreAPI)
       end) ]
 
     -- then, update the internal nodes
-    for iter=1,31 do
+    for iter=1,63 do
       [ StoreAPI:GPU_Scan( name..'_volfit', s, tblptr, globptr,
                            RowTyp, id, newlist{ gpu_data, visits, iter },
         quote
@@ -722,7 +723,7 @@ function BVH_Index:_INTERNAL_Construct_GPU_Functions(StoreAPI)
           visits[i]       = iter
         end) ]
     end
-    --this:gpu_debug_print()
+    --this:gpu_debug_print(10)
 
     gfree(visits)
   end
@@ -1327,7 +1328,8 @@ function BVH_BVH_Traversal:_INTERNAL_Construct_GPU_Functions(L_API, R_API)
                         gpu_tblptr, gpu_globptr,
                         RowTyp0, row0sym, newlist{ gpu_data_1 },
         quote
-          --GPU.printf("HERE for row %d\n", row0sym)
+          --var do_print = (row0sym % 10000 == 0)
+          --if do_print then GPU.printf("HERE for row %d\n", row0sym) end
           var N_R       = gpu_data_1.n_geom
 
           -- assemble traversal-constant data and scratchpad
@@ -1359,9 +1361,11 @@ function BVH_BVH_Traversal:_INTERNAL_Construct_GPU_Functions(L_API, R_API)
                 end end end
               end
               var isct_char = terralib.select(is_isct, 'x', ' ')
-              --GPU.printf("[%4d/%4d] %4d:%4d [%4d.%4d] (%s)\n",
-              --  row0sym, iter, stack_i, node_R,
-              --  row0sym, gpu_data_1.ids[i_R], isct_char)
+              --if do_print then
+              --  GPU.printf("[%4d/%4d] %4d:%4d [%4d.%4d] (%s)\n",
+              --             row0sym, iter, stack_i, node_R,
+              --             row0sym, gpu_data_1.ids[i_R], isct_char)
+              --end
               -- pop the stack
               node_R        = stack[stack_i]
               stack_i       = stack_i - 1
@@ -1370,9 +1374,12 @@ function BVH_BVH_Traversal:_INTERNAL_Construct_GPU_Functions(L_API, R_API)
               var i_R       = node_R
               var vol_R     = gpu_data_1.node_vols[i_R]
               var is_isct   = isctfn(gpu_tblptr, gpu_globptr, vol_L, vol_R)
-              --GPU.printf("[%4d/%4d] %4d:%4d < %4d %4d >\n",
-              --  row0sym, iter, stack_i, i_R,
-              --  gpu_data_1.nodes[i_R].left, gpu_data_1.nodes[i_R].right)
+              --if do_print then
+              --  GPU.printf("[%4d/%4d] %4d:%4d < %4d %4d >\n",
+              --             row0sym, iter, stack_i, i_R,
+              --             gpu_data_1.nodes[i_R].left,
+              --             gpu_data_1.nodes[i_R].right)
+              --end
               if is_isct then
                 var node    = gpu_data_1.nodes[i_R]
                 -- push the right child and immediately traverse the left

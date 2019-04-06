@@ -258,6 +258,7 @@ local function printSingle(typ, e, args)
     --end
     args:insert(e)
     return "%g"
+    --return "%.17f"
   elseif  typ:is_signed() then
     args:insert(e)
     if typ == T.int64 then  return "%ld"
