@@ -50,42 +50,68 @@ typedef tensor_float_3_           vec3;
 typedef float                     num;
 
 
-void InitStore( Store store, int n_spheres )
+void LoadStore( Store store, string filename )
 {
-  vec3 zero3;
-  zero3.d[0] = 0;
-  zero3.d[1] = 0;
-  zero3.d[2] = 0;
-  store.Spheres().beginload(n_spheres);
-  for(int k=0; k<n_spheres; k++)
-    store.Spheres().loadrow( zero3, 0 );
+  vec3 v;
+  v.d[0] = 0;
+  v.d[1] = 0;
+  v.d[2] = 0;
+
+  ifstream YF(filename);
+  if(!YF.good()) { ERR("could not open '" << filename << "'"); }
+
+  vector<vec3> pos;
+  int n_yarns, n_samp;
+
+  YF >> n_yarns;
+  for(int i=0; i<n_yarns; i++) {
+    YF >> n_samp;
+    for(int k=0; k<n_samp; k++) {
+      YF >> v.d[0] >> v.d[1] >> v.d[2];
+      pos.push_back(v);
+    }
+  }
+
+  if(!YF.good()) { ERR("file-read error in '" << filename << "'"); }
+  YF.close();
+
+  store.Spheres().beginload(pos.size());
+  for(int k=0; k<pos.size(); k++)
+    store.Spheres().loadrow( pos[k], 0 );
   store.Spheres().endload();
 }
 
-void SpheresLoad( Store store, int n_spheres, string filename )
-{
-  // read the file
-  ifstream SFILE(filename);
-  if(!SFILE.good()) { ERR("could not open '" << filename << "'"); }
+struct PerfFile {
+  vector<int> frames;
+  vector<int> ms;
+};
 
-  //store.Spheres().beginload(n_spheres);
-  vec3 *pos         = store.Spheres().pos().readwrite_lock();
-  for(uint32_t k=0; k<n_spheres; k++) {
-    //vec3 pos;
-    SFILE >> pos[k].d[0] >> pos[k].d[1] >> pos[k].d[2];
-    //store.Spheres().loadrow( pos, 0 );
+void ReadPerf( PerfFile &file, string filename ) {
+  ifstream F(filename);
+  if(!F.good()) { ERR("could not open '" << filename << "'"); }
+
+  int frame, ms;
+  string tmpstr;
+  while(getline(F, tmpstr, ',')) {
+    frame = stoi(tmpstr);
+    getline(F, tmpstr, '\n');
+    ms = stoi(tmpstr);
+    //cout << "READ " << frame << ' ' << ms << endl;
+    file.frames.push_back(frame);
+    file.ms.push_back(ms);
   }
-  store.Spheres().pos().readwrite_unlock();
-  //store.Spheres().endload();
 
-  if(!SFILE.good()) { ERR("file-read error in '" << filename << "'"); }
-  SFILE.close();
+  //if(!F.good()) { ERR("file-read error in '" << filename << "'"); }
+  F.close();
 }
 
 
-void SphereCounts( Store store, int n_spheres )
+
+void SphereCounts( Store store )
 {
   int total_collisions  = 0;
+
+  int n_spheres = store.Spheres().size();
 
   uint32_t *ic          = store.Spheres().isct_count().read_lock();
   for(uint32_t k=0; k<n_spheres; k++) {
@@ -95,6 +121,7 @@ void SphereCounts( Store store, int n_spheres )
   //cout << "  Found " << total_collisions/2 << " collisions" << endl;
 }
 
+/*
 const int SPHERE_DIV = 8;
 vec3 SPHERE_PTS[SPHERE_DIV][SPHERE_DIV];
 void SPHERE_PRECOMP() {
@@ -114,7 +141,7 @@ void SPHERE_PRECOMP() {
       SPHERE_PTS[x][y].d[2] = Z;
     }
   }
-}
+}*/
 vec3 vmadf( vec3 a, num s, vec3 b ) {
   vec3 r;
   r.d[0] = a.d[0] + s * b.d[0];
@@ -159,6 +186,7 @@ void v_quad( vec3 lolo, vec3 hilo, vec3 hihi, vec3 lohi )
                 hihi.d[0], hihi.d[1], hihi.d[2],
                 lohi.d[0], lohi.d[1], lohi.d[2] );
 }
+/*
 void vdb_sphere( vec3 pos, num r )
 {
   vec3 pts[SPHERE_DIV][SPHERE_DIV];
@@ -172,14 +200,16 @@ void vdb_sphere( vec3 pos, num r )
       v_quad( pts[x][y], pts[nx][y], pts[nx][ny], pts[x][ny] );
     }
   }
-}
+}*/
 
-void DrawSpheres( Store store, int n_spheres )
+void DrawSpheres( Store store )
 {
   vdb_begin();
   vdb_frame();
 
-  num RADIUS = 1.25;
+  num RADIUS = 1.0;
+
+  int n_spheres = store.Spheres().size();
 
   vec3 *pos         = store.Spheres().pos().read_lock();
   for(int k=0; k<n_spheres; k++) {
@@ -199,20 +229,21 @@ int main() {
   Store store  = Store::NewStore();
   CHECK_ERR();
 
-  int N_SPHERES = 6390;
-
-  InitStore(store, N_SPHERES);
-  SPHERE_PRECOMP();
+  //InitStore(store, N_SPHERES);
+  //SPHERE_PRECOMP();
 
   double min_time   = 1e6;
   double max_time   = 0;
   double sum_time   = 0;
 
-  int N_FRAMES = 100;
-  for(int k=0; k < N_FRAMES; k++) {
-    string filename = "Spheres/spheres" + to_string(k) + ".txt";
-    SpheresLoad(store, N_SPHERES, filename);
-    //cout << "Frame #"<<k<< " loaded.  Intersecting..." << endl;
+  string DIR = "../../../yarnsim/results/stock-garter/";
+
+  PerfFile pfile;
+  ReadPerf(pfile, DIR + "contactperf.txt");
+
+  for(int k=0; k < pfile.frames.size(); k++) {
+    int frame = pfile.frames[k];
+    LoadStore(store, DIR + "frame" + to_string(frame) + ".txt");
 
     double start = taketime();
 #ifdef GPU_ENABLE
@@ -225,19 +256,47 @@ int main() {
     store.Spheres().pos().read_unlock();
     double stop = taketime();
 
-    DrawSpheres(store, N_SPHERES);    
+    DrawSpheres(store);    
 
     CHECK_ERR();
-    SphereCounts(store, N_SPHERES);
+    SphereCounts(store);
     double dtime = stop - start;
     sum_time += dtime;
     if (dtime < min_time) min_time = dtime;
     if (dtime > max_time) max_time = dtime;
-    //cout << "collision took " << (stop-start)*1e3 << " ms" << endl;
+    //cout << "frame #" << frame << " collision took "
+    //     << (stop-start)*1e3 << " ms" << endl;
   }
 
+  double min_ys_time = 1e6;
+  double max_ys_time = 0;
+  double sum_ys_time = 0;
+  for(int k=0; k < pfile.ms.size(); k++) {
+    double ms = 1e-3 * (pfile.ms[k]);
+    sum_ys_time += ms;
+    if (ms < min_ys_time) min_ys_time = ms;
+    if (ms > max_ys_time) max_ys_time = ms;
+  }
+
+  int N_FRAMES = pfile.frames.size();
+
+  cout << "Ran collisions for " << N_FRAMES << " frames" << endl;
+  cout << "                on " << store.Spheres().size()
+                                << " spheres" << endl;
+
+  double avg_ys_time = sum_ys_time / N_FRAMES;
+  cout << "YARNSIM frame timings (in ms) for " << pfile.frames.size()
+                                       << " frames" << endl;
+  cout << "    avg         min         max         " << endl;
+  cout << "    "
+       << setw(10) << avg_ys_time << "  "
+       << setw(10) << min_ys_time << "  "
+       << setw(10) << max_ys_time << "  "
+       << endl;
+
   double avg_time = sum_time / N_FRAMES;
-  cout << "frame timings (in ms) for " << N_FRAMES << " frames" << endl;
+  cout << "frame timings (in ms) for " << pfile.frames.size()
+                                       << " frames" << endl;
   cout << "    avg         min         max         " << endl;
   cout << "    "
        << setw(10) << avg_time*1e3 << "  "

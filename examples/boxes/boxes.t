@@ -130,6 +130,8 @@ end
 ------------------------------------------------------------------------------
 -- Schema
 
+local n_contacts      = G.Global('n_contacts', G.int32, 0)
+
 local Planks          = G.NewTable('Planks')
                          :NewField('pos',     vec3)
                          :NewField('rot',     quat)
@@ -942,6 +944,7 @@ local gong join find_plank_iscts ( p0 : Planks, p1 : Planks )
   var n_pts, norm, contacts = obb_isct(p0, p1)
   where n_pts > 0
 do
+  n_contacts += 1
   merge in PPContacts
     new { n_pts       = G.uint32(n_pts),
           basis       = {
@@ -998,6 +1001,7 @@ do
       var N, PTS, LM, FM = refreshPoints( c )
       --G.print('remove-keep from-to...',c.n_pts,'-/->',N)
       if N > 0 then
+        n_contacts += 1
         keep(c)
         c.n_pts     = N
         c.pts       = PTS

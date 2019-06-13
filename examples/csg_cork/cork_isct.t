@@ -418,18 +418,19 @@ end
 -- Join
 
 local gong join find_et_iscts ( edge : Edges, tri : Triangles )
-  if G.id(edge.hd) == 16781 and G.id(edge.tl) == 16793 and
-     G.id(tri.v[0]) == 116740 then
-    G.print('HIT1')
-    G.print(edge.hd.pos, ';', edge.tl.pos)
-    G.print(tri.v[0].pos, ';', tri.v[1].pos, ';', tri.v[2].pos)
-  end
-  if G.id(edge.hd) == 16350 and G.id(edge.tl) == 16525 and
-     G.id(tri.v[0]) == 114463 then
-    G.print('HIT1')
-    G.print(edge.hd.pos, ';', edge.tl.pos)
-    G.print(tri.v[0].pos, ';', tri.v[1].pos, ';', tri.v[2].pos)
-  end
+  --if G.id(edge.hd) == 16781 and G.id(edge.tl) == 16793 and
+  --   G.id(tri.v[0]) == 116740 then
+  --  G.print('HIT1')
+  --  G.print(edge.hd.pos, ';', edge.tl.pos)
+  --  G.print(tri.v[0].pos, ';', tri.v[1].pos, ';', tri.v[2].pos)
+  --end
+  --if G.id(edge.hd) == 16350 and G.id(edge.tl) == 16525 and
+  --   G.id(tri.v[0]) == 114463 then
+  --  G.print('HIT1')
+  --  G.print(edge.hd.pos, ';', edge.tl.pos)
+  --  G.print(tri.v[0].pos, ';', tri.v[1].pos, ';', tri.v[2].pos)
+  --end
+  --G.print("asdfasdf")
   where boxbox_test(edge,tri)
   var isct_result = find_et_isct(edge,tri)
   where not result_is_no_isct( isct_result )
@@ -437,8 +438,8 @@ do
   if result_is_isct( isct_result ) then
     --G.print('code', isct_result.code)
     --G.print()
-    G.print('e t ', '(',edge,tri,') ',
-            edge.hd, edge.tl, ';', tri.v[0], tri.v[1], tri.v[2])
+    --G.print('e t ', '(',edge,tri,') ',
+    --        edge.hd, edge.tl, ';', tri.v[0], tri.v[1], tri.v[2])
     --G.print('edge', edge.tl.pos, edge.hd.pos)
     --G.print('tri ', tri.v[0].pos)
     emit { edge=edge, tri=tri } in ET_Iscts
@@ -498,6 +499,9 @@ local BVH_Traversal = G.bvh_bvh_traversal {
 
 find_et_iscts:set_cpu_traversal(BVH_Traversal)
 has_et_iscts:set_cpu_traversal(BVH_Traversal)
+
+find_et_iscts:set_gpu_traversal(BVH_Traversal)
+has_et_iscts:set_gpu_traversal(BVH_Traversal)
 
 
 ------------------------------------------------------------------------------

@@ -83,6 +83,35 @@ local function GeneratePGSSolver(API, params)
 
   -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
 
+  local GraphData
+  do
+    local vector = (require 'gong.src.stdcontainers').vector
+    local struct GraphPair {
+      count  : uint32
+    }
+    struct GraphData {
+      _data  : vector(GraphPair)
+    }
+    terra GraphData:init()      self._data:init()     end
+    terra GraphData:destroy()   self._data:destroy()  end
+    terra GraphData:add_pt(count : uint32)
+      var k = self._data:size()
+      self._data:resize(k+1)
+      self._data(k).count = count
+    end
+    terra GraphData:print()
+      for k=0,self._data:size() do
+        C.printf("  %4d: %6d\n", k, self._data(k).count)
+      end
+    end
+    terra GraphData:print_avg()
+      var sum : double = 0.0
+      var N   = self._data:size()
+      for k=0,N do sum = sum + self._data(k).count end
+      C.printf("avg count: %f\n", sum/[double](N))
+    end
+  end
+  
   local struct Histogram {
     _sum     : double
     _min     : double
@@ -169,6 +198,7 @@ local function GeneratePGSSolver(API, params)
     total_time      : Histogram
     collide_time    : Histogram
     solve_time      : Histogram
+    contact_graph   : GraphData
   }
 
   local terra getAllocLimit( store : API.Store )
@@ -197,6 +227,7 @@ local function GeneratePGSSolver(API, params)
     self.total_time:init()
     self.collide_time:init()
     self.solve_time:init()
+    self.contact_graph:init()
 
     var bs              = store:Planks()
     var cs              = store:PPContacts()
@@ -287,7 +318,9 @@ local function GeneratePGSSolver(API, params)
     var newsize         = getAllocLimit(self.store)
     var oldsize         = self.n_contacts
     self.n_c_alloc      = newsize
-    C.printf("    Found %d contacts (alloc %d)\n", self.n_contacts, newsize)
+    self.contact_graph:add_pt(self.store:n_contacts():read())
+    self.store:n_contacts():write(0)
+    --C.printf("    Found %d contacts (alloc %d)\n", self.n_contacts, newsize)
 
     -- box parallel from store
     escape for _,name in ipairs{
@@ -329,6 +362,8 @@ local function GeneratePGSSolver(API, params)
   terra PGS_State:free()
     var bs              = self.store:Planks()
     var cs              = self.store:PPContacts()
+
+    self.contact_graph:destroy()
 
     -- box parallel additional
     escape for _,name in ipairs{
@@ -897,8 +932,8 @@ local function GeneratePGSSolver(API, params)
     --  end
     --end end
 
-    C.printf("    solver iters:  %d\n", iter)
-    C.printf("    max_err:  %20.10f\n", max_err)
+    --C.printf("    solver iters:  %d\n", iter)
+    --C.printf("    max_err:  %20.10f\n", max_err)
     --C.printf("    max_err2: %20.10f\n", max_err2)
     --C.printf("    norm_err: %20.10f\n", norm_err)
   end
@@ -927,7 +962,7 @@ local function GeneratePGSSolver(API, params)
     pgs:cacheInvMassMatrix()
 
     -- DO COLLISION DETECTION!
-    C.printf("  start collision\n")
+    --C.printf("  start collision\n")
     --pgs:print()
     pgs:unlock_store()
     --C.printf("    unlocked\n")
@@ -940,7 +975,7 @@ local function GeneratePGSSolver(API, params)
     --C.printf("    locking\n")
     pgs:relock_store() -- resize constraint-value arrays
     var midtime     = taketime()
-    C.printf("  end collision\n")
+    --C.printf("  end collision\n")
     --pgs:print()
     if sfunc ~= nil then sfunc(pgs.store) end
 
@@ -953,7 +988,7 @@ local function GeneratePGSSolver(API, params)
     end
 
     -- Do the collision solve
-    C.printf("  start solve\n")
+    --C.printf("  start solve\n")
     pgs:runPGS()
 
     -- now correct the predicted velocity and position using
@@ -979,10 +1014,10 @@ local function GeneratePGSSolver(API, params)
     var collide     = midtime  - starttime
     var solve       = stoptime - midtime
     var total       = stoptime - starttime
-    C.printf(["  timings(ms) - total      %8.3f\n"..
-              "                collision  %8.3f\n"..
-              "                solver     %8.3f\n"],
-              total*1e3, collide*1e3, solve*1e3)
+    --C.printf(["  timings(ms) - total      %8.3f\n"..
+    --          "                collision  %8.3f\n"..
+    --          "                solver     %8.3f\n"],
+    --          total*1e3, collide*1e3, solve*1e3)
     self.collide_time:acc(collide*1e3)
     self.solve_time:acc(solve*1e3)
     self.total_time:acc(total*1e3)
@@ -1000,6 +1035,9 @@ local function GeneratePGSSolver(API, params)
     C.printf("      solver     %8.3f %8.3f %8.3f | %8.3f\n",
       self.solve_time:avg(), self.solve_time:min(),
       self.solve_time:max(), self.solve_time:sum() )
+    C.printf("\n*** n contacts ***\n")
+      self.contact_graph:print()
+      self.contact_graph:print_avg()
   end
 
   return PGS_State

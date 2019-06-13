@@ -84,25 +84,19 @@ ifeq ($(wildcard $(CUDA_DIR)/b*n),)
   $(info Did not find CUDA_DIR)
 else
   $(info Found CUDA_DIR!)
+  CUB_WRAP_DIR := $(realpath ../../../include/gong/libs/)
+  ifeq ($(wildcard $(CUB_WRAP_DIR)/libcub_wrap.so),)
+  	$(error Could not find cub_wrap.so)
+  endif
   CXXFLAGS  := $(CXXFLAGS) -D GPU_ENABLE
   CXXDFLAGS := $(CXXDFLAGS) -D GPU_ENABLE
   LINK  := $(LINK) -L $(CUDA_DIR)/lib64 -lcuda -lcudart \
-           -Wl,-rpath=$(CUDA_DIR)/lib64 -D GPU_ENABLE
+           -Wl,-rpath=$(CUDA_DIR)/lib64 -D GPU_ENABLE \
+           -L $(CUB_WRAP_DIR) -lcub_wrap -Wl,-rpath=$(CUB_WRAP_DIR)
   LINKD := $(LINKD) -L $(CUDA_DIR)/lib64 -lcuda -lcudart \
-           -Wl,-rpath=$(CUDA_DIR)/lib64 -D GPU_ENABLE
+           -Wl,-rpath=$(CUDA_DIR)/lib64 -D GPU_ENABLE \
+           -L $(CUB_WRAP_DIR) -lcub_wrap -Wl,-rpath=$(CUB_WRAP_DIR)
 endif
-#	if [ -d $(CUDA_DIR) ]; then \
-#	  $(CPP) -std=c++11 \
-#	         -L $(CUDA_DIR)/lib64 -lcuda -lcudart \
-#	         -Wl,-rpath=$(CUDA_DIR)/lib64 \
-#	         -D GPU_ENABLE \
-#	         -D USE_SCAN \
-#	         -o self_trimesh_scan self_trimesh_scan.o main.cpp; \
-#	else \
-#	  $(CPP) -std=c++11 \
-#	         -D USE_SCAN \
-#	         -o self_trimesh_scan self_trimesh_scan.o main.cpp; \
-#	fi
 
 # ***********************
 # * SOURCE DECLARATIONS *

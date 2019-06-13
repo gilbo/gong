@@ -1007,11 +1007,15 @@ bool Mesh<VertData,TriData>::IsctProblem::verifyGongIsctResults() {
     Timer join_time;
 #ifdef GPU_ENABLE
     gongctxt.find_et_iscts_GPU();
+    gongctxt.ET_Iscts().size();
+    std::cout << "* * * GPU JOIN TIME * " << join_time.stop() << std::endl;
+    join_time = Timer();
+    gongctxt.find_et_iscts();
 #else
     gongctxt.find_et_iscts();
 #endif
-    uint32_t abcdef     = gongctxt.ET_Iscts().size();
-    std::cout << "* * * JOIN TIME * " << join_time.stop() << std::endl;
+    gongctxt.ET_Iscts().size();
+    std::cout << "* * * CPU JOIN TIME * " << join_time.stop() << std::endl;
     gongctxt.print_profile();
 
     uint32_t N_ISCT     = gongctxt.ET_Iscts().size();

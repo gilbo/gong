@@ -38,7 +38,7 @@ local params = { debug_draw     = false,
                  effect_buffer  = false,
                  index_buffer   = false,
                  verify         = false,
-                 test_case      = 'round_tower',
+                 test_case      = 'round_tower1',
                  max_iters      = 50,
                  gpu            = false,
                }
@@ -82,16 +82,20 @@ local function GenBoxAPI()
   if traversal == 'bvh_bvh' then
     if collide_shape == 'aabb' then
       Boxes.find_plank_iscts:set_cpu_traversal(Boxes.aabb_bvh_traversal)
+      Boxes.find_plank_iscts:set_gpu_traversal(Boxes.aabb_bvh_traversal)
     elseif collide_shape == 'dop' then
-      Boxes.find_plank_iscts:set_cpu_traversal(Boxes.aabb_bvh_traversal)
+      Boxes.find_plank_iscts:set_cpu_traversal(Boxes.dop_bvh_traversal)
+      Boxes.find_plank_iscts:set_gpu_traversal(Boxes.dop_bvh_traversal)
     else error('unrecognized collision shape: '..collide_shape)
     end
   elseif traversal == 'hash_split' then
     local cell_w = 3
     if test_case == 'slant_ground' then
     elseif test_case == 'simple_stack' then
-    elseif test_case == 'round_tower' then
-    elseif test_case == 'plank_tower' then
+    elseif test_case == 'round_tower0' then
+    elseif test_case == 'round_tower1' then
+    elseif test_case == 'round_tower2' then
+    elseif test_case == 'plank_tower1' then
       error("hash_split unsupported for '"..test_case.."'")
     elseif test_case == 'plank_tower2' then
       error("hash_split unsupported for '"..test_case.."'")
@@ -258,7 +262,63 @@ local terra loadBoxesSimpleStack( store : API.Store )
   return 250
 end
 
-local terra loadBoxesRoundTower( store : API.Store )
+local terra loadBoxesRoundTower0( store : API.Store )
+  var boxes = store:Planks()
+
+  var n_levels  = 25
+  var n_ring    = 24
+  var radius    = 11
+
+  var n_extra   = 1
+  if use_projectile then n_extra = 2 end
+
+  boxes:beginload( n_levels*n_ring + n_extra )
+    -- ground box
+    boxes:loadrow( v3(0,-50,0),
+                   q4(0,0,0,1),
+                   v3(0,0,0),
+                   v3(0,0,0),
+                   v3(0,0,0),
+                   v3(0,0,0),
+                   num(0),
+                   v3(200,100,200)
+                 )
+  if use_projectile then
+    -- projectile box
+    boxes:loadrow( v3(20,14.65,0),   -- position
+                   q4(0,0,0,1),   -- rotation
+                   v3(-60,-30,0), -- linear velocity
+                   v3(0,0,0),     -- angular velocity
+                   v3(0,0,0),     -- force
+                   v3(0,0,0),     -- torque
+                   num(18),       -- mass
+                   v3(2,7,5)      -- dims
+                 )
+  end
+    for k=0,n_levels do
+      var off = num((k+1)%2)/2
+      for j=0,n_ring do
+        var ang     = 2*math.pi/(n_ring) * (j+1+off)
+        var rang    = 0.5*-ang
+        var x       = radius*C.cos(ang)
+        var z       = radius*C.sin(ang)
+        boxes:loadrow( v3(x,1.0*k+0.5,z),
+                       q4(0,C.sin(rang),0,C.cos(rang)),
+                       v3(0,0,0),
+                       v3(0,0,0),
+                       v3(0,0,0),
+                       v3(0,0,0),
+                       num(1),
+                       v3(2,1,2)
+                     )
+      end
+    end
+  boxes:endload()
+
+  return 300
+end
+
+local terra loadBoxesRoundTower1( store : API.Store )
   var boxes = store:Planks()
 
   var n_levels  = 50
@@ -282,6 +342,62 @@ local terra loadBoxesRoundTower( store : API.Store )
   if use_projectile then
     -- projectile box
     boxes:loadrow( v3(20,14.65,0),   -- position
+                   q4(0,0,0,1),   -- rotation
+                   v3(-60,-30,0), -- linear velocity
+                   v3(0,0,0),     -- angular velocity
+                   v3(0,0,0),     -- force
+                   v3(0,0,0),     -- torque
+                   num(18),       -- mass
+                   v3(2,7,5)      -- dims
+                 )
+  end
+    for k=0,n_levels do
+      var off = num((k+1)%2)/2
+      for j=0,n_ring do
+        var ang     = 2*math.pi/(n_ring) * (j+1+off)
+        var rang    = 0.5*-ang
+        var x       = radius*C.cos(ang)
+        var z       = radius*C.sin(ang)
+        boxes:loadrow( v3(x,1.0*k+0.5,z),
+                       q4(0,C.sin(rang),0,C.cos(rang)),
+                       v3(0,0,0),
+                       v3(0,0,0),
+                       v3(0,0,0),
+                       v3(0,0,0),
+                       num(1),
+                       v3(2,1,2)
+                     )
+      end
+    end
+  boxes:endload()
+
+  return 300
+end
+
+local terra loadBoxesRoundTower2( store : API.Store )
+  var boxes = store:Planks()
+
+  var n_levels  = 50
+  var n_ring    = 48
+  var radius    = 22
+
+  var n_extra   = 1
+  if use_projectile then n_extra = 2 end
+
+  boxes:beginload( n_levels*n_ring + n_extra )
+    -- ground box
+    boxes:loadrow( v3(0,-50,0),
+                   q4(0,0,0,1),
+                   v3(0,0,0),
+                   v3(0,0,0),
+                   v3(0,0,0),
+                   v3(0,0,0),
+                   num(0),
+                   v3(200,100,200)
+                 )
+  if use_projectile then
+    -- projectile box
+    boxes:loadrow( v3(30,28.75,0),   -- position
                    q4(0,0,0,1),   -- rotation
                    v3(-60,-30,0), -- linear velocity
                    v3(0,0,0),     -- angular velocity
@@ -766,9 +882,13 @@ local terra mainLoop()
     N_FRAMES      = loadBoxesSlantGround(store)
   end elseif test_case == 'simple_stack' then emit quote
     N_FRAMES      = loadBoxesSimpleStack(store)
-  end elseif test_case == 'round_tower' then emit quote
-    N_FRAMES      = loadBoxesRoundTower(store)
-  end elseif test_case == 'plank_tower' then emit quote
+  end elseif test_case == 'round_tower0' then emit quote
+    N_FRAMES      = loadBoxesRoundTower0(store)
+  end elseif test_case == 'round_tower1' then emit quote
+    N_FRAMES      = loadBoxesRoundTower1(store)
+  end elseif test_case == 'round_tower2' then emit quote
+    N_FRAMES      = loadBoxesRoundTower2(store)
+  end elseif test_case == 'plank_tower1' then emit quote
     N_FRAMES      = loadBoxesPlankTower1(store)
   end elseif test_case == 'plank_tower2' then emit quote
     N_FRAMES      = loadBoxesPlankTower2(store)

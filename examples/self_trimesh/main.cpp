@@ -284,6 +284,7 @@ int main() {
   Store store  = Store::NewStore();
   CHECK_ERR();
 
+  cout << "two_tri CPU" << endl;
   {
     MeshLoadOFF(store, "two_tri.off");
     MeshEndLoad(store);
@@ -295,6 +296,7 @@ int main() {
   }
 
 #ifdef GPU_ENABLE
+  cout << "two_tri GPU" << endl;
   {
     MeshLoadOFF(store, "two_tri.off");
     MeshEndLoad(store);
@@ -306,6 +308,7 @@ int main() {
   }
 #endif /* GPU_ENABLE */
 
+  cout << "clothfold CPU" << endl;
   {
     MeshLoadOFF(store, "clothfold.off");
     MeshEndLoad(store);
@@ -314,6 +317,18 @@ int main() {
 
     MeshIsctCheck(store, "clothfold.check");
   }
+
+#ifdef GPU_ENABLE
+  cout << "clothfold GPU" << endl;
+  {
+    MeshLoadOFF(store, "clothfold.off");
+    MeshEndLoad(store);
+
+    store.find_et_iscts_GPU();
+
+    MeshIsctCheck(store, "clothfold.check");
+  }
+#endif /* GPU_ENABLE */
 
   cout << "self_trimesh done" << endl;
   return 0;
