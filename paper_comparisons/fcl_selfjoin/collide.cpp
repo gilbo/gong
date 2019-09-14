@@ -1,5 +1,5 @@
 #include "collide.h"
-
+#include "timer.h"
 #ifdef _WIN32
 #pragma warning( push )
 #pragma warning( disable : 4244)
@@ -15,7 +15,6 @@
 #pragma warning( pop ) 
 #endif
 using namespace fcl;
-
 
 
 #   define assertM(condition, message) \
@@ -319,8 +318,10 @@ void runCollisionTestOnConnectedComponents(std::string filename) {
     collision_data.request.num_max_contacts = 30000;
     collision_data.request.enable_contact = true;
     // Self collision query
-
+    double before = GetCurrentTimeInSeconds();
     manager->collide(&collision_data, defaultCollisionFunction);
+    double collisionTime = GetCurrentTimeInSeconds() - before;
+    printf("Collision Time: %g ms\n", collisionTime*1000.0);
     if (collision_data.result.numContacts() > 0) {
         printf("Self-Collision Num Contacts: %zd\n", collision_data.result.numContacts());
         std::vector<fcl::Contact<float>> contacts;
