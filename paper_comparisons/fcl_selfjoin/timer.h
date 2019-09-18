@@ -15,6 +15,6 @@ static double GetCurrentTimeInSeconds() {
 static double GetCurrentTimeInSeconds() {
     struct timeval timevalue;
     gettimeofday(&timevalue, nullptr);
-    return (double)((UINT64)timevalue.tv_sec) + (double)((UINT64)timevalue.tv_usec) / 1000000.0;
+    return (double)((unsigned long long)timevalue.tv_sec) + (double)((unsigned long long)timevalue.tv_usec) / 1000000.0;
 }
 #endif

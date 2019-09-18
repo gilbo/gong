@@ -1,18 +1,31 @@
+EXECUTABLE= main
+
 GONGFLAGS= 
 CPPFLAGS=-g -std=c++14
 
+FCL_HOME ?= ../../../fcl/build
 
-run: raycaster
-	./raycaster
 
-raycaster_gong.o: raycaster.t
-	../../bin/gong $(GONGFLAGS) raycaster.t
+CPPFLAGS += -I$(FCL_HOME)/include -I$(FCL_HOME)/../include
+LFLAGS += -lfcl -L$(FCL_HOME)/lib
 
-raycaster_gong.h: raycaster.t
-	../../bin/gong $(GONGFLAGS) raycaster.t
+LFLAGS += -Wl,-rpath,$(FCL_HOME)/lib
 
-raycaster: raycaster_gong.o raycaster_gong.h main.cpp off_readwrite.h
-	c++ $(CPPFLAGS) -o raycaster raycaster_gong.o main.cpp
+
+CPPFLAGS += -I/usr/local/include/eigen3
+
+
+OBJS = build/main.o build/collide.o
+
+all: $(EXECUTABLE)
+
+build/%.o: %.cpp
+	@mkdir -p build
+	c++ $(CPPFLAGS) -MP -MD $< -c -o $@
+
+
+$(EXECUTABLE):	$(OBJS)
+	c++ $^ -o $@ $(LFLAGS)
 
 clean:
-	rm raycaster_gong.h raycaster_gong.o raycaster
+	rm main build/main.o build/collide.o

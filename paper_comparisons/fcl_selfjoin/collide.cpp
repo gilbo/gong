@@ -33,20 +33,6 @@ using namespace fcl;
 #include <chrono>
 #include <fstream>
 
-template <typename S>
-bool defaultCollisionFunction(CollisionObject<S>* o1, CollisionObject<S>* o2, void* cdata_) {
-    auto* cdata = static_cast<CollisionData<S>*>(cdata_);
-    const auto& request = cdata->request;
-    auto& result = cdata->result;
-
-    if (cdata->done) return true;
-    collide(o1, o2, request, result);
-    if (!request.enable_cost && (result.isCollision()) && (result.numContacts() >= request.num_max_contacts))
-        cdata->done = true;
-
-    return cdata->done;
-}
-
 /// @brief Collision data stores the collision request and the result given by collision algorithm.
 template <typename S>
 struct CollisionData
@@ -66,6 +52,19 @@ struct CollisionData
     bool done;
 };
 
+template <typename S>
+bool defaultCollisionFunction(CollisionObject<S>* o1, CollisionObject<S>* o2, void* cdata_) {
+    auto* cdata = static_cast<CollisionData<S>*>(cdata_);
+    const auto& request = cdata->request;
+    auto& result = cdata->result;
+
+    if (cdata->done) return true;
+    collide(o1, o2, request, result);
+    if (!request.enable_cost && (result.isCollision()) && (result.numContacts() >= request.num_max_contacts))
+        cdata->done = true;
+
+    return cdata->done;
+}
 
 class manual_timer
 {
