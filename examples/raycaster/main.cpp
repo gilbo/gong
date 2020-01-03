@@ -15,8 +15,7 @@ typedef tensor_row_Verts__3_      tri3;
 
 
 void MeshLoad( Store store, uint32_t n_vert, uint32_t n_tri,
-               float* pos, uint32_t* vert )
-{
+               float* pos, uint32_t* vert ) {
   store.Verts().beginload(n_vert);
   store.Tris().beginload(n_tri);
     store.Verts().pos().load(reinterpret_cast<vec3*>(pos), 3*sizeof(float));

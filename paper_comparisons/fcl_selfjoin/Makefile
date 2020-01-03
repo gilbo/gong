@@ -19,13 +19,19 @@ OBJS = build/main.o build/collide.o
 
 all: $(EXECUTABLE)
 
-build/%.o: %.cpp
+collide_gong.o: collide.t
+	../../bin/gong $(GONGFLAGS) collide.t
+
+collide_gong.h: collide.t
+	../../bin/gong $(GONGFLAGS) collide.t
+
+build/%.o: %.cpp collide_gong.h
 	@mkdir -p build
 	c++ $(CPPFLAGS) -MP -MD $< -c -o $@
 
 
-$(EXECUTABLE):	$(OBJS)
+$(EXECUTABLE):	$(OBJS) collide_gong.o
 	c++ $^ -o $@ $(LFLAGS)
 
 clean:
-	rm main build/main.o build/collide.o
+	rm main build/main.o build/collide.o collide_gong.o collide_gong.h
