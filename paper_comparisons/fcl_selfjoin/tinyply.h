@@ -532,6 +532,7 @@ void PlyFile::PlyFileImpl::read(std::istream & is)
             case Type::UINT32:  endian_swap_buffer<uint32_t, uint32_t>(data_ptr, buffer_size_bytes, stride); break;
             case Type::FLOAT32: endian_swap_buffer<uint32_t, float>(data_ptr, buffer_size_bytes, stride);    break;
             case Type::FLOAT64: endian_swap_buffer<uint64_t, double>(data_ptr, buffer_size_bytes, stride);   break;
+            default: break;
             }
         }
     }
@@ -688,7 +689,7 @@ std::shared_ptr<PlyData> PlyFile::PlyFileImpl::request_properties_from_element(c
                 auto result = userData.insert(std::pair<uint32_t, ParsingHelper>(hash_fnv1a(element.name + property.name), helper));
                 if (result.second == false)
                 {
-                    throw std::invalid_argument("element-property key has already been requested: " + hash_fnv1a(element.name + property.name));
+                    throw std::invalid_argument("element-property key has already been requested: " + element.name + property.name);
                 }
             }
             else keys_not_found.push_back(key);
@@ -770,6 +771,7 @@ void PlyFile::PlyFileImpl::parse_data(std::istream & is, bool firstPass)
             case Type::UINT16: endian_swap<uint16_t, uint16_t>(*(uint16_t*)dst); break;
             case Type::INT32:  endian_swap<int32_t, int32_t>(*(int32_t*)dst);    break;
             case Type::UINT32: endian_swap<uint32_t, uint32_t>(*(uint32_t*)dst); break;
+            default: break;
             }
         }
 

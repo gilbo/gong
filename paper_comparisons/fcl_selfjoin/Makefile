@@ -1,5 +1,4 @@
 EXECUTABLE= main
-
 GONGFLAGS= 
 CPPFLAGS=-g -std=c++14
 
@@ -17,15 +16,15 @@ CPPFLAGS += -I/usr/local/include/eigen3
 
 OBJS = build/main.o build/collide.o
 
-all: $(EXECUTABLE)
+all: main
 
-collide_gong.o: collide.t
+collide_scan.o: collide.t
 	../../bin/gong $(GONGFLAGS) collide.t
 
-collide_gong.h: collide.t
+collide_scan.h: collide.t
 	../../bin/gong $(GONGFLAGS) collide.t
 
-build/%.o: %.cpp collide_gong.h
+build/%.o: %.cpp collide_scan.h collide_bvh.h
 	@mkdir -p build
 	c++ $(CPPFLAGS) -MP -MD $< -c -o $@
 

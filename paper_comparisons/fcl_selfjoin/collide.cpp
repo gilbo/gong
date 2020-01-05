@@ -12,7 +12,11 @@
 #include "fcl/broadphase/broadphase_dynamic_AABB_tree.h"
 #include "fcl/geometry/geometric_shape_to_BVH_model.h"
 
-#include "collide_gong.h"
+#ifdef USE_BVH
+#include "collide_bvh.h"
+#else
+#include "collide_scan.h"
+#endif
 #ifdef _WIN32
 #pragma warning( pop ) 
 #endif
@@ -34,6 +38,54 @@ using namespace fcl;
 
 #include <chrono>
 #include <fstream>
+
+
+
+
+static bool approxEqual(float x0, float x1, float epsilon = 1e-5) {
+    return std::abs(x0-x1) < epsilon;
+}
+
+static bool approxEqual(vec3f v0, vec3f v1, float epsilon = 1e-5) {
+    return approxEqual(v0.x,v1.x) && approxEqual(v0.y,v1.y) && approxEqual(v0.z,v1.z);
+}
+
+struct ComparisonContact {
+    uint32_t obj0 = -1;
+    uint32_t obj1 = -1;
+    uint32_t tri0;
+    uint32_t tri1;
+    vec3f pos;
+    float depth;
+    vec3f nrml;
+    ComparisonContact() {}
+    ComparisonContact(uint32_t o0, uint32_t o1, uint32_t t0, uint32_t t1, vec3f p, float d, vec3f n) :
+    obj0(o1), obj1(o1), tri0(t0), tri1(t1), pos(p), depth(d), nrml(n) {}
+    ComparisonContact(fcl::Contact<float> c) : tri0(c.b1), tri1(c.b2), depth(c.penetration_depth) {
+        pos = {c.pos.x(),c.pos.y(),c.pos.z()};
+        nrml = {c.normal.x(),c.normal.y(),c.normal.z()};
+    }
+    bool operator==(const ComparisonContact& t) const
+    { 
+        return (
+            ((this->tri0 == t.tri0 &&
+            this->tri1 == t.tri1) ||
+            (this->tri1 == t.tri0 &&
+            this->tri0 == t.tri1)) &&
+            approxEqual(this->pos, t.pos)); 
+    } 
+}; 
+  
+class ComparisonContactHashFunction { 
+public: 
+    // Only compare tri IDs for hash. Not a good hash function, but works in a pinch
+    // And is better than doing a full linear scan...
+    size_t operator()(const ComparisonContact& t) const
+    { 
+        return ((size_t)t.tri0*t.tri0*t.tri0) + ((size_t)t.tri1*t.tri1*t.tri1); 
+    } 
+}; 
+
 
 /// @brief Collision data stores the collision request and the result given by collision algorithm.
 template <typename S>
@@ -205,7 +257,7 @@ void splitIntoComponents(const std::vector<Vector3f>& verts, const std::vector<T
 
 
 void splitIntoConnectedComponents(const std::vector<Vector3f>& verts, const std::vector<Triangle>& tris,
-    std::vector<std::vector<Vector3f>>& outVerts, std::vector<std::vector<Triangle>>& outTris, std::vector<uint>& outObjIDs) {
+    std::vector<std::vector<Vector3f>>& outVerts, std::vector<std::vector<Triangle>>& outTris, std::vector<uint>& outObjIDs, std::vector<int>& startTriIDs) {
 
     std::vector<std::vector<int>> adjacency;
     adjacency.resize(verts.size());
@@ -237,32 +289,56 @@ void splitIntoConnectedComponents(const std::vector<Vector3f>& verts, const std:
             }
     };
 
+    std::vector<int> vertexStartIDs;
     // We're going to assume that vertices for a connected component are all in one block;
     // Then we can build vertexStartLocations as we go along, and leverage code we already wrote
     // to break it apart
-    std::vector<int> vertexStartLocations;
     for (int i = 0; i < verts.size(); ++i) {
         if (!foundComponent[i]) {
             components.push_back(std::unordered_set<int>());
             dfs(i, components[components.size() - 1]);
-            vertexStartLocations.push_back(i);
+            vertexStartIDs.push_back(i);
         }
     }
 
     // Now `components` contains the connected components in the form of unset ints
-    splitIntoComponents(verts, tris, vertexStartLocations, outVerts, outTris);
+    splitIntoComponents(verts, tris, vertexStartIDs, outVerts, outTris);
+
+    std::vector<int> vertToObjID;
 
     // Create an object ID map.
-    for (int i = 0; i < vertexStartLocations.size(); ++i) {
-        int start = vertexStartLocations[i];
-        int end = vertexStartLocations.size();
-        if (i < vertexStartLocations.size() - 1) {
-            end = vertexStartLocations[i+1];
+    for (int i = 0; i < vertexStartIDs.size(); ++i) {
+        int start = vertexStartIDs[i];
+        int end = verts.size();
+        if (i < vertexStartIDs.size() - 1) {
+            end = vertexStartIDs[i+1];
         }
         for (int j = start; j < end; ++j) {
-            outObjIDs.push_back(i);
+            vertToObjID.push_back(i);
         }
+
     }
+
+    int lastObjID = -1;
+    for (int i = 0; i < tris.size(); ++i) {
+        // Triangles have all vertices in same component, so just check one.
+        auto v = tris[i][0];
+        int newID = vertToObjID[v];
+        if (newID != lastObjID) {
+            startTriIDs.push_back(i);
+        }
+        outObjIDs.push_back(newID);
+        lastObjID = newID;
+
+    }
+
+/*
+    printf("Out IDs ****\n");
+    for (int i = 0; i < outObjIDs.size(); ++i) {
+        printf("%d: %d\n", i, outObjIDs[i]);
+    }
+    printf("************\n");
+*/
     
 }
 
@@ -298,7 +374,7 @@ void createGeometries(std::string filename, const std::vector<int>& componentSta
 void placeComponentsIntoTree(const std::vector<std::vector<Vector3f>>& splitVerts, const std::vector<std::vector<Triangle>>& splitTris, BroadPhaseCollisionManagerf* manager) {
     Transform3f pose = Transform3f::Identity();
     // set mesh triangles and vertice indices
-    for (int i = 0; i < splitVerts.size(); ++i) {
+    for (int i = splitVerts.size()-1; i >= 0; --i) {
         char componentFilename[20];
         sprintf(componentFilename, "component%d.ply", i);
         //writePly(componentFilename, splitVerts[i], splitTris[i]);
@@ -317,7 +393,7 @@ void placeComponentsIntoTree(const std::vector<std::vector<Vector3f>>& splitVert
 }
 
 
-void runFCLCollisionOnComponents(const std::vector<std::vector<Vector3f>>& splitVerts, const std::vector<std::vector<Triangle>>& splitTris) {
+void runFCLCollisionOnComponents(const std::vector<std::vector<Vector3f>>& splitVerts, const std::vector<std::vector<Triangle>>& splitTris, std::vector<ComparisonContact>& fclContacts) {
     // Generally, the DynamicAABBTreeCollisionManager would provide the best performance.
     BroadPhaseCollisionManagerf* manager = new DynamicAABBTreeCollisionManagerf();
     placeComponentsIntoTree(splitVerts,splitTris,manager);
@@ -337,10 +413,16 @@ void runFCLCollisionOnComponents(const std::vector<std::vector<Vector3f>>& split
         std::vector<Vector3f> vertices;
         vertices.resize(contacts.size());
         for (int i = 0; i < contacts.size(); ++i) {
-            vertices[i] = contacts[i].pos;
-            printf("Contact %d: %d/%d (%f %f %f)\n", i, contacts[i].b1, contacts[i].b2, contacts[i].pos.x(),contacts[i].pos.y(),contacts[i].pos.z());
+            auto& c = contacts[i];
+            vertices[i] = c.pos;
+            /*
+            printf("(?: %d) vs (?: %d): %f (%f %f %f); (%f %f %f)\n", c.b1, 
+                c.b2, c.penetration_depth, c.pos.x(),c.pos.y(),c.pos.z(),
+                c.normal.x(),c.normal.y(),c.normal.z());
+            */
+            fclContacts.push_back(ComparisonContact(c));
         }
-        writePly("contacts.ply", vertices, {});
+        writePly("fcl_contacts.ply", vertices, {});
     }
 }
 
@@ -392,7 +474,7 @@ void MeshLoad( Store store, uint32_t n_vert, uint32_t n_tri,
     write++;
   }
   assert(write == n_edge);
-
+  printf("V/E/T: %u/%u/%u\n", n_vert, n_edge, n_tri);
   store.Verts().beginload(n_vert);
   store.Edges().beginload(n_edge);
   store.Tris().beginload(n_tri);
@@ -404,6 +486,16 @@ void MeshLoad( Store store, uint32_t n_vert, uint32_t n_tri,
   store.Verts().endload();
   store.Edges().endload();
   store.Tris().endload();
+  /*
+  printf("Tris\n");
+  for (int i = 0; i < n_tri; ++i) {
+    printf("%d: %u %u %u\n", i, vert[3*i],vert[3*i+1],vert[3*i+2]);
+  }
+  printf("Verts\n");
+  for (int i = 0; i < n_vert; ++i) {
+    printf("%d: %f %f %f\n", i, pos[3*i],pos[3*i+1],pos[3*i+2]);
+  }
+  */
 }
 
 inline std::ostream&
@@ -412,7 +504,9 @@ operator<<(std::ostream &out, vec3 o) {
   return out;
 }
 
-void MeshIsctPrint(Store store ) {
+
+
+void MeshIsctRead(Store store, const std::vector<int>& startIDs, std::vector<ComparisonContact>& contacts) {
     uint32_t n_isct     = store.TTcontacts().size();
     std::cout << "**Gong: Found " << n_isct << " triangle-triangle intersections." << endl;
 
@@ -424,9 +518,20 @@ void MeshIsctPrint(Store store ) {
     float*    depth       = store.TTcontacts().penetration_depth().readwrite_lock();
     vec3*     nrml        = store.TTcontacts().normal().readwrite_lock();
 
+    std::vector<Vector3f> vertices;
+    vertices.resize(n_isct);
     for(uint32_t k=0; k<n_isct; k++) {
-        std::cout << "(" << o0[k] << ": " << t0[k] << ") vs (" << o1[k] << ": " << t1[k] << "): " << depth[k] << "; " << pos[k] << "; " << nrml[k] << std::endl;
+        uint obj0 = o0[k];
+        uint obj1 = o1[k];
+        uint o0Off = (uint)startIDs[obj0];
+        uint o1Off = (uint)startIDs[obj1];
+        vec3f p = {pos[k].d[0],pos[k].d[1],pos[k].d[2]};
+        vec3f n = {nrml[k].d[0],nrml[k].d[1],nrml[k].d[2]};
+        ComparisonContact c(obj0, obj1, t0[k]-o0Off, t1[k]-o1Off, p, depth[k], n);
+        vertices[k] = {p.x,p.y,p.z};
+        contacts.push_back(c);
     }
+    writePly("gong_contacts.ply", vertices, {});
     //...
     store.TTcontacts().obj0().readwrite_unlock();
     store.TTcontacts().obj1().readwrite_unlock();
@@ -438,20 +543,33 @@ void MeshIsctPrint(Store store ) {
 }
 
 
-void runGongCollisionOnComponents(const std::vector<Vector3f>& vertices, const std::vector<Triangle>& tris, const std::vector<uint>& objIDs) {
+void runGongCollisionOnComponents(const std::vector<Vector3f>& vertices, const std::vector<Triangle>& tris, const std::vector<uint>& objIDs, const std::vector<int>& startIDs, std::vector<ComparisonContact>& contacts) {
+  printf("V/T/ObjIDs = %zd, %zd, %zd\n", vertices.size(), tris.size(), objIDs.size());
+
+  std::vector<uint32_t> smallTris;
+  for (auto t : tris) {
+    smallTris.push_back((uint32_t)t[0]);
+    smallTris.push_back((uint32_t)t[1]);
+    smallTris.push_back((uint32_t)t[2]);
+  }
+
+
   Store store  = Store::NewStore();
   CHECK_ERR();
   {
     uint32_t n_vert = (uint32_t)vertices.size();
     uint32_t n_tri = (uint32_t)tris.size();
     float* pos = (float*)vertices.data();
-    uint32_t* vert = (uint32_t*)tris.data();
+    uint32_t* vert = smallTris.data();
     uint32_t* obj_id = (uint32_t*)objIDs.data();
     MeshLoad( store, n_vert, n_tri, pos, vert, obj_id );
 
+    double before = GetCurrentTimeInSeconds();
     store.find_tt_iscts();
+    double collisionTime = GetCurrentTimeInSeconds() - before;
+    printf("gong Collision Time: %g ms\n", collisionTime*1000.0);
 
-    MeshIsctPrint(store);
+    MeshIsctRead(store, startIDs, contacts);
   }
 }
 
@@ -462,9 +580,27 @@ void runCollisionTestOnConnectedComponents(std::string filename) {
     std::vector<std::vector<Vector3f>> splitVerts;
     std::vector<std::vector<Triangle>> splitTris;
     std::vector<uint> objIDsPerTriangle;
-    splitIntoConnectedComponents(vertices, triangles, splitVerts, splitTris, objIDsPerTriangle);
-    runFCLCollisionOnComponents(splitVerts,splitTris);
-    runGongCollisionOnComponents(vertices,triangles,objIDsPerTriangle);
+    std::vector<int> startIDs;
+    splitIntoConnectedComponents(vertices, triangles, splitVerts, splitTris, objIDsPerTriangle, startIDs);
+
+    { // Collide and compare 
+        std::vector<ComparisonContact> fclContacts;
+        std::vector<ComparisonContact> gongContacts;
+        runFCLCollisionOnComponents(splitVerts,splitTris, fclContacts);
+        runGongCollisionOnComponents(vertices,triangles,objIDsPerTriangle,startIDs, gongContacts);
+        std::unordered_set<ComparisonContact, ComparisonContactHashFunction> gongSet(gongContacts.begin(), gongContacts.end());
+        int missingContactCount = 0;
+        for (auto& c : fclContacts) {
+            auto search = gongSet.find(c);
+            if (search == gongSet.end()) {
+                ++missingContactCount;
+                printf("Missing Contact in Gong Set: %d/%d at (%f %f %f), depth %f, normal (%f %f %f)\n", 
+                    c.tri0, c.tri1, c.pos.x, c.pos.y, c.pos.z, c.depth, c.nrml.x, c.nrml.y, c.nrml.z);
+            }
+        }
+        printf("Missing Contact in Gong Count: %d\n", missingContactCount);
+
+    }
 }
 
 void runCollisionTest(std::string filename, const std::vector<int>& componentStarts, vec3f gravStep) {

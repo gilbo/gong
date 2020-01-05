@@ -29,7 +29,7 @@ int main() {
         sprintf(filename, "../data/balls16_.plys/balls16_%d.ply", i);
         runCollisionTestOnConnectedComponents(filename);
     }
-    
+    //runCollisionTestOnConnectedComponents("../data/simple.ply");
 
     return 0;
 }
