@@ -12,11 +12,7 @@
 #include "fcl/broadphase/broadphase_dynamic_AABB_tree.h"
 #include "fcl/geometry/geometric_shape_to_BVH_model.h"
 
-#ifdef USE_BVH
-#include "collide_bvh.h"
-#else
-#include "collide_scan.h"
-#endif
+#include "collide_gong.h"
 #ifdef _WIN32
 #pragma warning( pop ) 
 #endif

@@ -23,7 +23,7 @@ int main() {
     }
     */
     
-    for (int i = 0; i < 1; ++i) {
+    for (int i = 70; i < 75; ++i) {
         char filename[100];
         printf("balls16_ %d\n", i);
         sprintf(filename, "../data/balls16_.plys/balls16_%d.ply", i);

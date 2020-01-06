@@ -18,13 +18,13 @@ OBJS = build/main.o build/collide.o
 
 all: main
 
-collide_scan.o: collide.t
+collide_gong.o: collide.t
 	../../bin/gong $(GONGFLAGS) collide.t
 
-collide_scan.h: collide.t
+collide_gong.h: collide.t
 	../../bin/gong $(GONGFLAGS) collide.t
 
-build/%.o: %.cpp collide_scan.h collide_bvh.h
+build/%.o: %.cpp collide_gong.h collide_gong.h
 	@mkdir -p build
 	c++ $(CPPFLAGS) -MP -MD $< -c -o $@
 
