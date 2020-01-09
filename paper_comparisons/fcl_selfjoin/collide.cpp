@@ -253,7 +253,7 @@ void splitIntoComponents(const std::vector<Vector3f>& verts, const std::vector<T
 
 
 void splitIntoConnectedComponents(const std::vector<Vector3f>& verts, const std::vector<Triangle>& tris,
-    std::vector<std::vector<Vector3f>>& outVerts, std::vector<std::vector<Triangle>>& outTris, std::vector<uint>& outObjIDs, std::vector<int>& startTriIDs) {
+    std::vector<std::vector<Vector3f>>& outVerts, std::vector<std::vector<Triangle>>& outTris, std::vector<uint32>& outObjIDs, std::vector<int>& startTriIDs) {
 
     std::vector<std::vector<int>> adjacency;
     adjacency.resize(verts.size());
@@ -305,7 +305,7 @@ void splitIntoConnectedComponents(const std::vector<Vector3f>& verts, const std:
     // Create an object ID map.
     for (int i = 0; i < vertexStartIDs.size(); ++i) {
         int start = vertexStartIDs[i];
-        int end = verts.size();
+        int end = (int)verts.size();
         if (i < vertexStartIDs.size() - 1) {
             end = vertexStartIDs[i+1];
         }
@@ -370,7 +370,7 @@ void createGeometries(std::string filename, const std::vector<int>& componentSta
 void placeComponentsIntoTree(const std::vector<std::vector<Vector3f>>& splitVerts, const std::vector<std::vector<Triangle>>& splitTris, BroadPhaseCollisionManagerf* manager) {
     Transform3f pose = Transform3f::Identity();
     // set mesh triangles and vertice indices
-    for (int i = splitVerts.size()-1; i >= 0; --i) {
+    for (int i = (int)splitVerts.size()-1; i >= 0; --i) {
         char componentFilename[20];
         sprintf(componentFilename, "component%d.ply", i);
         //writePly(componentFilename, splitVerts[i], splitTris[i]);
@@ -458,7 +458,7 @@ void MeshLoad( Store store, uint32_t n_vert, uint32_t n_tri,
     if(v1 < v0) { swap(v0,v1); }
     edges.insert(std::make_pair(v0, v1));
   }
-  uint32_t n_edge   = edges.size();
+  uint32_t n_edge   = (uint32_t)edges.size();
 
   // convert the set of edges into arrays
   vector<uint32_t> e_hd(n_edge);
@@ -517,10 +517,10 @@ void MeshIsctRead(Store store, const std::vector<int>& startIDs, std::vector<Com
     std::vector<Vector3f> vertices;
     vertices.resize(n_isct);
     for(uint32_t k=0; k<n_isct; k++) {
-        uint obj0 = o0[k];
-        uint obj1 = o1[k];
-        uint o0Off = (uint)startIDs[obj0];
-        uint o1Off = (uint)startIDs[obj1];
+		uint32 obj0 = o0[k];
+		uint32 obj1 = o1[k];
+		uint32 o0Off = (uint32)startIDs[obj0];
+		uint32 o1Off = (uint32)startIDs[obj1];
         vec3f p = {pos[k].d[0],pos[k].d[1],pos[k].d[2]};
         vec3f n = {nrml[k].d[0],nrml[k].d[1],nrml[k].d[2]};
         ComparisonContact c(obj0, obj1, t0[k]-o0Off, t1[k]-o1Off, p, depth[k], n);
@@ -539,7 +539,7 @@ void MeshIsctRead(Store store, const std::vector<int>& startIDs, std::vector<Com
 }
 
 
-void runGongCollisionOnComponents(const std::vector<Vector3f>& vertices, const std::vector<Triangle>& tris, const std::vector<uint>& objIDs, const std::vector<int>& startIDs, std::vector<ComparisonContact>& contacts) {
+void runGongCollisionOnComponents(const std::vector<Vector3f>& vertices, const std::vector<Triangle>& tris, const std::vector<uint32>& objIDs, const std::vector<int>& startIDs, std::vector<ComparisonContact>& contacts) {
   printf("V/T/ObjIDs = %zd, %zd, %zd\n", vertices.size(), tris.size(), objIDs.size());
 
   std::vector<uint32_t> smallTris;
@@ -575,7 +575,7 @@ void runCollisionTestOnConnectedComponents(std::string filename) {
     readPly(filename, vertices, triangles);
     std::vector<std::vector<Vector3f>> splitVerts;
     std::vector<std::vector<Triangle>> splitTris;
-    std::vector<uint> objIDsPerTriangle;
+    std::vector<uint32> objIDsPerTriangle;
     std::vector<int> startIDs;
     splitIntoConnectedComponents(vertices, triangles, splitVerts, splitTris, objIDsPerTriangle, startIDs);
 

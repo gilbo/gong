@@ -67,19 +67,25 @@ end
 local C = terralib.includecstring [[ #include <stdlib.h> ]]
 local ffi = require 'ffi'
 local script_path = debug.getinfo(1,"S").source:match("@(.*)$")
-script_path = C.realpath(script_path, nil)
-if script_path == nil then
-  error('error locating this script')
+local incdir_path = ""
+if ffi.os == "Windows" then
+  -- Complete hack. TODO: find some way around this
+  incdir_path = "D:/Projects/gong/include"
 else
-  local c_str = script_path
-  script_path = ffi.string(c_str)
-  C.free(c_str)
+  script_path = C.realpath(script_path, nil)
+  if script_path == nil then
+    error('error locating this script')
+  else
+    local c_str = script_path
+    script_path = ffi.string(c_str)
+    C.free(c_str)
+  end
+  -- has the form 'path_to_bin_dir/gong', so...
+  local bindir_path    = script_path:sub(1,-#'gong' - 1)
+  incdir_path    = bindir_path..'../include'
+  -- For debug
+  --print(script_path, bindir_path, incdir_path)
 end
--- has the form 'path_to_bin_dir/gong', so...
-local bindir_path    = script_path:sub(1,-#'gong' - 1)
-local incdir_path    = bindir_path..'../include'
--- For debug
---print(script_path, bindir_path, incdir_path)
 
 -- Now that we have the path, we can use it to extend the Terra
 -- searchpath to find the Gong files

@@ -38,7 +38,7 @@
   <PropertyGroup>
     <ExecutablePath>$(ExecutablePath)</ExecutablePath>
     <IncludePath>$(ProjectDir)../../../fcl/include;$(ProjectDir)../../../fcl/build/include;C:\Program Files\Eigen\include\eigen3;C:\Program Files\libccd\include;$(IncludePath)</IncludePath>
-    <LibraryPath>$(ProjectDir)../../../fcl/build/lib/Release;C:\Program Files\libccd\lib;$(LibraryPath)</LibraryPath>
+    <LibraryPath>$(ProjectDir)../../../fcl/build/lib/Release;C:\Program Files\libccd\lib;$(LibraryPath);$(ProjectDir)</LibraryPath>
     <OutDir>$(ProjectDir)$(Platform)\$(Configuration)\</OutDir>
   </PropertyGroup>
   <ItemDefinitionGroup>
@@ -71,7 +71,7 @@
       <PreprocessorDefinitions>NOMINMAX;WIN32;NDEBUG;_WINDOWS;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>ccd.lib;fcl.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>ccd.lib;fcl.lib;collide_gong.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <EnableCOMDATFolding>false</EnableCOMDATFolding>
       <OptimizeReferences>false</OptimizeReferences>
     </Link>
@@ -82,6 +82,9 @@
       <FastMath>true</FastMath>
       <Optimization>O3</Optimization>
     </CudaCompile>
+    <PreBuildEvent>
+      <Command>terra $(ProjectDir)/../../bin/gong collide.t</Command>
+    </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="collide.cpp" />

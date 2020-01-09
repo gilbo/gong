@@ -604,10 +604,16 @@ end
 ------------------------------------------------------------------------------
 ------------------------------------------------------------------------------
 
+local obj_filename = 'collide_gong'..params.suffix..'.o'
+local ffi = require 'ffi'
+if ffi.os == "Windows" then
+  obj_filename = 'collide_gong'..params.suffix..'.dll'
+end
+
 local API = G.CompileLibrary {
   tables          = {},
   joins           = {find_et_iscts,find_tt_iscts},
-  c_obj_file      = 'collide_gong'..params.suffix..'.o',
+  c_obj_file      = obj_filename,
   cpp_header_file = 'collide_gong'..params.suffix..'.h',
   gpu             = USE_GPU,
 }
