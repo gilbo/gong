@@ -14,7 +14,7 @@
     <ProjectGuid>{AFB56EDA-FF29-4705-8184-1BD784A3C6E0}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
     <RootNamespace>main</RootNamespace>
-    <ProjectName>main </ProjectName>
+    <ProjectName>main</ProjectName>
     <WindowsTargetPlatformVersion>8.1</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
@@ -37,7 +37,7 @@
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup>
     <ExecutablePath>$(ExecutablePath)</ExecutablePath>
-    <IncludePath>$(ProjectDir)../../../fcl/include;$(ProjectDir)../../../fcl/build/include;C:\Program Files\Eigen\include\eigen3;C:\Program Files\libccd\include;$(IncludePath)</IncludePath>
+    <IncludePath>$(ProjectDir)../../../fcl/include;$(ProjectDir)../../../fcl/build/include;C:\Program Files\Eigen3\include\eigen3;C:\Program Files\libccd\include;$(IncludePath)</IncludePath>
     <LibraryPath>$(ProjectDir)../../../fcl/build/lib/Release;C:\Program Files\libccd\lib;$(LibraryPath);$(ProjectDir)</LibraryPath>
     <OutDir>$(ProjectDir)$(Platform)\$(Configuration)\</OutDir>
   </PropertyGroup>
@@ -94,6 +94,9 @@
     <ClInclude Include="collide.h" />
     <ClInclude Include="timer.h" />
     <ClInclude Include="tinyply.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="collide.t" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

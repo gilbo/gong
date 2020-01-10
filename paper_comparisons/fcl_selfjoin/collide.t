@@ -2,9 +2,9 @@ import 'gong'
 local G = gong.stdlib
 
 local EPSILON         = 1.0e-7
-
+local ffi = require 'ffi'
 -- quick hack for control
-local USE_GPU = not not terralib.cudacompile
+local USE_GPU = (not not terralib.cudacompile) and (not (ffi.os == "Windows"))
 print('USE GPU? ', USE_GPU)
 
 local params = { suffix = '', traversal = 'scan_scan' }
@@ -13,15 +13,15 @@ for _,a in ipairs(arg) do
   if label and value then params[label] = value end
 end
 
-
+local float = G.float
 local vec3 = G.vec3f
+if float == G.double then vec3 = G.vec3d end
 
 ------------------------------------------------------------------------------
 
 local function TriMesh()
   local Mesh          = {}
   local pos_type      = G.float
-  local pttype        = pos_type:terratype()
 
   -- Declare basic schema
   Mesh.Verts  = G.NewTable('Verts')
@@ -31,7 +31,7 @@ local function TriMesh()
                  :NewField( 'tl',       Mesh.Verts   )
   Mesh.Tris   = G.NewTable('Tris')
                  :NewField(  'v',       G.vector(Mesh.Verts, 3) )
-                 :NewField(  'obj_id',  G.uint32)
+                 :NewField(  'obj_id',  G.uint64)
 
   return Mesh
 end
@@ -52,8 +52,8 @@ end
 
 
 local TTcontacts      = G.NewTable('TTcontacts')
-                        :NewField( 'obj0',   G.uint32     )
-                        :NewField( 'obj1',   G.uint32     )
+                        :NewField( 'obj0',   G.uint64     )
+                        :NewField( 'obj1',   G.uint64     )
                         :NewField( 'tri0',   Mesh.Tris    )
                         :NewField( 'tri1',   Mesh.Tris    )
                         :NewField( 'pos',   vec3       )
@@ -605,7 +605,6 @@ end
 ------------------------------------------------------------------------------
 
 local obj_filename = 'collide_gong'..params.suffix..'.o'
-local ffi = require 'ffi'
 if ffi.os == "Windows" then
   obj_filename = 'collide_gong'..params.suffix..'.dll'
 end

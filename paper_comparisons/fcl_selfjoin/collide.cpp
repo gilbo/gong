@@ -1,5 +1,6 @@
 #include "collide.h"
 #include "timer.h"
+
 #ifdef _WIN32
 #pragma warning( push )
 #pragma warning( disable : 4244)
@@ -18,7 +19,6 @@
 #endif
 using namespace fcl;
 
-
 #   define assertM(condition, message) \
     do { \
         if (! (condition)) { \
@@ -28,48 +28,58 @@ using namespace fcl;
         } \
     } while (false)
 
-
 #define TINYPLY_IMPLEMENTATION
 #include "tinyply.h"
-
 #include <chrono>
 #include <fstream>
+typedef std::unordered_map<CollisionGeometry<Float>*, uint64_t> GeometryIDMap;
 
 
-
-
-static bool approxEqual(float x0, float x1, float epsilon = 1e-5) {
+static bool approxEqual(Float x0, Float x1, Float epsilon = 1e-5) {
     return std::abs(x0-x1) < epsilon;
 }
 
-static bool approxEqual(vec3f v0, vec3f v1, float epsilon = 1e-5) {
+static bool approxEqual(vec3f v0, vec3f v1, Float epsilon = 1e-5) {
     return approxEqual(v0.x,v1.x) && approxEqual(v0.y,v1.y) && approxEqual(v0.z,v1.z);
 }
 
 struct ComparisonContact {
-    uint32_t obj0 = -1;
-    uint32_t obj1 = -1;
+    uint64_t obj0 = -1;
+    uint64_t obj1 = -1;
     uint32_t tri0;
     uint32_t tri1;
     vec3f pos;
-    float depth;
+    Float depth;
     vec3f nrml;
     ComparisonContact() {}
-    ComparisonContact(uint32_t o0, uint32_t o1, uint32_t t0, uint32_t t1, vec3f p, float d, vec3f n) :
+    ComparisonContact(uint64_t o0, uint64_t o1, uint32_t t0, uint32_t t1, vec3f p, Float d, vec3f n) :
     obj0(o1), obj1(o1), tri0(t0), tri1(t1), pos(p), depth(d), nrml(n) {}
-    ComparisonContact(fcl::Contact<float> c) : tri0(c.b1), tri1(c.b2), depth(c.penetration_depth) {
+    ComparisonContact(fcl::Contact<Float> c, GeometryIDMap& idMap) : tri0(c.b1), tri1(c.b2), depth(c.penetration_depth) {
         pos = {c.pos.x(),c.pos.y(),c.pos.z()};
         nrml = {c.normal.x(),c.normal.y(),c.normal.z()};
+        obj0 = idMap[(CollisionGeometry<Float>*)c.o1];
+        obj1 = idMap[(CollisionGeometry<Float>*)c.o2];
     }
-    bool operator==(const ComparisonContact& t) const
-    { 
-        return (
-            ((this->tri0 == t.tri0 &&
-            this->tri1 == t.tri1) ||
-            (this->tri1 == t.tri0 &&
-            this->tri0 == t.tri1)) &&
-            approxEqual(this->pos, t.pos)); 
-    } 
+    bool operator==(const ComparisonContact& c) const {
+        ComparisonContact c0 = *this;
+        ComparisonContact c1 = c;
+        c0.canonicalize();
+        c1.canonicalize();
+        return 
+            c0.tri0 == c1.tri0 &&
+            c0.tri1 == c1.tri1 &&
+            c0.obj0 == c1.obj0 &&
+            c0.obj1 == c1.obj1 &&
+            //approxEqual(c0.nrml, c1.nrml) &&
+            approxEqual(c0.pos, c1.pos);
+    }
+	ComparisonContact reverse() {
+		vec3f rNrml = { -nrml.x, -nrml.y, -nrml.z };
+		return ComparisonContact(obj1, obj0, tri1, tri0, pos, depth, rNrml);
+	}
+	void canonicalize() {
+		if (obj0 > obj1) reverse();
+	}
 }; 
   
 class ComparisonContactHashFunction { 
@@ -78,7 +88,7 @@ public:
     // And is better than doing a full linear scan...
     size_t operator()(const ComparisonContact& t) const
     { 
-        return ((size_t)t.tri0*t.tri0*t.tri0) + ((size_t)t.tri1*t.tri1*t.tri1); 
+        return ((size_t)t.tri0*t.tri0*t.tri0+(t.obj0*t.obj0)) + ((size_t)t.tri1*t.tri1*t.tri1)+(t.obj1*t.obj1); 
     } 
 }; 
 
@@ -127,7 +137,7 @@ public:
 };
 
 
-void readPly(const std::string & filepath, std::vector<Vector3f>& verts, std::vector<Triangle>& tris) {
+void readPly(const std::string & filepath, std::vector<Vector3<Float>>& verts, std::vector<Triangle>& tris) {
     try {
         std::ifstream ss(filepath, std::ios::binary);
         if (ss.fail()) throw std::runtime_error("failed to open " + filepath);
@@ -169,11 +179,22 @@ void readPly(const std::string & filepath, std::vector<Vector3f>& verts, std::ve
 
         {
             const size_t numVerticesBytes = vertices->buffer.size_bytes();
-            verts.resize(vertices->count);
-            std::memcpy(verts.data(), vertices->buffer.get(), numVerticesBytes);
             if (vertices->t != tinyply::Type::FLOAT32) {
                 throw std::runtime_error("verts were not floats in " + filepath);
             }
+#if USE_DOUBLE_PRECISION
+            verts.resize(vertices->count);
+            std::vector<Vector3<float>> singlePrecisionVerts;
+            singlePrecisionVerts.resize(vertices->count);
+            std::memcpy(singlePrecisionVerts.data(), vertices->buffer.get(), numVerticesBytes);
+            for (int i = 0; i < verts.size(); ++i) {
+                verts[i] = singlePrecisionVerts[i];
+            }
+#else
+            verts.resize(vertices->count);
+            std::memcpy(verts.data(), vertices->buffer.get(), numVerticesBytes);
+#endif
+
             std::vector<uint32> indices;
             if (PropertyTable[faces->t].stride != 4) {
                 throw std::runtime_error("indices were not 4 bytes in " + filepath);
@@ -192,7 +213,7 @@ void readPly(const std::string & filepath, std::vector<Vector3f>& verts, std::ve
     }
 }
 
-void writePly(const std::string & filename, const std::vector<Vector3f>& verts, const std::vector<Triangle>& tris) {
+void writePly(const std::string & filename, const std::vector<Vector3<Float>>& verts, const std::vector<Triangle>& tris) {
     std::filebuf fb_ascii;
     fb_ascii.open(filename, std::ios::out);
     std::ostream outstream_ascii(&fb_ascii);
@@ -200,8 +221,13 @@ void writePly(const std::string & filename, const std::vector<Vector3f>& verts, 
 
     PlyFile plyFile;
 
+#if USE_DOUBLE_PRECISION
     plyFile.add_properties_to_element("vertex", { "x", "y", "z" },
-        Type::FLOAT32, verts.size(), reinterpret_cast<uint8_t*>(const_cast<Vector3f*>(verts.data())), Type::INVALID, 0);
+        Type::FLOAT64, verts.size(), reinterpret_cast<uint8_t*>(const_cast<Vector3<Float>*>(verts.data())), Type::INVALID, 0);
+#else
+    plyFile.add_properties_to_element("vertex", { "x", "y", "z" },
+        Type::FLOAT32, verts.size(), reinterpret_cast<uint8_t*>(const_cast<Vector3<Float>*>(verts.data())), Type::INVALID, 0);
+#endif
 
     std::vector<uint32> indices;
     indices.resize(3 * tris.size());
@@ -219,9 +245,9 @@ void writePly(const std::string & filename, const std::vector<Vector3f>& verts, 
 }
 
 
-void splitIntoComponents(const std::vector<Vector3f>& verts, const std::vector<Triangle>& tris,
+void splitIntoComponents(const std::vector<Vector3<Float>>& verts, const std::vector<Triangle>& tris,
     const std::vector<int>& vertexStartLocations,
-    std::vector<std::vector<Vector3f>>& outVerts, std::vector<std::vector<Triangle>>& outTris) {
+    std::vector<std::vector<Vector3<Float>>>& outVerts, std::vector<std::vector<Triangle>>& outTris) {
     size_t numComponents = vertexStartLocations.size();
     outVerts.resize(numComponents);
     outTris.resize(numComponents);
@@ -232,7 +258,7 @@ void splitIntoComponents(const std::vector<Vector3f>& verts, const std::vector<T
         int endLocation = (i + 1 < numComponents) ? vertexStartLocations[i + 1] : (int)verts.size();
         int componentVertCount = endLocation - startLocation;
         outVerts[i].resize(componentVertCount);
-        memcpy(outVerts[i].data(), verts.data() + startLocation, componentVertCount * sizeof(Vector3f));
+        memcpy(outVerts[i].data(), verts.data() + startLocation, componentVertCount * sizeof(Vector3<Float>));
         //printf("Vert 0 == (%g %g %g)\n", outVerts[i][0].x(), outVerts[i][0].y(), outVerts[i][0].z());
         auto inRange = [&](size_t index) {
             return (index >= startLocation) && (index < endLocation);
@@ -252,8 +278,8 @@ void splitIntoComponents(const std::vector<Vector3f>& verts, const std::vector<T
 
 
 
-void splitIntoConnectedComponents(const std::vector<Vector3f>& verts, const std::vector<Triangle>& tris,
-    std::vector<std::vector<Vector3f>>& outVerts, std::vector<std::vector<Triangle>>& outTris, std::vector<uint32>& outObjIDs, std::vector<int>& startTriIDs) {
+void splitIntoConnectedComponents(const std::vector<Vector3<Float>>& verts, const std::vector<Triangle>& tris,
+    std::vector<std::vector<Vector3<Float>>>& outVerts, std::vector<std::vector<Triangle>>& outTris, std::vector<uint64_t>& outObjIDs, std::vector<int>& startTriIDs) {
 
     std::vector<std::vector<int>> adjacency;
     adjacency.resize(verts.size());
@@ -342,12 +368,12 @@ void createGeometries(std::string filename, const std::vector<int>& componentSta
     std::vector<std::shared_ptr<BVHModel<OBBRSSf>>>& geometries) {
 
     // set mesh triangles and vertice indices
-    std::vector<Vector3f> vertices;
+    std::vector<Vector3<Float>> vertices;
     std::vector<Triangle> triangles;
 
     readPly(filename, vertices, triangles);
 
-    std::vector<std::vector<Vector3f>> splitVerts;
+    std::vector<std::vector<Vector3<Float>>> splitVerts;
     std::vector<std::vector<Triangle>> splitTris;
     splitIntoComponents(vertices, triangles, componentStarts, splitVerts, splitTris);
     geometries.clear();
@@ -367,34 +393,40 @@ void createGeometries(std::string filename, const std::vector<int>& componentSta
 }
 
 
-void placeComponentsIntoTree(const std::vector<std::vector<Vector3f>>& splitVerts, const std::vector<std::vector<Triangle>>& splitTris, BroadPhaseCollisionManagerf* manager) {
+void placeComponentsIntoTree(const std::vector<std::vector<Vector3<Float>>>& splitVerts, const std::vector<std::vector<Triangle>>& splitTris, BroadPhaseCollisionManagerf* manager, GeometryIDMap& geomToIndex) {
+    std::vector<CollisionGeometry<Float>*> fclObjects;
+    fclObjects.resize(splitVerts.size());
+    double before = GetCurrentTimeInSeconds();
     Transform3f pose = Transform3f::Identity();
     // set mesh triangles and vertice indices
-    for (int i = (int)splitVerts.size()-1; i >= 0; --i) {
-        char componentFilename[20];
-        sprintf(componentFilename, "component%d.ply", i);
-        //writePly(componentFilename, splitVerts[i], splitTris[i]);
-
+    for (int i = 0; i < (int)splitVerts.size(); ++i) {
         // BVHModel is a template class for mesh geometry, for default OBBRSS template is used
         auto geom = std::make_shared<BVHModel<OBBRSSf>>();
         // add the mesh data into the BVHModel structure
         geom->beginModel();
         geom->addSubModel(splitVerts[i], splitTris[i]); 
         geom->endModel();
-        CollisionObjectf* obj0 = new CollisionObjectf(geom, pose);
-        manager->registerObject(obj0);
+        CollisionObjectf* obj = new CollisionObjectf(geom, pose);
+        manager->registerObject(obj);
+        fclObjects[i] = geom.get();
     }
     // Setup the managers, which is related with initializing the broadphase acceleration structure according to objects input
     manager->setup();
+    double collisionTime = GetCurrentTimeInSeconds() - before;
+    printf("FCL Acceleration Build: %g ms\n", collisionTime*1000.0);
+    for (int i = 0; i < fclObjects.size(); ++i) {
+    geomToIndex[fclObjects[i]] = i;
+    }
 }
 
 
-void runFCLCollisionOnComponents(const std::vector<std::vector<Vector3f>>& splitVerts, const std::vector<std::vector<Triangle>>& splitTris, std::vector<ComparisonContact>& fclContacts) {
+void runFCLCollisionOnComponents(const std::vector<std::vector<Vector3<Float>>>& splitVerts, const std::vector<std::vector<Triangle>>& splitTris, std::vector<ComparisonContact>& fclContacts) {
     // Generally, the DynamicAABBTreeCollisionManager would provide the best performance.
     BroadPhaseCollisionManagerf* manager = new DynamicAABBTreeCollisionManagerf();
-    placeComponentsIntoTree(splitVerts,splitTris,manager);
+    GeometryIDMap idMap;
+    placeComponentsIntoTree(splitVerts,splitTris,manager, idMap);
     printf("Connected Component Count: %zd\n", splitVerts.size());
-    CollisionData<float> collision_data;
+    CollisionData<Float> collision_data;
     collision_data.request.num_max_contacts = 30000;
     collision_data.request.enable_contact = true;
     // Self collision query
@@ -404,9 +436,9 @@ void runFCLCollisionOnComponents(const std::vector<std::vector<Vector3f>>& split
     printf("FCL Collision Time: %g ms\n", collisionTime*1000.0);
     printf("FCL Component Collision Num Contacts: %zd\n", collision_data.result.numContacts());
     if (collision_data.result.numContacts() > 0) {
-        std::vector<fcl::Contact<float>> contacts;
+        std::vector<fcl::Contact<Float>> contacts;
         collision_data.result.getContacts(contacts);
-        std::vector<Vector3f> vertices;
+        std::vector<Vector3<Float>> vertices;
         vertices.resize(contacts.size());
         for (int i = 0; i < contacts.size(); ++i) {
             auto& c = contacts[i];
@@ -416,7 +448,7 @@ void runFCLCollisionOnComponents(const std::vector<std::vector<Vector3f>>& split
                 c.b2, c.penetration_depth, c.pos.x(),c.pos.y(),c.pos.z(),
                 c.normal.x(),c.normal.y(),c.normal.z());
             */
-            fclContacts.push_back(ComparisonContact(c));
+            fclContacts.push_back(ComparisonContact(c, idMap));
         }
         writePly("fcl_contacts.ply", vertices, {});
     }
@@ -433,12 +465,15 @@ void runFCLCollisionOnComponents(const std::vector<std::vector<Vector3f>>& split
   cerr << "ERROR: " << msg << endl; \
   exit(1); \
 }
-
+#if USE_DOUBLE_PRECISION
+typedef tensor_double_3_           vec3;
+#else
 typedef tensor_float_3_           vec3;
+#endif
 typedef tensor_row_Verts__3_      tri3;
 
 void MeshLoad( Store store, uint32_t n_vert, uint32_t n_tri,
-               float* pos, uint32_t* vert, uint32_t* obj_id )
+    Float* pos, uint32_t* vert, uint64_t* obj_id )
 {
   // build a set of edges
   std::set< std::pair<uint32_t,uint32_t> >  edges;
@@ -474,11 +509,11 @@ void MeshLoad( Store store, uint32_t n_vert, uint32_t n_tri,
   store.Verts().beginload(n_vert);
   store.Edges().beginload(n_edge);
   store.Tris().beginload(n_tri);
-    store.Verts().pos().load(reinterpret_cast<vec3*>(pos), 3*sizeof(float));
+    store.Verts().pos().load(reinterpret_cast<vec3*>(pos), 3*sizeof(Float));
     store.Edges().hd().load(e_hd.data(), sizeof(uint32_t));
     store.Edges().tl().load(e_tl.data(), sizeof(uint32_t));
     store.Tris().v().load(reinterpret_cast<tri3*>(vert), 3*sizeof(uint32_t));
-    store.Tris().obj_id().load(obj_id, sizeof(uint32_t));
+    store.Tris().obj_id().load(obj_id, sizeof(uint64_t));
   store.Verts().endload();
   store.Edges().endload();
   store.Tris().endload();
@@ -506,21 +541,21 @@ void MeshIsctRead(Store store, const std::vector<int>& startIDs, std::vector<Com
     uint32_t n_isct     = store.TTcontacts().size();
     std::cout << "**Gong: Found " << n_isct << " triangle-triangle intersections." << endl;
 
-    uint32_t* o0          = store.TTcontacts().obj0().readwrite_lock();
-    uint32_t* o1          = store.TTcontacts().obj1().readwrite_lock();
+    uint64_t* o0          = store.TTcontacts().obj0().readwrite_lock();
+    uint64_t* o1          = store.TTcontacts().obj1().readwrite_lock();
     uint32_t* t0          = store.TTcontacts().tri0().readwrite_lock();
     uint32_t* t1          = store.TTcontacts().tri1().readwrite_lock();
     vec3*     pos         = store.TTcontacts().pos().readwrite_lock();
-    float*    depth       = store.TTcontacts().penetration_depth().readwrite_lock();
+    Float*    depth       = store.TTcontacts().penetration_depth().readwrite_lock();
     vec3*     nrml        = store.TTcontacts().normal().readwrite_lock();
 
-    std::vector<Vector3f> vertices;
+    std::vector<Vector3<Float>> vertices;
     vertices.resize(n_isct);
     for(uint32_t k=0; k<n_isct; k++) {
-		uint32 obj0 = o0[k];
-		uint32 obj1 = o1[k];
-		uint32 o0Off = (uint32)startIDs[obj0];
-		uint32 o1Off = (uint32)startIDs[obj1];
+        uint64_t obj0 = o0[k];
+        uint64_t obj1 = o1[k];
+        uint32_t o0Off = (uint32_t)startIDs[obj0];
+        uint32_t o1Off = (uint32_t)startIDs[obj1];
         vec3f p = {pos[k].d[0],pos[k].d[1],pos[k].d[2]};
         vec3f n = {nrml[k].d[0],nrml[k].d[1],nrml[k].d[2]};
         ComparisonContact c(obj0, obj1, t0[k]-o0Off, t1[k]-o1Off, p, depth[k], n);
@@ -539,7 +574,7 @@ void MeshIsctRead(Store store, const std::vector<int>& startIDs, std::vector<Com
 }
 
 
-void runGongCollisionOnComponents(const std::vector<Vector3f>& vertices, const std::vector<Triangle>& tris, const std::vector<uint32>& objIDs, const std::vector<int>& startIDs, std::vector<ComparisonContact>& contacts) {
+void runGongCollisionOnComponents(const std::vector<Vector3<Float>>& vertices, const std::vector<Triangle>& tris, const std::vector<uint64_t>& objIDs, const std::vector<int>& startIDs, std::vector<ComparisonContact>& contacts) {
   printf("V/T/ObjIDs = %zd, %zd, %zd\n", vertices.size(), tris.size(), objIDs.size());
 
   std::vector<uint32_t> smallTris;
@@ -555,9 +590,9 @@ void runGongCollisionOnComponents(const std::vector<Vector3f>& vertices, const s
   {
     uint32_t n_vert = (uint32_t)vertices.size();
     uint32_t n_tri = (uint32_t)tris.size();
-    float* pos = (float*)vertices.data();
+    Float* pos = (Float*)vertices.data();
     uint32_t* vert = smallTris.data();
-    uint32_t* obj_id = (uint32_t*)objIDs.data();
+    uint64_t* obj_id = (uint64_t*)objIDs.data();
     MeshLoad( store, n_vert, n_tri, pos, vert, obj_id );
 
     double before = GetCurrentTimeInSeconds();
@@ -570,12 +605,12 @@ void runGongCollisionOnComponents(const std::vector<Vector3f>& vertices, const s
 }
 
 void runCollisionTestOnConnectedComponents(std::string filename) {
-    std::vector<Vector3f> vertices;
+    std::vector<Vector3<Float>> vertices;
     std::vector<Triangle> triangles;
     readPly(filename, vertices, triangles);
-    std::vector<std::vector<Vector3f>> splitVerts;
+    std::vector<std::vector<Vector3<Float>>> splitVerts;
     std::vector<std::vector<Triangle>> splitTris;
-    std::vector<uint32> objIDsPerTriangle;
+    std::vector<uint64_t> objIDsPerTriangle;
     std::vector<int> startIDs;
     splitIntoConnectedComponents(vertices, triangles, splitVerts, splitTris, objIDsPerTriangle, startIDs);
 
@@ -608,7 +643,7 @@ void runCollisionTest(std::string filename, const std::vector<int>& componentSta
 
     // R and T are the rotation matrix and translation vector
     Matrix3f R = Matrix3f::Identity();
-    Vector3f T = { gravStep.x, gravStep.y, gravStep.z };
+    Vector3<Float> T = { gravStep.x, gravStep.y, gravStep.z };
     if (geometries.size() == 2) {
         // transform is configured according to R and T
         Transform3f pose = Transform3f::Identity();
@@ -629,7 +664,7 @@ void runCollisionTest(std::string filename, const std::vector<int>& componentSta
         manager0->setup();
         manager1->setup();
 
-        CollisionData<float> self0_data, self1_data, collision_data, simple_collision;
+        CollisionData<Float> self0_data, self1_data, collision_data, simple_collision;
         collision_data.request.num_max_contacts = 10000;
         simple_collision.request.num_max_contacts = 10000;
         // Self collision query
@@ -641,10 +676,10 @@ void runCollisionTest(std::string filename, const std::vector<int>& componentSta
         }
     } else {
         Matrix3f R = Matrix3f::Identity();
-        Vector3f T = { gravStep.x, gravStep.y, gravStep.z };
+        Vector3<Float> T = { gravStep.x, gravStep.y, gravStep.z };
         Transform3f pose = Transform3f::Identity();
         pose.linear() = R;
-        pose.translation() = Vector3f{ 0.0f,0.0f,0.0f };
+        pose.translation() = Vector3<Float>{ 0.0f,0.0f,0.0f };
         //Combine them together
         CollisionObjectf* obj0 = new CollisionObjectf(geometries[0], pose);
         // Generally, the DynamicAABBTreeCollisionManager would provide the best performance.
@@ -654,7 +689,7 @@ void runCollisionTest(std::string filename, const std::vector<int>& componentSta
         // Setup the managers, which is related with initializing the broadphase acceleration structure according to objects input
         manager0->setup();
 
-        CollisionData<float> collision_data;
+        CollisionData<Float> collision_data;
         collision_data.request.num_max_contacts = 10000;
         // Self collision query
 
