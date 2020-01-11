@@ -88,10 +88,14 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="collide.cpp" />
+    <ClCompile Include="collide_fcl.cpp" />
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="mesh_io.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="collide.h" />
+    <ClInclude Include="config.h" />
+    <ClInclude Include="mesh_io.h" />
     <ClInclude Include="timer.h" />
     <ClInclude Include="tinyply.h" />
   </ItemGroup>
