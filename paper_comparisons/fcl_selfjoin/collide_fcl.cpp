@@ -97,10 +97,15 @@ void createGeometries(std::string filename, const std::vector<int>& componentSta
 }
 
 
-void placeComponentsIntoTree(const std::vector<std::vector<Vector3<Float>>>& splitVerts, const std::vector<std::vector<Triangle>>& splitTris, BroadPhaseCollisionManagerf* manager, GeometryIDMap& geomToIndex) {
-	std::vector<CollisionGeometry<Float>*> fclObjects;
+
+struct FCLState {
+	BroadPhaseCollisionManagerf* manager;
+	std::vector<CollisionGeometry<Float>*> objects;
+	GeometryIDMap idMap;
+};
+
+void initializeDataForFCL(const std::vector<std::vector<Vector3<Float>>>& splitVerts, const std::vector<std::vector<Triangle>>& splitTris, BroadPhaseCollisionManagerf* manager, std::vector<CollisionGeometry<Float>*>& fclObjects, GeometryIDMap& geomToIndex) {
 	fclObjects.resize(splitVerts.size());
-	double before = GetCurrentTimeInSeconds();
 	Transform3f pose = Transform3f::Identity();
 	// set mesh triangles and vertice indices
 	for (int i = 0; i < (int)splitVerts.size(); ++i) {
@@ -114,31 +119,61 @@ void placeComponentsIntoTree(const std::vector<std::vector<Vector3<Float>>>& spl
 		manager->registerObject(obj);
 		fclObjects[i] = geom.get();
 	}
-	// Setup the managers, which is related with initializing the broadphase acceleration structure according to objects input
-	manager->setup();
-	double collisionTime = GetCurrentTimeInSeconds() - before;
-	printf("FCL Acceleration Build: %g ms\n", collisionTime*1000.0);
 	for (int i = 0; i < fclObjects.size(); ++i) {
 		geomToIndex[(size_t)fclObjects[i]] = i;
 	}
 }
 
 
-void runFCLCollisionOnComponents(const std::vector<std::vector<Vector3<Float>>>& splitVerts, const std::vector<std::vector<Triangle>>& splitTris, std::vector<ComparisonContact>& fclContacts) {
-	// Generally, the DynamicAABBTreeCollisionManager would provide the best performance.
-	BroadPhaseCollisionManagerf* manager = new DynamicAABBTreeCollisionManagerf();
-	GeometryIDMap idMap;
-	placeComponentsIntoTree(splitVerts, splitTris, manager, idMap);
-	printf("Connected Component Count: %zd\n", splitVerts.size());
+FCLState* initializeFCL(const std::vector<std::vector<Vector3<Float>>>& splitVerts, const std::vector<std::vector<Triangle>>& splitTris) {
+	FCLState* state = new FCLState;
+	state->manager = new DynamicAABBTreeCollisionManagerf();
+	initializeDataForFCL(splitVerts, splitTris, state->manager, state->objects, state->idMap);
+	return state;
+}
+
+double updateFCLPositions(FCLState* state, const std::vector<std::vector<Vector3<Float>>>& splitVerts) {
+	double before = GetCurrentTimeInSeconds();
+	for (int i = 0; i < state->objects.size(); ++i) {
+		auto o = (BVHModel<OBBRSSf>*) state->objects[i];
+		o->beginUpdateModel();
+		o->updateSubModel(splitVerts[i]);
+		o->endUpdateModel();
+	}
+	double updateTime = GetCurrentTimeInSeconds() - before;
+	printf("FCL Update Position Time: %g ms\n", updateTime*1000.0);
+	return updateTime;
+}
+
+double buildFCLAccelerationStructure(FCLState* state) {
+	double before = GetCurrentTimeInSeconds();
+	// Setup the managers, which is related with initializing the broadphase acceleration structure according to objects input
+	state->manager->setup();
+	double buildTime = GetCurrentTimeInSeconds() - before;
+	printf("FCL Acceleration Build: %g ms\n", buildTime*1000.0);
+	return buildTime;
+}
+
+double refitFCLAccelerationStructure(FCLState* state) {
+	double before = GetCurrentTimeInSeconds();
+	// Setup the managers, which is related with initializing the broadphase acceleration structure according to objects input
+	state->manager->update();
+	double refitTime = GetCurrentTimeInSeconds() - before;
+	printf("FCL Acceleration Refit: %g ms\n", refitTime*1000.0);
+	return refitTime;
+}
+
+double fclCollision(FCLState* state, std::vector<ComparisonContact>& fclContacts) {
 	CollisionData<Float> collision_data;
 	collision_data.request.num_max_contacts = 30000;
 	collision_data.request.enable_contact = true;
 	// Self collision query
 	double before = GetCurrentTimeInSeconds();
-	manager->collide(&collision_data, defaultCollisionFunction);
+	state->manager->collide(&collision_data, defaultCollisionFunction);
 	double collisionTime = GetCurrentTimeInSeconds() - before;
 	printf("FCL Collision Time: %g ms\n", collisionTime*1000.0);
 	printf("FCL Component Collision Num Contacts: %zd\n", collision_data.result.numContacts());
+	fclContacts.clear();
 	if (collision_data.result.numContacts() > 0) {
 		std::vector<fcl::Contact<Float>> contacts;
 		collision_data.result.getContacts(contacts);
@@ -147,13 +182,16 @@ void runFCLCollisionOnComponents(const std::vector<std::vector<Vector3<Float>>>&
 		for (int i = 0; i < contacts.size(); ++i) {
 			auto& c = contacts[i];
 			vertices[i] = c.pos;
-			/*
-			printf("(?: %d) vs (?: %d): %f (%f %f %f); (%f %f %f)\n", c.b1,
-			c.b2, c.penetration_depth, c.pos.x(),c.pos.y(),c.pos.z(),
-			c.normal.x(),c.normal.y(),c.normal.z());
-			*/
-			fclContacts.push_back(toComparisonContact(c, idMap));
+			fclContacts.push_back(toComparisonContact(c, state->idMap));
 		}
 		writePly("fcl_contacts.ply", vertices, {});
 	}
+	return collisionTime;
+}
+
+void fclCleanup(FCLState* state) {
+	state->idMap.clear();
+	state->objects.clear();
+	delete state->manager;
+	delete state;
 }

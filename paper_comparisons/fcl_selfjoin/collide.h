@@ -1,6 +1,7 @@
 #pragma once
 #include <string>
 #include <vector>
+#include <fstream>
 #include "config.h"
 #include <unordered_map>
 typedef std::unordered_map<size_t, uint64_t> GeometryIDMap;
@@ -9,6 +10,8 @@ typedef std::unordered_map<size_t, uint64_t> GeometryIDMap;
 using fcl::Vector3;
 using fcl::Triangle;
 
+
+struct FCLState;
 struct vec3f { Float x, y, z; };
 
 
@@ -68,8 +71,39 @@ public:
 
 void runCollisionTestOnConnectedComponents(std::string filename);
 
-void runFCLCollisionOnComponents(
-	const std::vector<std::vector<Vector3<Float>>>& splitVerts, 
-	const std::vector<std::vector<Triangle>>& splitTris, 
-	std::vector<ComparisonContact>& fclContacts);
+void nBodyBenchmark(std::string outputFile = "output.csv", int startFrame = 0, int endFrame = 75,  bool rebuildEveryFrame = false);
 
+FCLState* initializeFCL(const std::vector<std::vector<Vector3<Float>>>& splitVerts, const std::vector<std::vector<Triangle>>& splitTris);
+double buildFCLAccelerationStructure(FCLState* state);
+double updateFCLPositions(FCLState* state, const std::vector<std::vector<Vector3<Float>>>& splitVerts);
+double refitFCLAccelerationStructure(FCLState* state);
+double fclCollision(FCLState* state, std::vector<ComparisonContact>& fclContacts);
+void fclCleanup(FCLState* state);
+
+class Store;
+Store* initializeGong(const std::vector<Vector3<Float>>& vertices, const std::vector<Triangle>& tris, const std::vector<uint64_t>& objIDs);
+double updateGongVertices(Store* store, const std::vector<Vector3<Float>>& vertices);
+double gongCollision(Store* store, const std::vector<int>& startIDs, std::vector<ComparisonContact>& contacts);
+void gongCleanup(Store* store);
+
+class CollisionSequence {
+	std::vector<std::vector<Vector3<Float>>> m_vertices;
+	std::vector<std::vector<std::vector<Vector3<Float>>>> m_splitVerts;
+
+	// Theses stay constant throughout the sequence
+	std::vector<Triangle> m_triangles;
+	std::vector<std::vector<Triangle>> m_splitTris;
+	std::vector<uint64_t> m_objIDsPerTriangle;
+	std::vector<int> m_firstTriIndexOfObjs;
+	std::vector<int> m_firstObjectIndexOfObjs;
+
+	Store*      m_gongState;
+	FCLState*	m_fclState;
+	std::ofstream m_outputStream;
+public:
+	CollisionSequence() {}
+	CollisionSequence(const std::vector<std::string>& filenames, std::string perfFile);
+	void solveAll(bool rebuild = false);
+private:
+
+};

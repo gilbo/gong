@@ -242,12 +242,12 @@ void splitIntoConnectedComponents(const std::vector<Vector3<Float>>& verts, cons
 	}
 
 
-	
+	/*
 	printf("startTriIDs ****\n");
 	for (int i = 0; i < startTriIDs.size(); ++i) {
 	    printf("%d: %d\n", i, startTriIDs[i]);
 	}
 	printf("************\n");
-	
+	*/
 
 }
