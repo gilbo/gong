@@ -100,11 +100,11 @@ void createGeometries(std::string filename, const std::vector<int>& componentSta
 
 struct FCLState {
 	BroadPhaseCollisionManagerf* manager;
-	std::vector<CollisionGeometry<Float>*> objects;
+	std::vector<CollisionObject<Float>*> objects;
 	GeometryIDMap idMap;
 };
 
-void initializeDataForFCL(const std::vector<std::vector<Vector3<Float>>>& splitVerts, const std::vector<std::vector<Triangle>>& splitTris, BroadPhaseCollisionManagerf* manager, std::vector<CollisionGeometry<Float>*>& fclObjects, GeometryIDMap& geomToIndex) {
+void initializeDataForFCL(const std::vector<std::vector<Vector3<Float>>>& splitVerts, const std::vector<std::vector<Triangle>>& splitTris, BroadPhaseCollisionManagerf* manager, std::vector<CollisionObject<Float>*>& fclObjects, GeometryIDMap& geomToIndex) {
 	fclObjects.resize(splitVerts.size());
 	Transform3f pose = Transform3f::Identity();
 	// set mesh triangles and vertice indices
@@ -117,7 +117,7 @@ void initializeDataForFCL(const std::vector<std::vector<Vector3<Float>>>& splitV
 		geom->endModel();
 		CollisionObjectf* obj = new CollisionObjectf(geom, pose);
 		manager->registerObject(obj);
-		fclObjects[i] = geom.get();
+		fclObjects[i] = obj;
 	}
 	for (int i = 0; i < fclObjects.size(); ++i) {
 		geomToIndex[(size_t)fclObjects[i]] = i;
@@ -135,10 +135,12 @@ FCLState* initializeFCL(const std::vector<std::vector<Vector3<Float>>>& splitVer
 double updateFCLPositions(FCLState* state, const std::vector<std::vector<Vector3<Float>>>& splitVerts) {
 	double before = GetCurrentTimeInSeconds();
 	for (int i = 0; i < state->objects.size(); ++i) {
-		auto o = (BVHModel<OBBRSSf>*) state->objects[i];
+		auto o = (BVHModel<OBBRSSf>*)state->objects[i]->collisionGeometry().get();
 		o->beginUpdateModel();
 		o->updateSubModel(splitVerts[i]);
 		o->endUpdateModel();
+		o->computeLocalAABB();
+		state->objects[i]->computeAABB();
 	}
 	double updateTime = GetCurrentTimeInSeconds() - before;
 	printf("FCL Update Position Time: %g ms\n", updateTime*1000.0);

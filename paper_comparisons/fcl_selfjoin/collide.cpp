@@ -298,7 +298,7 @@ CollisionSequence::CollisionSequence(const std::vector<std::string>& filenames, 
 	std::cout << "Load Complete!" << std::endl;
 
 	m_outputStream.open(perfFile);
-	m_outputStream << "Frame,FCL Total,Gong Total,FCL Init, Gong Init,FCL Build,FCL Rebuild,FCL Vert Update,Gong Vert Update,FCL Collision,Gong Build+Collision" << std::endl;
+	m_outputStream << "Frame,FCL Total,Gong Total,FCL Init, Gong Init,FCL Build,FCL Rebuild,FCL Vert Update,Gong Vert Update,FCL Collision,Gong Build+Collision,FCL Contact Count,Gong Contact Count" << std::endl;
 	
 }
 
@@ -313,8 +313,8 @@ void CollisionSequence::solveAll(bool doRebuild) {
 		double mid = GetCurrentTimeInSeconds();
 		m_fclState = initializeFCL(m_splitVerts[frameIndex], m_splitTris);
 		double after = GetCurrentTimeInSeconds();
-		double fclInitTime = (after - mid)*1000.0;
-		double gongInitTime = (mid - before)*1000.0;
+		double fclInitTime = (after - mid);
+		double gongInitTime = (mid - before);
 
 		double fclBuildTime = buildFCLAccelerationStructure(m_fclState);
 		double fclCollisionTime = fclCollision(m_fclState, fclContacts);
@@ -323,7 +323,7 @@ void CollisionSequence::solveAll(bool doRebuild) {
 		double fclTotal = fclInitTime + fclBuildTime + fclCollisionTime;
 		double gongTotal = gongInitTime + gongCollisionTime;
 
-		m_outputStream << frameIndex << "," << fclTotal << "," << gongTotal << "," << fclInitTime << "," << gongInitTime << "," << fclBuildTime << ",,,," << fclCollisionTime << "," << gongCollisionTime << std::endl;
+		m_outputStream << frameIndex << "," << fclTotal << "," << gongTotal << "," << fclInitTime << "," << gongInitTime << "," << fclBuildTime << ",,,," << fclCollisionTime << "," << gongCollisionTime << "," << fclContacts.size() << "," << gongContacts.size() << std::endl;
 	};
 	reinitializeAndSolve(0);
 	
@@ -347,7 +347,7 @@ void CollisionSequence::solveAll(bool doRebuild) {
 			double fclTotal = fclUpdateTime + fclRebuildTime + fclCollisionTime;
 			double gongTotal = gongUpdateTime + gongCollisionTime;
 
-			m_outputStream << i << "," << fclTotal << "," << gongTotal << ",,,," << fclRebuildTime << "," << fclUpdateTime << "," << gongUpdateTime << "," << fclCollisionTime << "," << gongCollisionTime << std::endl;
+			m_outputStream << i << "," << fclTotal << "," << gongTotal << ",,,," << fclRebuildTime << "," << fclUpdateTime << "," << gongUpdateTime << "," << fclCollisionTime << "," << gongCollisionTime << "," << fclContacts.size() << "," << gongContacts.size() << std::endl;
 		}
 		compareContacts(fclContacts, gongContacts);
 	}
