@@ -5,6 +5,11 @@ CUDA_DIR ?= /usr/local/cuda
 
 CPPFLAGS=-g -std=c++14 -O2
 
+BVHNodeType=0
+
+CPPFLAGS += -DBVHNodeType=$(BVHNodeType)
+
+
 FCL_HOME ?= ../../../fcl/build
 EIGEN_INCLUDE ?= /usr/include/eigen3
 

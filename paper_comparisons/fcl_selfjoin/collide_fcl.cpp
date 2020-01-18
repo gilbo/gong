@@ -125,12 +125,31 @@ void initializeDataForFCL(const std::vector<std::vector<Vector3<Float>>>& splitV
 #define COLLISION_MANAGER_TYPE 0
 #endif
 
-FCLState* initializeFCL(const std::vector<std::vector<Vector3<Float>>>& splitVerts, const std::vector<std::vector<Triangle>>& splitTris) {
+typedef Float S;
+
+FCLState* initializeFCL(const std::vector<std::vector<Vector3<Float>>>& splitVerts, 
+		const std::vector<std::vector<Triangle>>& splitTris, 
+		int managerIndex) {
 	FCLState* state = new FCLState;
-	switch(COLLISION_MANAGER_TYPE) {
+	switch(managerIndex) {
 	case 0:
-	  state->manager = new DynamicAABBTreeCollisionManagerf();
-	  break;
+		state->manager = new NaiveCollisionManager<S>();
+		break;
+ 	case 1:
+ 		state->manager = new SSaPCollisionManager<S>();
+ 		break;
+  	case 2:
+  		state->manager = new SaPCollisionManager<S>();
+  		break;
+  	case 3:
+  		state->manager = new IntervalTreeCollisionManager<S>();
+  		break;
+  	case 4:
+  		state->manager = new DynamicAABBTreeCollisionManager<S>();
+  		break;
+  	case 5:
+  		state->manager = new DynamicAABBTreeCollisionManager_Array<S>();
+  		break;
 	default:
 	  printf("ERROR, INVALID COLLISION MANAGER TYPE");
 	  exit(0);

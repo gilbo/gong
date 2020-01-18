@@ -273,7 +273,7 @@ void runCollisionTestOnConnectedComponents(std::string filename) {
     }
 }
 
-void nBodyBenchmark(std::string outputFile, int startFrame, int endFrame,  bool rebuildEveryFrame) {
+void nBodyBenchmark(std::string outputFile, int startFrame, int endFrame,  bool rebuildEveryFrame, int fclManagerIndex) {
 	std::vector<std::string> filenames;
 	for (int i = startFrame; i <= endFrame; ++i) {
 		char filename[100];
@@ -282,11 +282,11 @@ void nBodyBenchmark(std::string outputFile, int startFrame, int endFrame,  bool 
 		filenames.push_back(filename);
 	}
 	std::cout << "N-Body Benchmark" << std::endl;
-	CollisionSequence sequence(filenames, outputFile);
+	CollisionSequence sequence(filenames, outputFile, fclManagerIndex);
 	sequence.solveAll(rebuildEveryFrame);
 }
 
-CollisionSequence::CollisionSequence(const std::vector<std::string>& filenames, std::string perfFile) {
+CollisionSequence::CollisionSequence(const std::vector<std::string>& filenames, std::string perfFile, int fclManagerIndex) {
 	std::string initialFilename = filenames[0];
 	m_vertices.resize(filenames.size());
 	m_splitVerts.resize(filenames.size());
@@ -302,7 +302,7 @@ CollisionSequence::CollisionSequence(const std::vector<std::string>& filenames, 
 		splitIntoConnectedComponents(m_vertices[i], ignoreTris, m_splitVerts[i], ignoreSplitTris, ignoreObjIDs, ignoreFirstTriIndex);
 	}
 	std::cout << "Load Complete!" << std::endl;
-
+    m_fclManagerIndex = fclManagerIndex;
 	m_outputStream.open(perfFile);
 	m_outputStream << "Frame,FCL Total,Gong Total,FCL Init, Gong Init,FCL Build,FCL Rebuild,FCL Vert Update,Gong Vert Update,FCL Collision,Gong Build+Collision,FCL Contact Count,Gong Contact Count" << std::endl;
 	
@@ -317,7 +317,7 @@ void CollisionSequence::solveAll(bool doRebuild) {
 		double before = GetCurrentTimeInSeconds();
 		m_gongState = initializeGong(m_vertices[frameIndex], m_triangles, m_objIDsPerTriangle);
 		double mid = GetCurrentTimeInSeconds();
-		m_fclState = initializeFCL(m_splitVerts[frameIndex], m_splitTris);
+		m_fclState = initializeFCL(m_splitVerts[frameIndex], m_splitTris, m_fclManagerIndex);
 		double after = GetCurrentTimeInSeconds();
 		double fclInitTime = (after - mid);
 		double gongInitTime = (mid - before);

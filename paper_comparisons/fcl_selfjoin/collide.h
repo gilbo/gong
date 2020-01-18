@@ -10,8 +10,10 @@ typedef std::unordered_map<size_t, uint64_t> GeometryIDMap;
 using fcl::Vector3;
 using fcl::Triangle;
 
+// Valid [0,7]
+#ifndef BVHNodeType
 #define BVHNodeType 0
-
+#endif
 
 struct FCLState;
 struct vec3f { Float x, y, z; };
@@ -73,9 +75,9 @@ public:
 
 void runCollisionTestOnConnectedComponents(std::string filename);
 
-void nBodyBenchmark(std::string outputFile = "output.csv", int startFrame = 0, int endFrame = 75,  bool rebuildEveryFrame = false);
+void nBodyBenchmark(std::string outputFile = "output.csv", int startFrame = 0, int endFrame = 75,  bool rebuildEveryFrame = false, int collisionManagerType=4);
 
-FCLState* initializeFCL(const std::vector<std::vector<Vector3<Float>>>& splitVerts, const std::vector<std::vector<Triangle>>& splitTris);
+FCLState* initializeFCL(const std::vector<std::vector<Vector3<Float>>>& splitVerts, const std::vector<std::vector<Triangle>>& splitTris, int managerIndex=4);
 double buildFCLAccelerationStructure(FCLState* state);
 double updateFCLPositions(FCLState* state, const std::vector<std::vector<Vector3<Float>>>& splitVerts);
 double refitFCLAccelerationStructure(FCLState* state);
@@ -99,12 +101,13 @@ class CollisionSequence {
 	std::vector<int> m_firstTriIndexOfObjs;
 	std::vector<int> m_firstObjectIndexOfObjs;
 
+	int m_fclManagerIndex;
 	Store*      m_gongState;
 	FCLState*	m_fclState;
 	std::ofstream m_outputStream;
 public:
 	CollisionSequence() {}
-	CollisionSequence(const std::vector<std::string>& filenames, std::string perfFile);
+	CollisionSequence(const std::vector<std::string>& filenames, std::string perfFile, int fclManagerIndex);
 	void solveAll(bool rebuild = false);
 private:
 
