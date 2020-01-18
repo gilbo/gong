@@ -9,6 +9,8 @@
 #include <unordered_set>
 #include <algorithm>
 
+#define USE_GPU 1
+
 #define ERR(msg) { \
  \
   cerr << "ERROR: " << msg << endl; \
@@ -157,7 +159,11 @@ double updateGongVertices(Store* store, const std::vector<Vector3<Float>>& verti
 
 double gongCollision(Store* store, const std::vector<int>& startIDs, std::vector<ComparisonContact>& contacts) {
 	double before = GetCurrentTimeInSeconds();
+#ifdef USE_GPU
+	store->find_tt_iscts_GPU();
+#else
 	store->find_tt_iscts();
+#endif
 	double collisionTime = GetCurrentTimeInSeconds() - before;
 	printf("gong Build/Collision Time: %g ms\n", collisionTime*1000.0);
 	MeshIsctRead(*store, startIDs, contacts);

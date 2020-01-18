@@ -60,6 +60,11 @@ local TTcontacts      = G.NewTable('TTcontacts')
                         :NewField( 'penetration_depth', G.float)
                         :NewField( 'normal',    vec3 )
 
+if USE_GPU then
+  TTcontacts:setGPUSizeLinear(2, Mesh.Tris, 2, Mesh.Tris, 64)
+end
+
+
 ------------------------------------------------------------------------------
 
 local cross = G.Macro(function(a,b)
@@ -590,13 +595,19 @@ local BVH_TT_Traversal   = G.bvh_bvh_traversal {
   vol_isct    = G.AABB3f_isct,
 }
 
+
 find_tt_iscts:set_cpu_traversal(BVH_TT_Traversal)
+find_tt_iscts:set_gpu_traversal(BVH_TT_Traversal)
 
 if params.traversal == 'scan_scan' then
   -- leave the default traversal
 elseif params.traversal == 'bvh_bvh' then
   find_et_iscts:set_cpu_traversal(BVH_Traversal)
-  find_tt_iscts:set_cpu_traversal(BVH_Traversal)
+  find_tt_iscts:set_cpu_traversal(BVH_TT_Traversal)
+  if USE_GPU then
+     find_et_iscts:set_gpu_traversal(BVH_Traversal)
+     find_tt_iscts:set_gpu_traversal(BVH_TT_Traversal)
+  end
 else
   error('unrecognized traversal option: '..params.traversal)
 end

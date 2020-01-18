@@ -10,15 +10,42 @@
 #include "fcl/config.h"
 #include "fcl/narrowphase/collision.h"
 #include "fcl/narrowphase/collision_request.h"
+#include "fcl/broadphase/broadphase_bruteforce.h"
+#include "fcl/broadphase/broadphase_spatialhash.h"
+#include "fcl/broadphase/broadphase_SaP.h"
+#include "fcl/broadphase/broadphase_SSaP.h"
+#include "fcl/broadphase/broadphase_interval_tree.h"
 #include "fcl/broadphase/broadphase_dynamic_AABB_tree.h"
+#include "fcl/broadphase/broadphase_dynamic_AABB_tree_array.h"
+#include "fcl/broadphase/detail/sparse_hash_table.h"
+#include "fcl/broadphase/detail/spatial_hash.h"
 #include "fcl/geometry/geometric_shape_to_BVH_model.h"
+
 
 #ifdef _WIN32
 #pragma warning( pop ) 
 #endif
 using namespace fcl;
 
-void readPly(const std::string & filepath, std::vector<Vector3<Float>>& verts, std::vector<Triangle>& tris);
+#if BVHNodeType == 0
+typedef OBBRSSf BVHBounds;
+#elif BVHNodeType == 1
+typedef AABBf BVHBounds;
+#elif BVHNodeType == 2
+typedef OBB<float> BVHBounds;
+#elif BVHNodeType == 3
+typedef RSS<float> BVHBounds;
+#elif BVHNodeType == 4
+typedef kIOS<float> BVHBounds;
+#elif BVHNodeType == 5
+typedef KDOP<float, 16> BVHBounds;
+#elif BVHNodeType == 6
+typedef KDOP<float, 18> BVHBounds;
+#elif BVHNodeType == 7
+typedef KDOP<float, 24> BVHBounds;
+#else
+#error "Bad BVHNodeType"
+#endif
 
 /// @brief Collision data stores the collision request and the result given by collision algorithm.
 template <typename S>
@@ -68,36 +95,6 @@ static ComparisonContact toComparisonContact(const fcl::Contact<Float>& c, Geome
 }
 
 
-void createGeometries(std::string filename, const std::vector<int>& componentStarts,
-	std::vector<std::shared_ptr<BVHModel<OBBRSSf>>>& geometries) {
-
-	// set mesh triangles and vertice indices
-	std::vector<Vector3<Float>> vertices;
-	std::vector<Triangle> triangles;
-
-	readPly(filename, vertices, triangles);
-
-	std::vector<std::vector<Vector3<Float>>> splitVerts;
-	std::vector<std::vector<Triangle>> splitTris;
-	splitIntoComponents(vertices, triangles, componentStarts, splitVerts, splitTris);
-	geometries.clear();
-	for (int i = 0; i < splitVerts.size(); ++i) {
-		char componentFilename[20];
-		sprintf(componentFilename, "component%d.ply", i);
-		writePly(componentFilename, splitVerts[i], splitTris[i]);
-
-		// BVHModel is a template class for mesh geometry, for default OBBRSS template is used
-		auto geom = std::make_shared<BVHModel<OBBRSSf>>();
-		// add the mesh data into the BVHModel structure
-		geom->beginModel();
-		geom->addSubModel(splitVerts[i], splitTris[i]);
-		geom->endModel();
-		geometries.push_back(geom);
-	}
-}
-
-
-
 struct FCLState {
 	BroadPhaseCollisionManagerf* manager;
 	std::vector<CollisionObject<Float>*> objects;
@@ -110,7 +107,7 @@ void initializeDataForFCL(const std::vector<std::vector<Vector3<Float>>>& splitV
 	// set mesh triangles and vertice indices
 	for (int i = 0; i < (int)splitVerts.size(); ++i) {
 		// BVHModel is a template class for mesh geometry, for default OBBRSS template is used
-		auto geom = std::make_shared<BVHModel<OBBRSSf>>();
+		auto geom = std::make_shared<BVHModel<BVHBounds>>();
 		// add the mesh data into the BVHModel structure
 		geom->beginModel();
 		geom->addSubModel(splitVerts[i], splitTris[i]);
@@ -124,10 +121,21 @@ void initializeDataForFCL(const std::vector<std::vector<Vector3<Float>>>& splitV
 	}
 }
 
+#ifndef COLLISION_MANAGER_TYPE
+#define COLLISION_MANAGER_TYPE 0
+#endif
 
 FCLState* initializeFCL(const std::vector<std::vector<Vector3<Float>>>& splitVerts, const std::vector<std::vector<Triangle>>& splitTris) {
 	FCLState* state = new FCLState;
-	state->manager = new DynamicAABBTreeCollisionManagerf();
+	switch(COLLISION_MANAGER_TYPE) {
+	case 0:
+	  state->manager = new DynamicAABBTreeCollisionManagerf();
+	  break;
+	default:
+	  printf("ERROR, INVALID COLLISION MANAGER TYPE");
+	  exit(0);
+	}
+
 	initializeDataForFCL(splitVerts, splitTris, state->manager, state->objects, state->idMap);
 	return state;
 }
@@ -135,10 +143,10 @@ FCLState* initializeFCL(const std::vector<std::vector<Vector3<Float>>>& splitVer
 double updateFCLPositions(FCLState* state, const std::vector<std::vector<Vector3<Float>>>& splitVerts) {
 	double before = GetCurrentTimeInSeconds();
 	for (int i = 0; i < state->objects.size(); ++i) {
-		auto o = (BVHModel<OBBRSSf>*)state->objects[i]->collisionGeometry().get();
-		o->beginUpdateModel();
-		o->updateSubModel(splitVerts[i]);
-		o->endUpdateModel();
+		auto o = (BVHModel<BVHBounds>*)state->objects[i]->collisionGeometry().get();
+		o->beginReplaceModel();
+		o->replaceSubModel(splitVerts[i]);
+		o->endReplaceModel();
 		o->computeLocalAABB();
 		state->objects[i]->computeAABB();
 	}

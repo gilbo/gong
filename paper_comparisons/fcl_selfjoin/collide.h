@@ -10,6 +10,8 @@ typedef std::unordered_map<size_t, uint64_t> GeometryIDMap;
 using fcl::Vector3;
 using fcl::Triangle;
 
+#define BVHNodeType 0
+
 
 struct FCLState;
 struct vec3f { Float x, y, z; };
