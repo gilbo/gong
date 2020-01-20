@@ -1,5 +1,5 @@
 EXECUTABLE= main
-GONGFLAGS= 
+GONGFLAGS=
 
 CUDA_DIR ?= /usr/local/cuda
 
@@ -9,10 +9,8 @@ BVHNodeType=0
 
 CPPFLAGS += -DBVHNodeType=$(BVHNodeType)
 
-
 FCL_HOME ?= ../../../fcl/build
 EIGEN_INCLUDE ?= /usr/include/eigen3
-
 
 CPPFLAGS += -I$(FCL_HOME)/include -I$(FCL_HOME)/../include
 CPPFLAGS += -I$(FCL_HOME)/include -I$(FCL_HOME)/../include -I$(EIGEN_INCLUDE)

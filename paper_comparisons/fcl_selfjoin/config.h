@@ -6,3 +6,5 @@ typedef double Float;
 #else
 typedef float Float;
 #endif
+
+typedef uint32_t ObjID;

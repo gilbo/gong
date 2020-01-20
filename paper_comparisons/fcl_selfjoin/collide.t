@@ -6,7 +6,7 @@ local ffi = require 'ffi'
 -- quick hack for control
 local USE_GPU = (not not terralib.cudacompile) and (not (ffi.os == "Windows"))
 print('USE GPU? ', USE_GPU)
-
+--USE_GPU = false
 local params = { suffix = '', traversal = 'scan_scan' }
 for _,a in ipairs(arg) do
   local _, _, label, value = a:find("^%-([^=]*)=(.*)$")
@@ -31,7 +31,7 @@ local function TriMesh()
                  :NewField( 'tl',       Mesh.Verts   )
   Mesh.Tris   = G.NewTable('Tris')
                  :NewField(  'v',       G.vector(Mesh.Verts, 3) )
-                 :NewField(  'obj_id',  G.uint64)
+                 :NewField(  'obj_id',  G.uint32)
 
   return Mesh
 end
@@ -52,8 +52,8 @@ end
 
 
 local TTcontacts      = G.NewTable('TTcontacts')
-                        :NewField( 'obj0',   G.uint64     )
-                        :NewField( 'obj1',   G.uint64     )
+                        :NewField( 'obj0',   G.uint32     )
+                        :NewField( 'obj1',   G.uint32     )
                         :NewField( 'tri0',   Mesh.Tris    )
                         :NewField( 'tri1',   Mesh.Tris    )
                         :NewField( 'pos',   vec3       )
@@ -292,12 +292,31 @@ local gong function computeDeepestPoints(clipped_points : vec3[3], num_clipped_p
 end
 
 
+local filterCollision = G.Macro(function(a,b)
+  return gong`a==b
+end)
+
+if false then
+   filterCollision = G.Macro(function(a,b)
+   	return gong`a.obj_id==b.obj_id
+   end)
+end
+
+if true then
+   filterCollision = G.Macro(function(a,b)
+   	return gong`(a.v[0] == b.v[0] or a.v[0] == b.v[1] or a.v[0] == b.v[2]) or (a.v[1] == b.v[0] or a.v[1] == b.v[1] or a.v[1] == b.v[2]) or (a.v[2] == b.v[0] or a.v[2] == b.v[1] or a.v[2] == b.v[2])
+   end)
+end
+
+
 local gong function tt_is_isct( p : Mesh.Tris, q : Mesh.Tris ) : { vec3, vec3, G.uint32, G.float, vec3 }
   var pos0 : vec3 = {0f,0f,0f}
   var pos1 : vec3 = {0f,0f,0f}
   var num_contact_points : G.uint32 = 0
   var penetration_depth : G.float = 0.0
   var normal : vec3 = {0f,0f,0f}
+  --if p.obj_id == q.obj_id then return pos0, pos1, num_contact_points, penetration_depth, normal end
+  if filterCollision(p,q) then return pos0, pos1, num_contact_points, penetration_depth, normal end
   --[[
   Vector3<S> p1 = P1 - P1;
   Vector3<S> p2 = P2 - P1;
@@ -544,9 +563,9 @@ do
 end
 
 local gong join find_tt_iscts( t0 : Mesh.Tris, t1 : Mesh.Tris )
-  var different_objects = t0.obj_id ~= t1.obj_id
   var pos0, pos1, num_contact_points, penetration_depth, normal = tt_is_isct(t0,t1)
-  where different_objects and num_contact_points > 0
+--  where different_objects and num_contact_points > 0
+  where num_contact_points > 0 and (not filterCollision(t0,t1))
 do
   emit { obj0 = t0.obj_id, obj1 = t1.obj_id, tri0=t0, tri1=t1, pos=pos0, penetration_depth=penetration_depth, normal=normal } in TTcontacts
   if num_contact_points == 2 then
@@ -597,7 +616,9 @@ local BVH_TT_Traversal   = G.bvh_bvh_traversal {
 
 
 find_tt_iscts:set_cpu_traversal(BVH_TT_Traversal)
-find_tt_iscts:set_gpu_traversal(BVH_TT_Traversal)
+if USE_GPU then
+   find_tt_iscts:set_gpu_traversal(BVH_TT_Traversal)
+end
 
 if params.traversal == 'scan_scan' then
   -- leave the default traversal

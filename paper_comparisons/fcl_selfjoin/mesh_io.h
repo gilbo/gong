@@ -22,5 +22,5 @@ void splitIntoConnectedComponents(
 	const std::vector<Triangle>& tris,
 	std::vector<std::vector<Vector3<Float>>>& outVerts, 
 	std::vector<std::vector<Triangle>>& outTris, 
-	std::vector<uint64_t>& outObjIDs, 
+	std::vector<ObjID>& outObjIDs, 
 	std::vector<int>& startTriIDs);

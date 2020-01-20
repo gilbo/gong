@@ -20,8 +20,8 @@
 #include "fcl/broadphase/detail/sparse_hash_table.h"
 #include "fcl/broadphase/detail/spatial_hash.h"
 #include "fcl/geometry/geometric_shape_to_BVH_model.h"
-
-
+#include "fcl/narrowphase/detail/traversal/collision_node.h"
+typedef Float S;
 #ifdef _WIN32
 #pragma warning( pop ) 
 #endif
@@ -101,6 +101,75 @@ struct FCLState {
 	GeometryIDMap idMap;
 };
 
+double testFCLFlattened(const std::vector<Vector3<Float>>& verts, std::vector<Triangle>& tris) {
+
+  auto manager = new NaiveCollisionManager<Float>();
+
+  Transform3f pose = Transform3f::Identity();
+	// set mesh triangles and vertice indices
+  CollisionObjectf* obj;
+  std::shared_ptr<BVHModel<BVHBounds>> o;
+	double before = GetCurrentTimeInSeconds();
+  for (int i = 0; i < 1; ++i) {
+		// BVHModel is a template class for mesh geometry, for default OBBRSS template is used
+		o = std::make_shared<BVHModel<BVHBounds>>();
+		// add the mesh data into the BVHModel structure
+		o->beginModel();
+		o->addSubModel(verts, tris);
+		o->endModel();
+		obj = new CollisionObjectf(o, pose);
+		manager->registerObject(obj);
+		//		fclObjects[i] = obj;
+	}
+manager->setup();
+	double buildTime = GetCurrentTimeInSeconds() - before;
+	printf("FCL Flattened Build Time: %g ms\n", buildTime*1000.0);
+
+
+	before = GetCurrentTimeInSeconds();
+	{
+		o->beginReplaceModel();
+		o->replaceSubModel(verts);
+		o->endReplaceModel();
+		o->computeLocalAABB();
+		obj->computeAABB();
+	}
+	double updateTime = GetCurrentTimeInSeconds() - before;
+	printf("FCL Flattened Update Position Time: %g ms\n", updateTime*1000.0);
+
+	before = GetCurrentTimeInSeconds();
+	{
+		o->beginReplaceModel();
+		o->replaceSubModel(verts);
+		o->endReplaceModel(true,false);
+		o->computeLocalAABB();
+		obj->computeAABB();
+	}
+	double updateTime2 = GetCurrentTimeInSeconds() - before;
+	printf("FCL Flattened Update Top-Down Position Time: %g ms\n", updateTime2*1000.0);
+
+	
+	CollisionData<Float> collision_data;
+	collision_data.request.num_max_contacts = 3000000;
+	collision_data.request.enable_contact = true;
+	// Self collision query
+	before = GetCurrentTimeInSeconds();
+
+	detail::BVHFrontList front_list;
+
+	detail::MeshCollisionTraversalNode<BVHBounds> node;
+	if(!detail::initialize<BVHBounds>(node, *o, pose, *o, pose,collision_data.request, collision_data.result))
+	  std::cout << "initialize error" << std::endl;
+
+	selfCollide(&node, &front_list);
+
+	double collisionTime = GetCurrentTimeInSeconds() - before;
+	printf("FCL Flattened Collision Time: %g ms\n", collisionTime*1000.0);
+	printf("FCL Component Collision Num Contacts: %zd\n", collision_data.result.numContacts());
+	return collisionTime + buildTime;
+}
+
+
 void initializeDataForFCL(const std::vector<std::vector<Vector3<Float>>>& splitVerts, const std::vector<std::vector<Triangle>>& splitTris, BroadPhaseCollisionManagerf* manager, std::vector<CollisionObject<Float>*>& fclObjects, GeometryIDMap& geomToIndex) {
 	fclObjects.resize(splitVerts.size());
 	Transform3f pose = Transform3f::Identity();
@@ -125,7 +194,7 @@ void initializeDataForFCL(const std::vector<std::vector<Vector3<Float>>>& splitV
 #define COLLISION_MANAGER_TYPE 0
 #endif
 
-typedef Float S;
+
 
 FCLState* initializeFCL(const std::vector<std::vector<Vector3<Float>>>& splitVerts, 
 		const std::vector<std::vector<Triangle>>& splitTris, 
@@ -165,7 +234,7 @@ double updateFCLPositions(FCLState* state, const std::vector<std::vector<Vector3
 		auto o = (BVHModel<BVHBounds>*)state->objects[i]->collisionGeometry().get();
 		o->beginReplaceModel();
 		o->replaceSubModel(splitVerts[i]);
-		o->endReplaceModel();
+		o->endReplaceModel(true,false);
 		o->computeLocalAABB();
 		state->objects[i]->computeAABB();
 	}

@@ -167,7 +167,7 @@ void splitIntoComponents(const std::vector<Vector3<Float>>& verts, const std::ve
 
 
 void splitIntoConnectedComponents(const std::vector<Vector3<Float>>& verts, const std::vector<Triangle>& tris,
-	std::vector<std::vector<Vector3<Float>>>& outVerts, std::vector<std::vector<Triangle>>& outTris, std::vector<uint64_t>& outObjIDs, std::vector<int>& startTriIDs) {
+	std::vector<std::vector<Vector3<Float>>>& outVerts, std::vector<std::vector<Triangle>>& outTris, std::vector<ObjID>& outObjIDs, std::vector<int>& startTriIDs) {
 
 	std::vector<std::vector<int>> adjacency;
 	adjacency.resize(verts.size());

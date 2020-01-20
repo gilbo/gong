@@ -9,7 +9,9 @@
 #include <unordered_set>
 #include <algorithm>
 
-#define USE_GPU 1
+#define USE_GPU 0
+
+
 
 #define ERR(msg) { \
  \
@@ -24,7 +26,7 @@ typedef tensor_float_3_           vec3;
 typedef tensor_row_Verts__3_      tri3;
 
 void MeshLoad( Store store, uint32_t n_vert, uint32_t n_tri,
-    Float* pos, uint32_t* vert, uint64_t* obj_id )
+    Float* pos, uint32_t* vert, ObjID* obj_id )
 {
 	/*
   // build a set of edges
@@ -66,7 +68,7 @@ void MeshLoad( Store store, uint32_t n_vert, uint32_t n_tri,
     //store.Edges().hd().load(e_hd.data(), sizeof(uint32_t));
     //store.Edges().tl().load(e_tl.data(), sizeof(uint32_t));
     store.Tris().v().load(reinterpret_cast<tri3*>(vert), 3*sizeof(uint32_t));
-    store.Tris().obj_id().load(obj_id, sizeof(uint64_t));
+    store.Tris().obj_id().load(obj_id, sizeof(ObjID));
   store.Verts().endload();
   //store.Edges().endload();
   store.Tris().endload();
@@ -84,8 +86,8 @@ void MeshIsctRead(Store store, const std::vector<int>& startIDs, std::vector<Com
     uint32_t n_isct     = store.TTcontacts().size();
     std::cout << "**Gong: Found " << n_isct << " triangle-triangle intersections." << std::endl;
 
-    uint64_t* o0          = store.TTcontacts().obj0().readwrite_lock();
-    uint64_t* o1          = store.TTcontacts().obj1().readwrite_lock();
+    ObjID* o0          = store.TTcontacts().obj0().readwrite_lock();
+    ObjID* o1          = store.TTcontacts().obj1().readwrite_lock();
     uint32_t* t0          = store.TTcontacts().tri0().readwrite_lock();
     uint32_t* t1          = store.TTcontacts().tri1().readwrite_lock();
     vec3*     pos         = store.TTcontacts().pos().readwrite_lock();
@@ -97,8 +99,8 @@ void MeshIsctRead(Store store, const std::vector<int>& startIDs, std::vector<Com
     std::vector<Vector3<Float>> vertices;
     vertices.resize(n_isct);
     for(uint32_t k=0; k<n_isct; k++) {
-        uint64_t obj0 = o0[k];
-        uint64_t obj1 = o1[k];
+        ObjID obj0 = o0[k];
+        ObjID obj1 = o1[k];
         uint32_t o0Off = (uint32_t)startIDs[obj0];
         uint32_t o1Off = (uint32_t)startIDs[obj1];
         vec3f p = {pos[k].d[0],pos[k].d[1],pos[k].d[2]};
@@ -118,7 +120,7 @@ void MeshIsctRead(Store store, const std::vector<int>& startIDs, std::vector<Com
     store.TTcontacts().normal().readwrite_unlock();
 }
 
-Store* initializeGong(const std::vector<Vector3<Float>>& vertices, const std::vector<Triangle>& tris, const std::vector<uint64_t>& objIDs) {
+Store* initializeGong(const std::vector<Vector3<Float>>& vertices, const std::vector<Triangle>& tris, const std::vector<ObjID>& objIDs) {
 	std::vector<uint32_t> smallTris;
 	for (auto t : tris) {
 		smallTris.push_back((uint32_t)t[0]);
@@ -137,7 +139,7 @@ Store* initializeGong(const std::vector<Vector3<Float>>& vertices, const std::ve
 		uint32_t n_tri = (uint32_t)tris.size();
 		Float* pos = (Float*)vertices.data();
 		uint32_t* vert = smallTris.data();
-		uint64_t* obj_id = (uint64_t*)objIDs.data();
+		ObjID* obj_id = (ObjID*)objIDs.data();
 
 		MeshLoad(*store, n_vert, n_tri, pos, vert, obj_id);
 	}
@@ -159,7 +161,7 @@ double updateGongVertices(Store* store, const std::vector<Vector3<Float>>& verti
 
 double gongCollision(Store* store, const std::vector<int>& startIDs, std::vector<ComparisonContact>& contacts) {
 	double before = GetCurrentTimeInSeconds();
-#ifdef USE_GPU
+#if USE_GPU
 	store->find_tt_iscts_GPU();
 #else
 	store->find_tt_iscts();
@@ -180,7 +182,7 @@ void initialRead(std::string filename) {
 	std::vector<Triangle> triangles;
 	std::vector<std::vector<Vector3<Float>>> splitVerts;
 	std::vector<std::vector<Triangle>> splitTris;
-	std::vector<uint64_t> objIDsPerTriangle;
+	std::vector<ObjID> objIDsPerTriangle;
 	std::vector<int> startIDs;
 	readPly(filename, vertices, triangles);
 	splitIntoConnectedComponents(vertices, triangles, splitVerts, splitTris, objIDsPerTriangle, startIDs);
@@ -252,7 +254,7 @@ void runCollisionTestOnConnectedComponents(std::string filename) {
     readPly(filename, vertices, triangles);
     std::vector<std::vector<Vector3<Float>>> splitVerts;
     std::vector<std::vector<Triangle>> splitTris;
-    std::vector<uint64_t> objIDsPerTriangle;
+    std::vector<ObjID> objIDsPerTriangle;
     std::vector<int> startIDs;
     splitIntoConnectedComponents(vertices, triangles, splitVerts, splitTris, objIDsPerTriangle, startIDs);
 
@@ -296,7 +298,7 @@ CollisionSequence::CollisionSequence(const std::vector<std::string>& filenames, 
 		// TODO: don't rerun everything per frame, just load vertices and ignore connectivity which stays constant
 		std::vector<Triangle> ignoreTris;
 		std::vector<std::vector<Triangle>> ignoreSplitTris;
-		std::vector<uint64_t> ignoreObjIDs;
+		std::vector<ObjID> ignoreObjIDs;
 		std::vector<int> ignoreFirstTriIndex;
 		readPly(filenames[i], m_vertices[i], ignoreTris);
 		splitIntoConnectedComponents(m_vertices[i], ignoreTris, m_splitVerts[i], ignoreSplitTris, ignoreObjIDs, ignoreFirstTriIndex);
@@ -329,6 +331,8 @@ void CollisionSequence::solveAll(bool doRebuild) {
 		double fclTotal = fclInitTime + fclBuildTime + fclCollisionTime;
 		double gongTotal = gongInitTime + gongCollisionTime;
 
+		double flattenedFCLTotal = testFCLFlattened(m_vertices[frameIndex], m_triangles);
+		
 		m_outputStream << frameIndex << "," << fclTotal << "," << gongTotal << "," << fclInitTime << "," << gongInitTime << "," << fclBuildTime << ",,,," << fclCollisionTime << "," << gongCollisionTime << "," << fclContacts.size() << "," << gongContacts.size() << std::endl;
 	};
 	reinitializeAndSolve(0);

@@ -25,8 +25,8 @@ int main() {
   		"DynamicAABBTree_Array"
 	};
 
-	for (int i = 0; i < managerNames.size(); ++i) {
-		std::string suff = "_"+managerNames+"_"+suffix+".csv";
+	for (int i = 0; i < 1; ++i) {
+		std::string suff = "_"+managerNames[i]+"_"+suffix+".csv";
 		nBodyBenchmark("rebuild_every_frame"+suff, 0, 75, true,i);
 		nBodyBenchmark("update_every_frame"+suff, 0, 75, false,i);
 	}

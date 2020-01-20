@@ -4,7 +4,8 @@
 #include <fstream>
 #include "config.h"
 #include <unordered_map>
-typedef std::unordered_map<size_t, uint64_t> GeometryIDMap;
+
+typedef std::unordered_map<size_t, ObjID> GeometryIDMap;
 #include "fcl/common/types.h"
 #include "fcl/math/triangle.h"
 using fcl::Vector3;
@@ -28,15 +29,15 @@ static bool approxEqual(vec3f v0, vec3f v1, Float epsilon = 1e-5) {
 }
 
 struct ComparisonContact {
-	uint64_t obj0 = -1;
-	uint64_t obj1 = -1;
+	ObjID obj0 = -1;
+	ObjID obj1 = -1;
 	uint32_t tri0;
 	uint32_t tri1;
 	vec3f pos;
 	Float depth;
 	vec3f nrml;
 	ComparisonContact() {}
-	ComparisonContact(uint64_t o0, uint64_t o1, uint32_t t0, uint32_t t1, vec3f p, Float d, vec3f n) :
+	ComparisonContact(ObjID o0, ObjID o1, uint32_t t0, uint32_t t1, vec3f p, Float d, vec3f n) :
 		obj0(o0), obj1(o1), tri0(t0), tri1(t1), pos(p), depth(d), nrml(n) {
 		canonicalize();
 	}
@@ -72,6 +73,7 @@ public:
 	}
 };
 
+double testFCLFlattened(const std::vector<Vector3<Float>>& verts, std::vector<Triangle>& tris);
 
 void runCollisionTestOnConnectedComponents(std::string filename);
 
@@ -85,7 +87,7 @@ double fclCollision(FCLState* state, std::vector<ComparisonContact>& fclContacts
 void fclCleanup(FCLState* state);
 
 class Store;
-Store* initializeGong(const std::vector<Vector3<Float>>& vertices, const std::vector<Triangle>& tris, const std::vector<uint64_t>& objIDs);
+Store* initializeGong(const std::vector<Vector3<Float>>& vertices, const std::vector<Triangle>& tris, const std::vector<ObjID>& objIDs);
 double updateGongVertices(Store* store, const std::vector<Vector3<Float>>& vertices);
 double gongCollision(Store* store, const std::vector<int>& startIDs, std::vector<ComparisonContact>& contacts);
 void gongCleanup(Store* store);
@@ -97,7 +99,7 @@ class CollisionSequence {
 	// Theses stay constant throughout the sequence
 	std::vector<Triangle> m_triangles;
 	std::vector<std::vector<Triangle>> m_splitTris;
-	std::vector<uint64_t> m_objIDsPerTriangle;
+	std::vector<ObjID> m_objIDsPerTriangle;
 	std::vector<int> m_firstTriIndexOfObjs;
 	std::vector<int> m_firstObjectIndexOfObjs;
 
