@@ -1,6 +1,10 @@
 import 'gong'
 local G = gong.stdlib
 
+
+local filter_on_obj_id = false
+local filter_neighbor_tri_collisions = true
+
 local EPSILON         = 1.0e-7
 local ffi = require 'ffi'
 -- quick hack for control
@@ -13,6 +17,7 @@ for _,a in ipairs(arg) do
   if label and value then params[label] = value end
 end
 
+local ObjID = G.uint32
 local float = G.float
 local vec3 = G.vec3f
 if float == G.double then vec3 = G.vec3d end
@@ -31,7 +36,7 @@ local function TriMesh()
                  :NewField( 'tl',       Mesh.Verts   )
   Mesh.Tris   = G.NewTable('Tris')
                  :NewField(  'v',       G.vector(Mesh.Verts, 3) )
-                 :NewField(  'obj_id',  G.uint32)
+                 :NewField(  'obj_id',  ObjID)
 
   return Mesh
 end
@@ -52,8 +57,8 @@ end
 
 
 local TTcontacts      = G.NewTable('TTcontacts')
-                        :NewField( 'obj0',   G.uint32     )
-                        :NewField( 'obj1',   G.uint32     )
+                        :NewField( 'obj0',   ObjID     )
+                        :NewField( 'obj1',   ObjID     )
                         :NewField( 'tri0',   Mesh.Tris    )
                         :NewField( 'tri1',   Mesh.Tris    )
                         :NewField( 'pos',   vec3       )
@@ -296,13 +301,13 @@ local filterCollision = G.Macro(function(a,b)
   return gong`a==b
 end)
 
-if false then
+if filter_on_obj_id then
    filterCollision = G.Macro(function(a,b)
    	return gong`a.obj_id==b.obj_id
    end)
 end
 
-if true then
+if filter_neighbor_tri_collisions then
    filterCollision = G.Macro(function(a,b)
    	return gong`(a.v[0] == b.v[0] or a.v[0] == b.v[1] or a.v[0] == b.v[2]) or (a.v[1] == b.v[0] or a.v[1] == b.v[1] or a.v[1] == b.v[2]) or (a.v[2] == b.v[0] or a.v[2] == b.v[1] or a.v[2] == b.v[2])
    end)
@@ -618,19 +623,6 @@ local BVH_TT_Traversal   = G.bvh_bvh_traversal {
 find_tt_iscts:set_cpu_traversal(BVH_TT_Traversal)
 if USE_GPU then
    find_tt_iscts:set_gpu_traversal(BVH_TT_Traversal)
-end
-
-if params.traversal == 'scan_scan' then
-  -- leave the default traversal
-elseif params.traversal == 'bvh_bvh' then
-  find_et_iscts:set_cpu_traversal(BVH_Traversal)
-  find_tt_iscts:set_cpu_traversal(BVH_TT_Traversal)
-  if USE_GPU then
-     find_et_iscts:set_gpu_traversal(BVH_Traversal)
-     find_tt_iscts:set_gpu_traversal(BVH_TT_Traversal)
-  end
-else
-  error('unrecognized traversal option: '..params.traversal)
 end
 
 ------------------------------------------------------------------------------

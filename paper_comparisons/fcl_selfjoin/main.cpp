@@ -25,10 +25,18 @@ int main() {
   		"DynamicAABBTree_Array"
 	};
 
-	for (int i = 0; i < 1; ++i) {
-		std::string suff = "_"+managerNames[i]+"_"+suffix+".csv";
-		nBodyBenchmark("rebuild_every_frame"+suff, 0, 75, true,i);
-		nBodyBenchmark("update_every_frame"+suff, 0, 75, false,i);
+	bool flattenedFCL = true;
+	if (flattenedFCL) {
+		std::string suff = "_"+suffix+".csv";
+		nBodyBenchmark("rebuild_every_frame"+suff, 0, 75, true,i,flattenedFCL);
+		nBodyBenchmark("update_every_frame"+suff, 0, 75, false,i,flattenedFCL);
+	} else {
+		for (int i = 0; i < 1; ++i) {
+			std::string suff = "_"+managerNames[i]+"_"+suffix+".csv";
+			nBodyBenchmark("rebuild_every_frame"+suff, 0, 75, true,i,flattenedFCL);
+			nBodyBenchmark("update_every_frame"+suff, 0, 75, false,i,flattenedFCL);
+		}
 	}
+		
     return 0;
 }

@@ -16,6 +16,7 @@ using fcl::Triangle;
 #define BVHNodeType 0
 #endif
 
+
 struct FCLState;
 struct vec3f { Float x, y, z; };
 
@@ -49,8 +50,8 @@ struct ComparisonContact {
 		return
 			c0.tri0 == c1.tri0 &&
 			c0.tri1 == c1.tri1 &&
-			c0.obj0 == c1.obj0 &&
-			c0.obj1 == c1.obj1 &&
+			//c0.obj0 == c1.obj0 && TODO: add objects back in?
+			//c0.obj1 == c1.obj1 &&
 			//approxEqual(c0.nrml, c1.nrml) &&
 			approxEqual(c0.pos, c1.pos);
 	}
@@ -77,7 +78,7 @@ double testFCLFlattened(const std::vector<Vector3<Float>>& verts, std::vector<Tr
 
 void runCollisionTestOnConnectedComponents(std::string filename);
 
-void nBodyBenchmark(std::string outputFile = "output.csv", int startFrame = 0, int endFrame = 75,  bool rebuildEveryFrame = false, int collisionManagerType=4);
+void nBodyBenchmark(std::string outputFile = "output.csv", int startFrame = 0, int endFrame = 75,  bool rebuildEveryFrame = false, int collisionManagerType=4, bool flattenedFCL=true);
 
 FCLState* initializeFCL(const std::vector<std::vector<Vector3<Float>>>& splitVerts, const std::vector<std::vector<Triangle>>& splitTris, int managerIndex=4);
 double buildFCLAccelerationStructure(FCLState* state);
@@ -85,6 +86,10 @@ double updateFCLPositions(FCLState* state, const std::vector<std::vector<Vector3
 double refitFCLAccelerationStructure(FCLState* state);
 double fclCollision(FCLState* state, std::vector<ComparisonContact>& fclContacts);
 void fclCleanup(FCLState* state);
+
+FCLState* initializeFCLFlattened(const std::vector<Vector3<Float>>& vertices, const std::vector<Triangle>& tris);
+double updateFCLPositionsFlattened(FCLState* state, const std::vector<Vector3<Float>>& vertices);
+double fclCollisionFlattened(FCLState* state, std::vector<ComparisonContact>& fclContacts);
 
 class Store;
 Store* initializeGong(const std::vector<Vector3<Float>>& vertices, const std::vector<Triangle>& tris, const std::vector<ObjID>& objIDs);

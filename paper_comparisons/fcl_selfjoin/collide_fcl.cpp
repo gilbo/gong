@@ -99,6 +99,7 @@ struct FCLState {
 	BroadPhaseCollisionManagerf* manager;
 	std::vector<CollisionObject<Float>*> objects;
 	GeometryIDMap idMap;
+	std::shared_ptr<BVHModel<BVHBounds>> obj;
 };
 
 double testFCLFlattened(const std::vector<Vector3<Float>>& verts, std::vector<Triangle>& tris) {
@@ -234,7 +235,7 @@ double updateFCLPositions(FCLState* state, const std::vector<std::vector<Vector3
 		auto o = (BVHModel<BVHBounds>*)state->objects[i]->collisionGeometry().get();
 		o->beginReplaceModel();
 		o->replaceSubModel(splitVerts[i]);
-		o->endReplaceModel(true,false);
+		o->endReplaceModel(true,true);
 		o->computeLocalAABB();
 		state->objects[i]->computeAABB();
 	}
@@ -287,9 +288,65 @@ double fclCollision(FCLState* state, std::vector<ComparisonContact>& fclContacts
 	return collisionTime;
 }
 
+
+FCLState* initializeFCLFlattened(const std::vector<Vector3<Float>>& verts, 
+		const std::vector<Triangle>& tris) {
+	FCLState* state = new FCLState;
+	state->obj = std::make_shared<BVHModel<BVHBounds>>();
+		// add the mesh data into the BVHModel structure
+	state->obj->beginModel();
+	state->obj->addSubModel(verts, tris);
+	state->obj->endModel();
+	return state;
+}
+
+double updateFCLPositionsFlattened(FCLState* state, const std::vector<Vector3<Float>>& verts) {
+	double before = GetCurrentTimeInSeconds();
+	state->obj->beginReplaceModel();
+	state->obj->replaceSubModel(verts);
+	state->obj->endReplaceModel();
+	double updateTime = GetCurrentTimeInSeconds() - before;
+	printf("FCL Update Position Time: %g ms\n", updateTime*1000.0);
+	return updateTime;
+}
+
+double fclCollisionFlattened(FCLState* state, std::vector<ComparisonContact>& fclContacts) {
+	CollisionData<Float> collision_data;
+	collision_data.request.num_max_contacts = (FCL_FILTER_NEIGHBORS==1) ? 30000 : 3000000;
+	collision_data.request.enable_contact = true;
+	// Self collision query
+	double before = GetCurrentTimeInSeconds();
+	detail::BVHFrontList front_list;
+	detail::MeshCollisionTraversalNode<BVHBounds> node;
+	if(!detail::initialize<BVHBounds>(node, *state->obj, pose, *state->obj, pose,collision_data.request, collision_data.result))
+	  std::cout << "initialize error" << std::endl;
+
+	selfCollide(&node, &front_list);
+	double collisionTime = GetCurrentTimeInSeconds() - before;
+	printf("FCL Collision Time: %g ms\n", collisionTime*1000.0);
+	printf("FCL Component Collision Num Contacts: %zd\n", collision_data.result.numContacts());
+	fclContacts.clear();
+	if (collision_data.result.numContacts() > 0) {
+		std::vector<fcl::Contact<Float>> contacts;
+		collision_data.result.getContacts(contacts);
+		std::vector<Vector3<Float>> vertices;
+		vertices.resize(contacts.size());
+		for (int i = 0; i < contacts.size(); ++i) {
+			auto& c = contacts[i];
+			vertices[i] = c.pos;
+			fclContacts.push_back(toComparisonContact(c, state->idMap));
+		}
+		writePly("fcl_contacts.ply", vertices, {});
+	}
+	return collisionTime;
+}
+
 void fclCleanup(FCLState* state) {
 	state->idMap.clear();
 	state->objects.clear();
-	delete state->manager;
-	delete state;
+	if (state->manager)
+		delete state->manager;
+	if (state->obj)
+		state->obj = nullptr;
+	delete state
 }

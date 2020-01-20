@@ -275,7 +275,7 @@ void runCollisionTestOnConnectedComponents(std::string filename) {
     }
 }
 
-void nBodyBenchmark(std::string outputFile, int startFrame, int endFrame,  bool rebuildEveryFrame, int fclManagerIndex) {
+void nBodyBenchmark(std::string outputFile, int startFrame, int endFrame,  bool rebuildEveryFrame, int fclManagerIndex, bool flattenedFCL) {
 	std::vector<std::string> filenames;
 	for (int i = startFrame; i <= endFrame; ++i) {
 		char filename[100];
@@ -285,7 +285,7 @@ void nBodyBenchmark(std::string outputFile, int startFrame, int endFrame,  bool 
 	}
 	std::cout << "N-Body Benchmark" << std::endl;
 	CollisionSequence sequence(filenames, outputFile, fclManagerIndex);
-	sequence.solveAll(rebuildEveryFrame);
+	sequence.solveAll(rebuildEveryFrame,flattenedFCL);
 }
 
 CollisionSequence::CollisionSequence(const std::vector<std::string>& filenames, std::string perfFile, int fclManagerIndex) {
@@ -311,27 +311,38 @@ CollisionSequence::CollisionSequence(const std::vector<std::string>& filenames, 
 }
 
 
-void CollisionSequence::solveAll(bool doRebuild) {
+void CollisionSequence::solveAll(bool doRebuild,bool flattenedFCL) {
 	std::cout << "Frame: " << 0 << std::endl;
 	std::vector<ComparisonContact> fclContacts, gongContacts;
 
-	auto reinitializeAndSolve = [this, &fclContacts, &gongContacts](int frameIndex) {
+	auto reinitializeAndSolve = [this, &fclContacts, &gongContacts,flattenedFCL](int frameIndex) {
 		double before = GetCurrentTimeInSeconds();
 		m_gongState = initializeGong(m_vertices[frameIndex], m_triangles, m_objIDsPerTriangle);
 		double mid = GetCurrentTimeInSeconds();
-		m_fclState = initializeFCL(m_splitVerts[frameIndex], m_splitTris, m_fclManagerIndex);
+		if (flattenedFCL) {
+			m_fclState = initializeFCLFlattened(m_vertices[frameIndex], m_triangles);
+		} else {
+			m_fclState = initializeFCL(m_splitVerts[frameIndex], m_splitTris, m_fclManagerIndex);
+		}
+		
 		double after = GetCurrentTimeInSeconds();
 		double fclInitTime = (after - mid);
 		double gongInitTime = (mid - before);
+		double fclBuildTime = 0.0;
+		double fclCollisionTime = 0.0;
 
-		double fclBuildTime = buildFCLAccelerationStructure(m_fclState);
-		double fclCollisionTime = fclCollision(m_fclState, fclContacts);
+		if (flattenedFCL) {
+			fclCollisionTime = fclCollisionFlattened(m_fclState, fclContacts);
+		} else {
+			fclBuildTime = buildFCLAccelerationStructure(m_fclState);
+			fclCollisionTime = fclCollision(m_fclState, fclContacts);
+		}
 		double gongCollisionTime = gongCollision(m_gongState, m_firstTriIndexOfObjs, gongContacts);
 
 		double fclTotal = fclInitTime + fclBuildTime + fclCollisionTime;
 		double gongTotal = gongInitTime + gongCollisionTime;
 
-		double flattenedFCLTotal = testFCLFlattened(m_vertices[frameIndex], m_triangles);
+		//double flattenedFCLTotal = testFCLFlattened(m_vertices[frameIndex], m_triangles);
 		
 		m_outputStream << frameIndex << "," << fclTotal << "," << gongTotal << "," << fclInitTime << "," << gongInitTime << "," << fclBuildTime << ",,,," << fclCollisionTime << "," << gongCollisionTime << "," << fclContacts.size() << "," << gongContacts.size() << std::endl;
 	};
@@ -347,11 +358,22 @@ void CollisionSequence::solveAll(bool doRebuild) {
 
 			reinitializeAndSolve(i);
 		} else {
-			double fclUpdateTime = updateFCLPositions(m_fclState, m_splitVerts[i]);
+			double fclUpdateTime = 0.0;
+			double fclRebuildTime = 0.0;
+			double fclCollisionTime = 0.0;
+			if (flattenedFCL) {
+				fclUpdateTime = updateFCLPositionsFlattened(m_fclFlattened, m_vertices[i]);
+			} else {
+				fclUpdateTime = updateFCLPositions(m_fclState, m_splitVerts[i]);
+				fclRebuildTime = refitFCLAccelerationStructure(m_fclState);
+			}
 			double gongUpdateTime = updateGongVertices(m_gongState, m_vertices[i]);
 
-			double fclRebuildTime = refitFCLAccelerationStructure(m_fclState);
-			double fclCollisionTime = fclCollision(m_fclState, fclContacts);
+			if (flattenedFCL) {
+				fclCollisionTime = fclCollisionFlattened(m_fclState, fclContacts);
+			} else {
+				fclCollisionTime = fclCollision(m_fclState, fclContacts);
+			}
 			double gongCollisionTime = gongCollision(m_gongState, m_firstTriIndexOfObjs, gongContacts);
 
 			double fclTotal = fclUpdateTime + fclRebuildTime + fclCollisionTime;

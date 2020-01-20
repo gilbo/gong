@@ -8,3 +8,5 @@ typedef float Float;
 #endif
 
 typedef uint32_t ObjID;
+
+#define FCL_FILTER_NEIGHBORS 1
