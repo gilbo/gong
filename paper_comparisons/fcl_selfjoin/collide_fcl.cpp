@@ -96,10 +96,10 @@ static ComparisonContact toComparisonContact(const fcl::Contact<Float>& c, Geome
 
 
 struct FCLState {
-	BroadPhaseCollisionManagerf* manager;
+	BroadPhaseCollisionManagerf* manager = nullptr;
 	std::vector<CollisionObject<Float>*> objects;
 	GeometryIDMap idMap;
-	std::shared_ptr<BVHModel<BVHBounds>> obj;
+	std::shared_ptr<BVHModel<BVHBounds>> obj = nullptr;
 };
 
 double testFCLFlattened(const std::vector<Vector3<Float>>& verts, std::vector<Triangle>& tris) {
@@ -312,6 +312,7 @@ double updateFCLPositionsFlattened(FCLState* state, const std::vector<Vector3<Fl
 
 double fclCollisionFlattened(FCLState* state, std::vector<ComparisonContact>& fclContacts) {
 	CollisionData<Float> collision_data;
+	 Transform3f pose = Transform3f::Identity();
 	collision_data.request.num_max_contacts = (FCL_FILTER_NEIGHBORS==1) ? 30000 : 3000000;
 	collision_data.request.enable_contact = true;
 	// Self collision query
@@ -342,11 +343,12 @@ double fclCollisionFlattened(FCLState* state, std::vector<ComparisonContact>& fc
 }
 
 void fclCleanup(FCLState* state) {
-	state->idMap.clear();
-	state->objects.clear();
-	if (state->manager)
+	if (state->manager) { 
 		delete state->manager;
+		state->idMap.clear();
+		state->objects.clear();
+	}
 	if (state->obj)
 		state->obj = nullptr;
-	delete state
+	delete state;
 }

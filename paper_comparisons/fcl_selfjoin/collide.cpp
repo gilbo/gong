@@ -316,7 +316,8 @@ void CollisionSequence::solveAll(bool doRebuild,bool flattenedFCL) {
 	std::vector<ComparisonContact> fclContacts, gongContacts;
 
 	auto reinitializeAndSolve = [this, &fclContacts, &gongContacts,flattenedFCL](int frameIndex) {
-		double before = GetCurrentTimeInSeconds();
+	  std::cout << "reinit and solve" << std::endl;
+	        double before = GetCurrentTimeInSeconds();
 		m_gongState = initializeGong(m_vertices[frameIndex], m_triangles, m_objIDsPerTriangle);
 		double mid = GetCurrentTimeInSeconds();
 		if (flattenedFCL) {
@@ -352,7 +353,8 @@ void CollisionSequence::solveAll(bool doRebuild,bool flattenedFCL) {
 		double gongTotal = 0.0;
 		double fclTotal = 0.0;
 		std::cout << "Frame: " << i << std::endl;
-		if (doRebuild) {
+		if (doRebuild || ((i % 8) == 0)) {
+
 			gongCleanup(m_gongState);
 			fclCleanup(m_fclState);
 
@@ -362,7 +364,7 @@ void CollisionSequence::solveAll(bool doRebuild,bool flattenedFCL) {
 			double fclRebuildTime = 0.0;
 			double fclCollisionTime = 0.0;
 			if (flattenedFCL) {
-				fclUpdateTime = updateFCLPositionsFlattened(m_fclFlattened, m_vertices[i]);
+				fclUpdateTime = updateFCLPositionsFlattened(m_fclState, m_vertices[i]);
 			} else {
 				fclUpdateTime = updateFCLPositions(m_fclState, m_splitVerts[i]);
 				fclRebuildTime = refitFCLAccelerationStructure(m_fclState);

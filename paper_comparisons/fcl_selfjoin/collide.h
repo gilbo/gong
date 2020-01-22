@@ -115,7 +115,7 @@ class CollisionSequence {
 public:
 	CollisionSequence() {}
 	CollisionSequence(const std::vector<std::string>& filenames, std::string perfFile, int fclManagerIndex);
-	void solveAll(bool rebuild = false);
+	void solveAll(bool rebuild = false, bool fclFlattened = true);
 private:
 
 };

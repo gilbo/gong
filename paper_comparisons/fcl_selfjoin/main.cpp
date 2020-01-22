@@ -28,8 +28,8 @@ int main() {
 	bool flattenedFCL = true;
 	if (flattenedFCL) {
 		std::string suff = "_"+suffix+".csv";
-		nBodyBenchmark("rebuild_every_frame"+suff, 0, 75, true,i,flattenedFCL);
-		nBodyBenchmark("update_every_frame"+suff, 0, 75, false,i,flattenedFCL);
+		nBodyBenchmark("rebuild_every_frame"+suff, 0, 75, true,0,flattenedFCL);
+		nBodyBenchmark("update_every_frame"+suff, 0, 75, false,0,flattenedFCL);
 	} else {
 		for (int i = 0; i < 1; ++i) {
 			std::string suff = "_"+managerNames[i]+"_"+suffix+".csv";

@@ -66,9 +66,12 @@ local TTcontacts      = G.NewTable('TTcontacts')
                         :NewField( 'normal',    vec3 )
 
 if USE_GPU then
+if filter_neighbor_tri_collisions or filter_on_obj_id then
   TTcontacts:setGPUSizeLinear(2, Mesh.Tris, 2, Mesh.Tris, 64)
+else
+  TTcontacts:setGPUSizeLinear(8, Mesh.Tris, 8, Mesh.Tris, 64)
 end
-
+end
 
 ------------------------------------------------------------------------------
 
