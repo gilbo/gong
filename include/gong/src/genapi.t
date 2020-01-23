@@ -19,9 +19,8 @@ local AccScan       = require 'gong.src.acc_scan'
 local scan_index              = AccScan.scan_index
 local scan_scan_traversal     = AccScan.scan_scan_traversal
 
-
 local newlist       = terralib.newlist
-
+local ffi           = require 'ffi'
 
 -------------------------------------------------------------------------------
 -- Generate Basic Library
@@ -250,37 +249,50 @@ function Exports.CompileLibrary(args)
   if langmode=='terra' then
     local API           = Exports.GenTerraAPI(HIERARCHY)
     return API
-  elseif langmode=='cpp' then
-    -- put Terra structs and funcs into exportable format
-    local HEADER_STR, FUNC_TABLE  = Exports.GenCppAPI(prefix,
+  else
+    local function save_library(name,function_table)
+      if ffi.os == "Windows" then
+        -- Assumes the name ends in "dll" and "dll" otherwise does not appear in name
+        local out_args = {"/IMPLIB:"..string.gsub(name, "dll", "lib")}
+        local i = 2
+        for k,_ in pairs(function_table) do
+          out_args[i] = "/EXPORT:"..k
+          i = i + 1
+        end
+        -- Assumes
+        terralib.saveobj(name,
+                         function_table, out_args)
+      else
+        -- compile out the object file
+        terralib.saveobj(name,
+                         "object",
+                         function_table)
+      end
+    end
+    if langmode=='cpp' then
+      -- put Terra structs and funcs into exportable format
+      local HEADER_STR, FUNC_TABLE  = Exports.GenCppAPI(prefix,
+                                                        STRUCTS,
+                                                        FUNCS,
+                                                        HIERARCHY)
+
+      -- write out the header file
+      local headerF   = io.open(args.cpp_header_file, "w")
+      headerF:write(HEADER_STR)
+      headerF:close()
+      save_library(args.c_obj_file, FUNC_TABLE)
+    else -- C output
+      -- put Terra structs and funcs into exportable format
+      local HEADER_STR, FUNC_TABLE  = Exports.GenCAPI(prefix,
                                                       STRUCTS,
-                                                      FUNCS,
-                                                      HIERARCHY)
+                                                      FUNCS)
 
-    -- write out the header file
-    local headerF   = io.open(args.cpp_header_file, "w")
-    headerF:write(HEADER_STR)
-    headerF:close()
-
-    -- compile out the object file
-    terralib.saveobj(args.c_obj_file,
-                     "object",
-                     FUNC_TABLE)
-  else -- C output
-    -- put Terra structs and funcs into exportable format
-    local HEADER_STR, FUNC_TABLE  = Exports.GenCAPI(prefix,
-                                                    STRUCTS,
-                                                    FUNCS)
-
-    -- write out the header file
-    local headerF   = io.open(args.c_header_file, "w")
-    headerF:write(HEADER_STR)
-    headerF:close()
-
-    -- compile out the object file
-    terralib.saveobj(args.c_obj_file,
-                     "object",
-                     FUNC_TABLE)
+      -- write out the header file
+      local headerF   = io.open(args.c_header_file, "w")
+      headerF:write(HEADER_STR)
+      headerF:close()
+      save_library(args.c_obj_file, FUNC_TABLE)
+    end
   end
 end
 

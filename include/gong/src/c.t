@@ -34,42 +34,72 @@ end
 -------------------------------------------------------------------------------
 -- Additional more complex C functionality
 -------------------------------------------------------------------------------
+local sys_time
+local perf_time
+local ffi = require("ffi")
+if ffi.os == "Windows" then
+  sys_time = [[
+  #include <Windows.h>
+  double get_wall_time() {
+    unsigned __int64 pf;
+    QueryPerformanceFrequency((LARGE_INTEGER *)&pf);
+    double freq_ = 1.0 / (double)pf;
 
--- system timer
-local sys_time = [[
-#include <sys/time.h>
-double get_wall_time(){
-  struct timeval time;
-  if (gettimeofday(&time,NULL)){
-    return 0;
+    unsigned __int64 val;
+    QueryPerformanceCounter((LARGE_INTEGER *)&val);
+    return (val)* freq_;
   }
-  return (double)time.tv_sec + (double)time.tv_usec * .000001;
-}
-]]
+  ]]
+  perf_time =   [[
+  void initialize_performance_timer() {
+    return;
+  }
+  double get_perf_time_in_seconds() {
+    unsigned __int64 pf;
+    QueryPerformanceFrequency((LARGE_INTEGER *)&pf);
+    double freq_ = 1.0 / (double)pf;
 
--- performance timer
-local perf_time = [[
-#include <time.h>
-time_t    perf_init_time = 0;
-void initialize_performance_timer() {
-  if (perf_init_time == 0) {
+    unsigned __int64 val;
+    QueryPerformanceCounter((LARGE_INTEGER *)&val);
+    return (val)* freq_;
+  }
+  ]]
+else
+  -- system timer
+  sys_time = [[
+  #include <sys/time.h>
+  double get_wall_time(){
+    struct timeval time;
+    if (gettimeofday(&time,NULL)){
+      return 0;
+    }
+    return (double)time.tv_sec + (double)time.tv_usec * .000001;
+  }
+  ]]
+
+  -- performance timer
+  perf_time = [[
+  #include <time.h>
+  time_t    perf_init_time = 0;
+  void initialize_performance_timer() {
+    if (perf_init_time == 0) {
+      struct timespec ts;
+      clock_gettime( CLOCK_REALTIME, &ts );
+      perf_init_time = ts.tv_sec;
+    }
+  }
+  double get_perf_time_in_seconds() {
     struct timespec ts;
     clock_gettime( CLOCK_REALTIME, &ts );
-    perf_init_time = ts.tv_sec;
+    // note that the difference here keeps the magnitude of the
+    // timestamp small enough that nanoseconds will not be rounded off
+    // for the first 1e6 seconds of program execution, which is about
+    // 11.5 days
+    return (double)(ts.tv_sec - perf_init_time) +
+           (double)(ts.tv_nsec) * 1e-9;
   }
-}
-double get_perf_time_in_seconds() {
-  struct timespec ts;
-  clock_gettime( CLOCK_REALTIME, &ts );
-  // note that the difference here keeps the magnitude of the
-  // timestamp small enough that nanoseconds will not be rounded off
-  // for the first 1e6 seconds of program execution, which is about
-  // 11.5 days
-  return (double)(ts.tv_sec - perf_init_time) +
-         (double)(ts.tv_nsec) * 1e-9;
-}
-]]
-
+  ]]
+end
 
 -------------------------------------------------------------------------------
 -- Main Header load
@@ -100,7 +130,12 @@ perf_time
 )
 
 -- mass export the c code
-for k,v in pairs(C) do Exports[k] = v end
+for k,v in pairs(C) do 
+  Exports[k] = v 
+end
+if ffi.os == "Windows" then -- Workaround since snprintf doesn't properly export.
+  Exports.snprintf = Exports._snprintf
+end
 
 Exports.__gong_get__stderr  = nil
 Exports.__gong_get__stdin   = nil

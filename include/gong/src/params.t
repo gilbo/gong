@@ -15,6 +15,12 @@ package.loaded["gong.src.params"] = Exports
 -- auto-detecting whether functionality is available
 local default_gpu_on = not not (terralib.cudacompile)
 
+-- There is some work to be done in the cub wrapper before our cuda backend
+-- is windows compatible
+if require("ffi").os == "Windows" then
+  default_gpu_on = false
+end
+
 local default_params = {
   -- expect to be modified parameters
   ['GPU_ENABLED']       = default_gpu_on,
