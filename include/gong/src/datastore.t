@@ -1890,6 +1890,9 @@ function Wrapper:GetAccAPI()
     GPU_Scan          = function(api, ...)
                           return W._gpu_wrapper:Scan(...)
                         end,
+    GPU_Scan_Multi    = function(api, ...)
+                          return W._gpu_wrapper:Scan_Multi(...)
+                        end,
     GPU_DoubleScan    = function(api, ...)
                           return W._gpu_wrapper:ScanAB(...)
                         end,

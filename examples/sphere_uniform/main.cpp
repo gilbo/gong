@@ -236,7 +236,7 @@ int main() {
   double max_time   = 0;
   double sum_time   = 0;
 
-  string DIR = "../../../yarnsim/results/stock-garter/";
+  string DIR = "../../../yarnsim/results/alt-diag/";
 
   PerfFile pfile;
   ReadPerf(pfile, DIR + "contactperf.txt");

@@ -1001,7 +1001,7 @@ do
       var N, PTS, LM, FM = refreshPoints( c )
       --G.print('remove-keep from-to...',c.n_pts,'-/->',N)
       if N > 0 then
-        n_contacts += 1
+        --n_contacts += 1
         keep(c)
         c.n_pts     = N
         c.pts       = PTS

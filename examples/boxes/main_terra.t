@@ -21,6 +21,47 @@ local C         = Prelude.C
 local assert    = G.cassert
 
 ------------------------------------------------------------------------------
+-- PRNG from https://burtleburtle.net/bob/rand/smallprng.html
+
+local rot = macro(function(x,k)
+  return quote
+    var tmp0  = x << k
+    var tmp1  = x >> (32-k)
+  in
+    tmp0 or tmp1
+  end
+end)
+
+struct rand_ctxt { a : uint32, b : uint32, c : uint32, d : uint32 }
+local RAND_CTXT = global(rand_ctxt)
+
+terra randval() : uint32
+  var x   = [&rand_ctxt](&RAND_CTXT)
+  var e   = x.a - rot(x.b, 27)
+  x.a     = x.b ^ rot(x.c, 17)
+  x.b     = x.c + x.d
+  x.c     = x.d + e
+  x.d     = e + x.a
+  return x.d
+end
+
+terra randinit( seed : uint32 )
+  var x   = [&rand_ctxt](&RAND_CTXT)
+  x.a = seed
+  x.b = seed
+  x.c = seed
+  x.d = seed
+  for i = 0,20 do
+    randval()
+  end
+end
+
+terra randdouble() : double
+  var r : double = [double](randval())
+  return r / double([ math.pow(2,32)-1 ])
+end
+
+------------------------------------------------------------------------------
 -- Sim Constants / Parameters
 
 local function boolparam(str)
@@ -38,9 +79,13 @@ local params = { debug_draw     = false,
                  effect_buffer  = false,
                  index_buffer   = false,
                  verify         = false,
-                 test_case      = 'round_tower1',
+                 test_case      = 'round_tower',
+                 load_dir       = nil,
+                 tower_levels   = 25,
+                 tower_ring     = 24,
                  max_iters      = 50,
                  gpu            = false,
+                 seed           = 0,
                }
 for _,a in ipairs(arg) do
   local _, _, label, value = a:find("^%-([^=]*)=(.*)$")
@@ -52,6 +97,9 @@ local debug_draw            = boolparam(params.debug_draw)
 local traversal             = params.traversal
 local collide_shape         = params.collide_shape
 local test_case             = params.test_case
+local load_dir              = params.load_dir
+local tower_levels          = tonumber(params.tower_levels)
+local tower_ring            = tonumber(params.tower_ring)
 local use_projectile        = not boolparam(params.no_projectile)
 local effect_buffer         = boolparam(params.effect_buffer)
 local index_buffer          = boolparam(params.index_buffer)
@@ -68,6 +116,8 @@ local mass                  = 1
 local invmass               = 1/mass
 
 local max_iters             = tonumber(params.max_iters)
+local seed                  = tonumber(params.seed)
+randinit(seed)
 
 -- NOTE: The PCG solver doesn't actually work
 --        I'm not sure it ever did
@@ -92,6 +142,7 @@ local function GenBoxAPI()
     local cell_w = 3
     if test_case == 'slant_ground' then
     elseif test_case == 'simple_stack' then
+    elseif test_case == 'round_tower' then
     elseif test_case == 'round_tower0' then
     elseif test_case == 'round_tower1' then
     elseif test_case == 'round_tower2' then
@@ -262,6 +313,66 @@ local terra loadBoxesSimpleStack( store : API.Store )
   return 250
 end
 
+local terra loadBoxesRoundTower( store : API.Store )
+  var boxes = store:Planks()
+
+  var n_levels  = [ tower_levels ] -- 25, 50, 50
+  var n_ring    = [ tower_ring ]   -- 24, 24, 48
+  var radius    = [ 0.46 * tower_ring ] -- 11, 11, 22
+
+  var n_extra   = 1
+  if use_projectile then n_extra = 2 end
+
+  boxes:beginload( n_levels*n_ring + n_extra )
+    -- ground box
+    boxes:loadrow( v3(0,-50,0),
+                   q4(0,0,0,1),
+                   v3(0,0,0),
+                   v3(0,0,0),
+                   v3(0,0,0),
+                   v3(0,0,0),
+                   num(0),
+                   v3(400,100,400)
+                 )
+  if use_projectile then
+    -- projectile box
+    var pos = v3(radius+10,radius*1.33,0)
+    pos(0)  = pos(0) + (0.2 * randdouble() - 0.1)
+    pos(1)  = pos(1) + radius * (0.02 * randdouble() - 0.01)
+    C.printf("rand pos %f %f\n", pos(0), pos(1))
+    boxes:loadrow( pos,   -- position
+                   q4(0,0,0,1),   -- rotation
+                   v3(-60,-30,0), -- linear velocity
+                   v3(0,0,0),     -- angular velocity
+                   v3(0,0,0),     -- force
+                   v3(0,0,0),     -- torque
+                   num(18),       -- mass
+                   v3(2,7,5)      -- dims
+                 )
+  end
+    for k=0,n_levels do
+      var off = num((k+1)%2)/2
+      for j=0,n_ring do
+        var ang     = 2*math.pi/(n_ring) * (j+1+off)
+        var rang    = -0.5*ang
+        var x       = radius*C.cos(ang)
+        var z       = radius*C.sin(ang)
+        boxes:loadrow( v3(x,1.0*k+0.5,z),
+                       q4(0,C.sin(rang),0,C.cos(rang)),
+                       v3(0,0,0),
+                       v3(0,0,0),
+                       v3(0,0,0),
+                       v3(0,0,0),
+                       num(1),
+                       v3(2,1,2)
+                     )
+      end
+    end
+  boxes:endload()
+
+  return 300
+end
+
 local terra loadBoxesRoundTower0( store : API.Store )
   var boxes = store:Planks()
 
@@ -285,7 +396,11 @@ local terra loadBoxesRoundTower0( store : API.Store )
                  )
   if use_projectile then
     -- projectile box
-    boxes:loadrow( v3(20,14.65,0),   -- position
+    var pos = v3(20,14.65,0)
+    pos(0)  = pos(0) - 0.01 + 0.02 * randdouble()
+    pos(1)  = pos(1) - 0.01 + 0.02 * randdouble()
+    C.printf("rand pos %f %f\n", pos(0), pos(1))
+    boxes:loadrow( pos,   -- position
                    q4(0,0,0,1),   -- rotation
                    v3(-60,-30,0), -- linear velocity
                    v3(0,0,0),     -- angular velocity
@@ -873,6 +988,69 @@ local terra dumpStore( store : API.Store, filename : rawstring )
   assert(C.fclose(F) == 0, 'failed to close file %s', filename)
 end
 
+local terra load_frame_from_file(
+  load_dir : rawstring,
+  frame_no : int,
+  store : API.Store
+)
+  var filename :int8[1024]
+  C.snprintf( filename, 1024, "%s/frame_%d.txt", load_dir, frame_no )
+  var F   = C.fopen(filename, 'r')
+  assert(F ~= nil, 'failed to open file %s for reading', filename)
+
+  var n_rows : uint
+  var d : float[3]
+  var p : float[3]
+  var r : float[4]
+  var v : float[3]
+  var a : float[3]
+  C.fscanf(F, "%d", &n_rows)
+  --C.printf("Found %d rows\n", n_rows)
+
+  var n_box           = store:Planks():getsize()
+  assert(n_box == n_rows, 'expected %d rows, but read %d', n_box, n_rows)
+  var dims            = store:Planks():dims():readwrite_lock()
+  var pos             = store:Planks():pos():readwrite_lock()
+  var rot             = store:Planks():rot():readwrite_lock()
+  var linvel          = store:Planks():linvel():readwrite_lock()
+  var angvel          = store:Planks():angvel():readwrite_lock()
+
+  --C.printf("proj pos: %f %f %f\n", pos[1].d[0], pos[1].d[1], pos[1].d[2])
+  --C.printf("     vel: %f %f %f\n",
+  --        linvel[1].d[0], linvel[1].d[1], linvel[1].d[2])
+  --
+  --C.printf("  box 0 rot: %f %f %f %f\n",
+  --      rot[2].d[0], rot[2].d[1], rot[2].d[2], rot[2].d[3])
+
+  for i=0,n_rows do
+    C.fscanf(F, "%f %f %f ; %f %f %f ; %f %f %f %f ; %f %f %f ; %f %f %f",
+                d, d+1, d+2, p, p+1, p+2, r, r+1, r+2, r+3,
+                v, v+1, v+2, a, a+1, a+2
+      --           dims[i].d, dims[i].d+1, dims[i].d+2,
+      --           pos[i].d, pos[i].d+1, pos[i].d+2,
+      --           rot[i].d, rot[i].d+1, rot[i].d+2, rot[i].d+3,
+      --           linvel[i].d, linvel[i].d+1, linvel[i].d+2,
+      --           angvel[i].d, angvel[i].d+1, angvel[i].d+2
+            )
+    --C.printf("row %d done\n", i)
+    escape for j=0,2 do emit quote
+      --dims[i].d[j] = d[j] * 2 -- adjust dimension convention
+      pos[i].d[j]  = p[j]
+      rot[i].d[j]  = r[j]
+      linvel[i].d[j]  = v[j]
+      angvel[i].d[j]  = a[j]
+    end end end
+    rot[i].d[3] = r[3]
+  end
+
+  store:Planks():dims():readwrite_unlock()
+  store:Planks():pos():readwrite_unlock()
+  store:Planks():rot():readwrite_unlock()
+  store:Planks():linvel():readwrite_unlock()
+  store:Planks():angvel():readwrite_unlock()
+  assert(C.fclose(F) == 0, 'failed to close file %s', filename)
+end
+
 local terra mainLoop()
   C.printf('        -+-+- CODE: mainLoop() -+- Begin\n')
   var store       = API.NewStore()
@@ -882,6 +1060,8 @@ local terra mainLoop()
     N_FRAMES      = loadBoxesSlantGround(store)
   end elseif test_case == 'simple_stack' then emit quote
     N_FRAMES      = loadBoxesSimpleStack(store)
+  end elseif test_case == 'round_tower' then emit quote
+    N_FRAMES      = loadBoxesRoundTower(store)
   end elseif test_case == 'round_tower0' then emit quote
     N_FRAMES      = loadBoxesRoundTower0(store)
   end elseif test_case == 'round_tower1' then emit quote
@@ -900,7 +1080,7 @@ local terra mainLoop()
     vdb.vbegin()
     vdb.frame()
 
-    draw_boxes(store)
+    --draw_boxes(store)
 
     vdb.vend()
 
@@ -909,12 +1089,15 @@ local terra mainLoop()
   solver:alloc(store)
 
   for k=0,N_FRAMES do
-
     --var namebuf :int8[1024]
     --var file_stubname   = [ (use_bvh and "../../bvh_data/dump")
     --                                  or "../../scan_data/dump" ]
     --C.snprintf( namebuf, 1024, "%s%04d.txt", file_stubname, k )
     --dumpStore( store, namebuf )
+
+    escape if load_dir then emit quote
+      load_frame_from_file(load_dir, k, store)
+    end end end
 
     C.printf('timestep #%d:\n', k)
     var start     = taketime()

@@ -27,6 +27,7 @@ local default_params = {
   ['GPU_RAND_BUF_SIZE'] = 1e6, -- 1 million * 4 bytes = 4MB storage
   ['INDEX_REBUILD_FRACTION']  = 0.8,
   ['RESIZE_FRACTION']   = 0.25,
+  --['GPU_SATURATE_HINT'] = 65536,
 
   -- Constants that should almost certainly not be changed
   ['WARPSIZE']          = 32,

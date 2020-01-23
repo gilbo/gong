@@ -1,5 +1,30 @@
 
 mkdir -p exp_out
+mkdir -p exp_out/bullet_blocks_out
+mkdir -p exp_out/gong_cpu_bvh
+
+#for i in `seq 0 10`;
+#do
+mkdir -p exp_out/bullet_blocks_out/round_tower_h25_r24
+time ../../../bullet_sims/bullet_blocks -h25 -r24 \
+  -fexp_out/bullet_blocks_out/round_tower_h25_r24/frame \
+  > exp_out/bullet_blocks_out/round_tower_out_h25_r24.txt
+
+time ../../bin/gong main_terra.t \
+  -test_case=round_tower -traversal=bvh_bvh \
+  -load_dir=exp_out/bullet_blocks_out/round_tower_h25_r24 \
+  > exp_out/gong_cpu_bvh/round_tower_out_h25_r24.txt
+
+time ../../bin/gong main_terra.t \
+  -test_case=round_tower -traversal=bvh_bvh \
+  -load_dir=exp_out/bullet_blocks_out/round_tower_h25_r24 \
+  > exp_out/gong_cpu_bvh/round_tower_out_h25_r24.txt
+
+#time ../../bin/gong main_terra.t \
+#  -test_case=round_tower -traversal=bvh_bvh -seed=0  \
+#  > exp_out/gong_cpu_bvh/round_tower0_seed_$i.txt
+
+exit 0
 
 time ../../bin/gong main_terra.t \
   -test_case=round_tower0 \

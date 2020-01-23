@@ -3,3 +3,5 @@ scan_cout.txt
 scan_gpu_cout.txt
 
 
+*.pdf
+*.txt
