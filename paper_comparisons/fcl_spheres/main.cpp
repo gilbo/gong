@@ -85,7 +85,7 @@ void CollisionSequence::solveAll(bool doRebuild) {
 		double fclInitTime = (after - before);
 		double fclBuildTime = 0.0;
 		double fclCollisionTime = 0.0;
-
+		printf("FCL Initialization Time: %gms\n",fclInitTime*1000.0);
 		fclBuildTime = buildFCLAccelerationStructure(m_fclState);
 		fclCollisionTime = fclCollision(m_fclState, contactCount);
 		totalContacts += contactCount;
@@ -135,9 +135,9 @@ void benchmark(std::string outputFile, std::string pathPrefix, std::string pathS
 }
 
 int main() {
-	const std::vector<int> validManagerIndices = {0,1,2,3,4,5,6,7};
-	const std::vector<std::string> manager_names = {"Naive","SSaP", "SaP","IntervalTree","DynamicAABBTree","DynamicAABBTree","SpatialHash","GongSizedSpatialHash"};
-	const int endIndex = 24;
+  const std::vector<int> validManagerIndices = {0,1,3,4};
+	const std::vector<std::string> manager_names = {"Naive","SSaP", "SaP","IntervalTree","DynamicAABBTree","DynamicAABBTree_Array","SpatialHash","GongSizedSpatialHash"};
+
 
 	std::vector<std::string> benchmarks = {"alt-diag","seersucker","stock-garter"};
 	for (auto b : benchmarks) { 

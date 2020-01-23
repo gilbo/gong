@@ -66,6 +66,7 @@ void initializeDataForFCL(const std::vector<Vector3<Float>>& centers, BroadPhase
 		Transform3<S> pose;
   		pose.translation() = centers[i];
 		CollisionObjectf* obj = new CollisionObjectf(std::make_shared<Sphere<S>>(RADIUS), pose);
+		obj->computeAABB();
 		manager->registerObject(obj);
 		idMap[obj] = i;
 		objs[i] = obj;
