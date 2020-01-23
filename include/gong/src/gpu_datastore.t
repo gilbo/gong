@@ -10,6 +10,7 @@ if not PARAMETER('GPU_ENABLED') then return end
 
 local RESIZE_FRACTION   = PARAMETER('RESIZE_FRACTION')
 local DEBUG_GPU_MEM     = PARAMETER('DEBUG_GPU_MEM')
+local WARPSIZE          = PARAMETER('WARPSIZE')
 
 -------------------------------------------------------------------------------
 
@@ -1557,6 +1558,59 @@ function GWrapper:Scan(name, storeptr, gpu_tblptr, gpu_globptr,
     GPU.sync()
   end
 end
+
+function GWrapper:Scan_Multi(name, storeptr, gpu_tblptr, gpu_globptr,
+                             multi_width, multisym,
+                             tbltype, rowsym, args, bodycode)
+  local Table, main_tblname, sub_tblname, tblvalidname
+                      = unpack_prepare_tbl(self, tbltype)
+
+  -- certify arguments are symbols as needed...
+  assert_is_sym('gpu_tblptr', gpu_tblptr)
+  assert_is_sym('gpu_globptr', gpu_globptr)
+  assert_is_sym('rowsym', rowsym)
+  assert_is_sym('multisym', multisym)
+  assert_is_sym('multi_width', multi_width)
+  for i,a in ipairs(args) do assert_is_sym('args_'..i, a) end
+  --print('SCAN GPU', gpu_tblptr, gpu_globptr, rowsym)
+
+  local kargs         = newlist{ multi_width, gpu_tblptr, gpu_globptr }
+        kargs:insertall(args)
+  local gpu_kernel = terra( [kargs] )
+    -- lookup table sizes...
+    var N             = [gpu_tblptr].[sub_tblname]._size
+    var W             = [uint32](WARPSIZE)
+    var N_ceil        = ((N+(W-1))/W)*W
+    var g_tid         = GPU.global_tid()
+    var [rowsym]      = g_tid % N_ceil
+    var [multisym]    = g_tid / N_ceil
+    if [rowsym] < N and [multisym] < [multi_width] then
+      [bodycode]
+    end
+  end
+  gpu_kernel:setname(name..'_cudakernel')
+  local loader = nil
+  gpu_kernel, loader = GPU.simple_compile(gpu_kernel)
+  self._cuda_loaders:insert(loader)
+
+  -- code snippet that computes the number of threads to launch
+  -- based on the storeptr values
+  return quote
+    -- figure out how many threads to launch
+    var SIZE      = storeptr.[main_tblname]:size()
+    var W         = [uint32](WARPSIZE)
+    var SIZE_ceil = ((SIZE+(W-1))/W)*W
+    var n_threads = SIZE_ceil * [multi_width]
+    -- extract the tblptr and globptr
+    var tblptr    = storeptr._gpu_data.gpu_meta
+    var globptr   = storeptr._gpu_data.gpu_globals
+    -- launch the GPU kernel
+    --C.printf("WHAT? %d %d %d %d\n", W, SIZE, SIZE_ceil, n_threads)
+    gpu_kernel(n_threads, multi_width, tblptr, globptr, [args])
+    GPU.sync()
+  end
+end
+
 
 function GWrapper:ScanAB(name, storeptr, gpu_tblptr, gpu_globptr,
                          tbl0type, row0sym, tbl1type, row1sym,

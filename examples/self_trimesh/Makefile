@@ -1,7 +1,12 @@
 
 # try to auto-detect and compile against CUDA...
 CUDA_DIR ?= /usr/local/cuda
+CUB_WRAP_DIR := $(realpath ../../include/gong/libs)
 CPP=clang++
+
+ifeq ($(wildcard $(CUB_WRAP_DIR)/libcub_wrap.so),)
+  $(error Could not find cub_wrap.so)
+endif
 
 run: self_trimesh_scan self_trimesh_bvh
 	time ./self_trimesh_scan
@@ -18,6 +23,7 @@ self_trimesh_scan: self_trimesh_scan.o self_trimesh_scan.h main.cpp
 	  $(CPP) -std=c++11 \
 	         -L $(CUDA_DIR)/lib64 -lcuda -lcudart \
 	         -Wl,-rpath=$(CUDA_DIR)/lib64 \
+	         -L $(CUB_WRAP_DIR) -lcub_wrap -Wl,-rpath=$(CUB_WRAP_DIR) \
 	         -D GPU_ENABLE \
 	         -D USE_SCAN \
 	         -o self_trimesh_scan self_trimesh_scan.o main.cpp; \
@@ -32,6 +38,7 @@ self_trimesh_bvh: self_trimesh_bvh.o self_trimesh_scan.h main.cpp
 	  $(CPP) -std=c++11 \
 	         -L $(CUDA_DIR)/lib64 -lcuda -lcudart \
 	         -Wl,-rpath=$(CUDA_DIR)/lib64 \
+	         -L $(CUB_WRAP_DIR) -lcub_wrap -Wl,-rpath=$(CUB_WRAP_DIR) \
 	         -D GPU_ENABLE \
 	         -D USE_BVH \
 	         -o self_trimesh_bvh self_trimesh_bvh.o main.cpp; \

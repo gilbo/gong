@@ -63,7 +63,14 @@ local dot = G.Macro(function(a,b)
   return gong` +[i] a[i] * b[i]
 end)
 
-local gong function et_is_isct( e : Mesh.Edges, t : Mesh.Tris ) : { G.bool, G.vec3f }
+local gong function et_is_isct( e : Mesh.Edges, t : Mesh.Tris )
+  : { G.bool, G.vec3f }
+  do
+    var t0, t1, t2 = t.v[0], t.v[1], t.v[2]
+    var e0, e1     = e.hd, e.tl
+    if e0 == t0 or e0 == t1 or e0 == t2 or
+       e1 == t0 or e1 == t1 or e1 == t2 then return false, {0.f,0.f,0.f} end
+  end
   var v0  = t.v[0].pos
   var v1  = t.v[1].pos
   var v2  = t.v[2].pos
@@ -93,6 +100,11 @@ end
 local gong join find_et_iscts( e : Mesh.Edges, t : Mesh.Tris )
   var pass,pos    = et_is_isct(e,t)
   where pass
+  --G.print(t,e.tl,e.hd)
+  --G.print('pass', t, e.hd, e.tl, e.hd.pos, e.tl.pos,'\n',
+  --        '        ', t.v[0].pos,'\n',
+  --        '        ', t.v[1].pos,'\n',
+  --        '        ', t.v[2].pos)
 do
   emit { edge=e, tri=t, pos=pos } in ETcontacts
 end
@@ -136,6 +148,7 @@ if params.traversal == 'scan_scan' then
   -- leave the default traversal
 elseif params.traversal == 'bvh_bvh' then
   find_et_iscts:set_cpu_traversal(BVH_Traversal)
+  find_et_iscts:set_gpu_traversal(BVH_Traversal)
 else
   error('unrecognized traversal option: '..params.traversal)
 end

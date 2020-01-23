@@ -16,7 +16,7 @@ end
 ------------------------------------------------------------------------------
 -- Sim Constants / Parameters
 
-local RADIUS    = G.Constant(num, 1.25)
+local RADIUS    = G.Constant(num, 1.0)
 
 ------------------------------------------------------------------------------
 -- Support Functions / Defs
@@ -41,6 +41,14 @@ local Spheres     = G.NewTable('Spheres')
                      :NewField('pos',         vec3)
                      :NewField('isct_count',  G.uint32)
 
+local Contacts    = G.NewTable('Contacts')
+                     :NewField('s0', Spheres)
+                     :NewField('s1', Spheres)
+
+if USE_GPU then
+  Contacts:setGPUSizeLinear(8, Spheres, 64)
+end
+
 ------------------------------------------------------------------------------
 -- SubRoutines
 
@@ -63,6 +71,7 @@ local gong join sphere_self_isct ( s0 : Spheres, s1 : Spheres )
 do
   s0.isct_count += 1
   s1.isct_count += 1
+  emit { s0=s0, s1=s1 } in Contacts
 end
 --sphere_self_isct:buffer_index_on_cpu()
 
@@ -139,9 +148,8 @@ if params.traversal == 'scan_scan' then
   -- leave the default traversal
 elseif params.traversal == 'bvh_bvh' then
   sphere_self_isct:set_cpu_traversal(BVH_Traversal)
+  sphere_self_isct:set_gpu_traversal(BVH_Traversal)
 elseif params.traversal == 'hash_scan' then
-  sphere_self_isct:set_cpu_traversal(Hash_Traversal)
-elseif params.traversal == 'grid_scan' then
   sphere_self_isct:set_cpu_traversal(Hash_Traversal)
 else
   error('unrecognized traversal option: '..params.traversal)

@@ -8,9 +8,11 @@ sphere_uniform_bvh
 sphere_uniform_bvh.h
 sphere_uniform_bvh.o
 sphere_uniform_gpu_scan
+sphere_uniform_gpu_bvh
 sphere_uniform_hash
 sphere_uniform_hash.h
 sphere_uniform_hash.o
 sphere_uniform_grid
 sphere_uniform_grid.h
 sphere_uniform_grid.o
+

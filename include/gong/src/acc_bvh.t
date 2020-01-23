@@ -1299,6 +1299,7 @@ function BVH_BVH_Traversal:_INTERNAL_Construct_GPU_Functions(L_API, R_API)
   --local GTbl                = StoreAPI:GPU_TablesTyp()
   --local GGlob               = StoreAPI:GPU_GlobalsTyp()
   local RowTyp0             = T.row(self._left._table)
+  local RowTyp1             = T.row(self._right._table)
 
   local IS_SAME_IDX         = (self._left == self._right)
 
@@ -1320,13 +1321,36 @@ function BVH_BVH_Traversal:_INTERNAL_Construct_GPU_Functions(L_API, R_API)
     local terra bvh_gpu_loop( [t_args] )
       idxptr1:bvh_meta_to_gpu()
       --C.printf("BVH TRAVERSE\n")
-      --var N_0           = [ L_API:Size( storeptr, RowTyp0 ) ]
       var gpu_data_1    = idx_R.gpu_data
 
+      -- R-blocking
+      var N_0           = [ L_API:Size( storeptr, RowTyp0 ) ]
+      var N_1           = [ R_API:Size( storeptr, RowTyp1 ) ]
+      var N_Rblocks     = [uint32](16)
+      -- cut down the factor when reaching better machine occupancy
+      if     N_0 >=  20000 then
+        N_Rblocks       = 8
+      elseif N_0 >=  40000 then
+        N_Rblocks       = 4
+      elseif N_0 >=  80000 then
+        N_Rblocks       = 2
+      elseif N_0 >= 160000 then
+        N_Rblocks       = 1
+      end
+      var R_block : uint32
+      -- don't block if there's nothing to block
+      if N_1 < N_Rblocks * 2 then
+        N_Rblocks       = 1
+      end
+
+      --C.printf("START %d\n", N_Rblocks)
+
       -- first, update the leaf node volumes
-      [ L_API:GPU_Scan( name..'_traverse', storeptr,
-                        gpu_tblptr, gpu_globptr,
-                        RowTyp0, row0sym, newlist{ gpu_data_1 },
+      [ L_API:GPU_Scan_Multi( name..'_traverse', storeptr,
+                              gpu_tblptr, gpu_globptr,
+                              N_Rblocks, R_block,
+                              RowTyp0, row0sym,
+                              newlist{ N_Rblocks, gpu_data_1 },
         quote
           --var do_print = (row0sym % 10000 == 0)
           --if do_print then GPU.printf("HERE for row %d\n", row0sym) end
@@ -1341,6 +1365,16 @@ function BVH_BVH_Traversal:_INTERNAL_Construct_GPU_Functions(L_API, R_API)
           var vol_L     = absfn_L(gpu_tblptr, gpu_globptr, row0sym)
           var iter      = 0
 
+          -- R-blocking
+          var block_size = N_R / N_Rblocks
+          var R_lo      = R_block * block_size
+          var R_hi      = R_lo + block_size
+          -- fix rounding difference in last block
+          if R_block == N_Rblocks-1 then R_hi = N_R end
+          --GPU.printf("R block/Nblock %d %d lo-hi [%d, %d] %d\n",
+          --           R_block, N_Rblocks, R_lo, R_hi,
+          --           row0sym)
+
           repeat
             iter = iter + 1
             -- leaf node
@@ -1353,14 +1387,16 @@ function BVH_BVH_Traversal:_INTERNAL_Construct_GPU_Functions(L_API, R_API)
                 var [row1sym] = gpu_data_1.ids[i_R]
                 escape if is_self_join then emit quote
                   if row0sym <= row1sym then
-                    --GPU.printf("emit %4d %4d\n", row0sym, row1sym)
+                    --GPU.printf("emit %4d %4d (%4d - %4d)\n",
+                    --           row0sym, row1sym,
+                    --           R_block, i_R)
                     [bodycode]
                   end
                 end else emit quote
                   [bodycode]
                 end end end
               end
-              var isct_char = terralib.select(is_isct, 'x', ' ')
+              --var isct_char = terralib.select(is_isct, 'x', ' ')
               --if do_print then
               --  GPU.printf("[%4d/%4d] %4d:%4d [%4d.%4d] (%s)\n",
               --             row0sym, iter, stack_i, node_R,
@@ -1382,10 +1418,32 @@ function BVH_BVH_Traversal:_INTERNAL_Construct_GPU_Functions(L_API, R_API)
               --end
               if is_isct then
                 var node    = gpu_data_1.nodes[i_R]
-                -- push the right child and immediately traverse the left
-                stack_i     = stack_i + 1
-                stack[stack_i] = node.right
-                node_R      = node.left
+                var do_L    = R_lo <= node.left
+                var do_R    = node.right < R_hi
+                if node.left >= N_R then
+                  var i = node.left - N_R
+                  do_L  = R_lo <= i and i < R_hi
+                end
+                if node.right >= N_R then
+                  var i = node.right - N_R
+                  do_R  = R_lo <= i and i < R_hi
+                end
+                -- postpone right traversal if traversing both
+                if do_L and do_R then
+                  stack_i   = stack_i + 1
+                  stack[stack_i] = node.right
+                end
+                if do_L then
+                  node_R    = node.left
+                elseif do_R then
+                  node_R    = node.right
+                end
+
+                -- var node    = gpu_data_1.nodes[i_R]
+                -- -- push the right child and immediately traverse the left
+                -- stack_i     = stack_i + 1
+                -- stack[stack_i] = node.right
+                -- node_R      = node.left
               else
                 -- pop the stack
                 node_R      = stack[stack_i]
